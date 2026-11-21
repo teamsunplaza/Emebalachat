@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <deque>   // R1-9: by-value fetch-result queue (SEC-B5 house transport)
+#include <functional> // 261122_0001 B-U6fix: the dropped-width plan's measurer
 #include <memory>
 #include <mutex>   // R1-9: guards the fetch-result queue
 #include <string>
@@ -300,6 +301,62 @@ std::vector<std::string> PlanOpenAiProfileComboLabels(
         labels.push_back(std::move(label));
     }
     return labels;
+}
+
+// 261122_0001 B-U6fix: the opened-list width plan's bounds. The margin keeps
+// the longest name off the list's right edge; the caps keep a 96-byte
+// pathological name (480 px at 9 pt) from producing a list wider than the
+// screen — 3x the closed box or 640 px, whichever is smaller (at the shipped
+// 357-px closed box the 640-px cap wins, which is what fits the 96-byte cap
+// with room to spare).
+inline constexpr int kProfileDroppedWidthMarginPx = 8;
+inline constexpr int kProfileDroppedWidthMaxPx = 640;
+inline constexpr int kProfileDroppedWidthCapFactor = 3;
+
+// 261122_0001 B-U6fix (design items 2 + 4b): the OPENED-list width plan for the
+// profile picker. A closed CBS_DROPDOWNLIST truncates its CLOSED box by OS
+// design (the contract note lives at the combo's template entry in
+// BuildOpenAiTemplate), so the full name must be readable the moment the list
+// opens: CB_SETDROPPEDWIDTH sets the list's minimum width in pixels, and this
+// planner decides the value. Same contract the model combo relies on.
+//   * `labels` — the combo's display strings (UTF-8, library order): exactly
+//     what RefillOpenAiProfileCombo just added.
+//   * `combo_width_px` — the closed box width. It is the FLOOR (the opened list
+//     may never be narrower than the box it drops from; the control ignores a
+//     smaller value anyway) and one of the two caps.
+//   * `measure_utf16` — the font measurer. The dialog passes the combo's own
+//     font through GetTextExtentPoint32W; the suite passes a deterministic
+//     function. Keeping the measurer as a parameter is what makes the PLANNING
+//     pure: no window, no DC, no GDI in here.
+// The plan: longest entry + kProfileDroppedWidthMarginPx, capped at
+// min(3 x closed width, kProfileDroppedWidthMaxPx) so a 96-byte pathological
+// name cannot produce a list wider than the screen. An EMPTY library keeps the
+// OS default (the closed width). A measure failure (a non-positive extent)
+// falls back to the floor rather than guessing.
+int PlanOpenAiProfileDroppedWidth(
+    const std::vector<std::string>& labels, int combo_width_px,
+    const std::function<int(std::wstring_view)>& measure_utf16) {
+    const int floor_px = (std::max)(combo_width_px, 0);
+    if (labels.empty() || !measure_utf16) {
+        return floor_px; // empty library: leave the OS default list width alone
+    }
+    int widest_px = 0;
+    for (const std::string& label : labels) {
+        if (label.empty()) continue;
+        const int extent_px = measure_utf16(ToUtf16(label));
+        if (extent_px > widest_px) widest_px = extent_px;
+    }
+    if (widest_px <= 0) {
+        return floor_px; // nothing measurable: never shrink below the closed box
+    }
+    const long long cap_px = (std::min)(
+        static_cast<long long>(floor_px) * kProfileDroppedWidthCapFactor,
+        static_cast<long long>(kProfileDroppedWidthMaxPx));
+    const long long wanted_px =
+        static_cast<long long>(widest_px) + kProfileDroppedWidthMarginPx;
+    const long long bounded_px = (std::min)(
+        wanted_px, (std::max)(cap_px, static_cast<long long>(floor_px)));
+    return static_cast<int>((std::max)(bounded_px, static_cast<long long>(floor_px)));
 }
 
 // The [저장] planner (design item 9.4 + design-pick item 3). `candidate` is the
@@ -819,6 +876,39 @@ void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st) {
     st->reasoning_effort_pending = pending;
 }
 
+// 261122_0001 B-U6fix (design item 2): push the opened-list width plan onto the
+// live control. Measuring happens with the combo's OWN font (WM_GETFONT — the
+// DS_SETFONT dialog font the template installs), so the plan matches what the
+// list will actually render; the plan itself is the pure helper above. The
+// control ignores CB_SETDROPPEDWIDTH on a style that cannot drop down, so this
+// is safe on every path that reaches here. Failure to obtain a DC keeps the OS
+// default list width (the closed box) — never a hard error, never a shorter
+// list than the box.
+void ApplyOpenAiProfileDroppedWidth(HWND combo,
+                                    const std::vector<std::string>& labels) {
+    RECT rc{};
+    if (!::GetClientRect(combo, &rc)) return;
+    const int combo_width_px = rc.right - rc.left;
+    HDC dc = ::GetDC(combo);
+    if (!dc) return;
+    HFONT font = reinterpret_cast<HFONT>(::SendMessageW(combo, WM_GETFONT, 0, 0));
+    HGDIOBJ old_font = font ? ::SelectObject(dc, font) : nullptr;
+    const int width_px = PlanOpenAiProfileDroppedWidth(
+        labels, combo_width_px,
+        [dc](std::wstring_view text) -> int {
+            if (text.empty()) return 0;
+            SIZE sz{};
+            if (!::GetTextExtentPoint32W(dc, text.data(), static_cast<int>(text.size()),
+                                         &sz)) {
+                return 0; // measure failure: the plan keeps the closed-box floor
+            }
+            return static_cast<int>(sz.cx);
+        });
+    if (old_font) ::SelectObject(dc, old_font);
+    ::ReleaseDC(combo, dc);
+    ::SendMessageW(combo, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(width_px), 0);
+}
+
 // 261122_0001 B-U4 (design item 9.2): (re)populate the profile picker from the
 // WORKING library. `select_index >= profiles.size()` leaves the picker
 // UNSELECTED — the state the dialog opens in (it always opens on the active
@@ -845,6 +935,12 @@ void RefillOpenAiProfileCombo(HWND dlg, OpenAiDialogState* st, std::size_t selec
     if (select_index < st->profiles.size()) {
         ::SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(select_index), 0);
     }
+    // 261122_0001 B-U6fix (design item 2): EVERY rebuild re-plans the opened
+    // list's width, so a [저장]/[삭제] that changed the longest name is reflected
+    // the next time the list drops open. The closed box may truncate a name
+    // longer than the realistic derived worst (OS design, see the contract note
+    // on the combo's template entry); the opened list always fits.
+    ApplyOpenAiProfileDroppedWidth(combo, labels);
 }
 
 // 261122_0001 B-U4 (design item 9.3): a profile pick refills the form from that
@@ -1669,16 +1765,32 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // columns are sized to the worst offender + margin in every locale:
 //   * label column x=8 w=114 — worst label = OpenAiReasoningLabel @ ta 110
 //     DLU (fits w-4);
-//   * edit column x=130 w=258 — worst combo item =
-//     OpenAiReasoningServerDefault @ bg 194 DLU (fits w-4);
+//   * edit column x=130 w=354 — worst combo item =
+//     OpenAiReasoningServerDefault @ bg 194 DLU (fits w-4) and the model combo
+//     shares the row with the fetch button;
 //   * fetch button w=126 — OpenAiFetchModels @ ml 118 DLU (+8 margin);
 //   * profile save/delete buttons w=74/68 — OpenAiProfileSave @ ml 66 /
-//     OpenAiProfileDelete @ ml 60 (+8 margin);
+//     OpenAiProfileDelete @ ml 60 (+8 margin: both buttons are at their
+//     measured minimum, so no width can be reclaimed from them);
 //   * [설정 삭제] w=142 — OpenAiDeleteSettings @ ml 134 (+8 margin);
 //   * OK w=64 (DialogOk @ ru 47 +8), Cancel w=70 (DialogCancel @ si 61 +8);
-//   * masked label / declaration title / hint span x=8 w=380 (full width;
-//     the hint greedily wraps to <= 2 lines at 376 DLU — worst vi — and
-//     2 lines fit cy=18).
+//   * masked label / declaration title / hint span x=8 w=476 (full width;
+//     the hint greedily wraps to <= 2 lines — worst vi — and 2 lines fit
+//     cy=18).
+// 261122_0001 B-U6fix (design items 1 + 4c; the U6 89-locale hidden-window
+// probe's single defect — 89 clip rows, all the closed profile picker): the
+// profile picker's closed box was 108 DLU = 189 px, far below the 341 px the
+// REALISTIC worst derived profile name measures at (a host at the 24-byte
+// OpenAiHostAbbrev cap + " / " + a model id at 32 bytes). The row's buttons
+// were ALREADY at their measured minimum (74/68 = the widest locale + 8), so
+// the only axis left is the shell: 396 -> 492 DLU, of which the profile combo
+// takes 204 DLU. Measurement forced the growth (design item 1's escape hatch);
+// every other row tracks the new content right edge (484) so no dead strip or
+// floating OK/Cancel row is left behind. The combo was sized in the
+// DS_SETFONT-faithful DLU base (7 px at 96 DPI, validated against the live
+// dialog: 693 px client / 396 DLU in the U6 probe) rather than the legacy
+// tmAveCharWidth base (6 px) the label pin uses, because the legacy base is
+// 14% pessimistic and would cost 28 DLU of dialog width for no visual gain.
 // The per-build GDI pin lives in tests/req048_template_tests.inc
 // (TestOpenAiLabelFits), and the 89-locale hidden-window probe (U6)
 // re-verifies the same numbers against a live dialog.
@@ -1716,17 +1828,31 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
 
     // 261122_0001 B-U3 (B1 row 1): the profile row — label, closed picker,
     // [저장], [삭제]. The buttons are right-aligned to the content edge
-    // (388 = shell 396 - 8) and the combo fills the gap; U4 gives the
+    // (484 = shell 492 - 8) and the combo fills the gap; U4 gives the
     // buttons their behavior, the captions are i18n NOW.
+    //
+    // 261122_0001 B-U6fix (design item 3): the CLOSED-box display contract.
+    // A CBS_DROPDOWNLIST renders the SELECTED item in its closed box and the
+    // OS truncates whatever does not fit — that truncation is by design, never
+    // a clip of content the user cannot reach. This box is sized (w=204 DLU =
+    // 357 px at 96 DPI) to the REALISTIC worst DERIVED name: a host at the
+    // 24-byte OpenAiHostAbbrev cap + " / " + a model id at 32 bytes, measured
+    // at 341 px / 195 DLU in this template's 9 pt Segoe UI (TestOpenAiLabelFits
+    // re-measures and pins it on every build), so every name the [저장] path
+    // can derive fits WITHOUT truncation. A LONGER name — the profile-name cap
+    // allows 96 bytes, 480 px — truncates in the closed box and is shown in
+    // full by the OPENED list: RefillOpenAiProfileCombo always sizes that list
+    // to its longest entry (CB_SETDROPPEDWIDTH), the same contract the model
+    // combo relies on. Nothing is lost or mis-selected either way.
     tb.AddItem(LBL, 8, 6, 114, 9, IDC_PROFILE_LABEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiProfileLabel));
     // h=64 is the dropdown extent (the closed box is ~12 DLU), the same
     // convention as IDC_MODEL_COMBO; the popup list is its own window, so it
     // opens upward when the dialog edge leaves no room below.
-    tb.AddItem(COMBO_LIST, 130, 5, 108, 64, IDC_PROFILE_COMBO, COMBO_CLS, L"");
-    tb.AddItem(BTN, 242, 5, 74, 12, IDC_PROFILE_SAVE_BTN, BTN_CLS,
+    tb.AddItem(COMBO_LIST, 130, 5, 204, 64, IDC_PROFILE_COMBO, COMBO_CLS, L"");
+    tb.AddItem(BTN, 338, 5, 74, 12, IDC_PROFILE_SAVE_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiProfileSave));
-    tb.AddItem(BTN, 320, 5, 68, 12, IDC_PROFILE_DEL_BTN, BTN_CLS,
+    tb.AddItem(BTN, 416, 5, 68, 12, IDC_PROFILE_DEL_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiProfileDelete));
 
     // B1 row 2: 기본 URL.
@@ -1736,44 +1862,45 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // ES_AUTOHSCROLL reject input beyond their visible width (device-confirmed
     // on the HF add dialog's URL edit, same latent hazard here) — base URLs
     // and API keys are routinely longer than the edit, so both scroll.
-    tb.AddItem(EDT | ES_AUTOHSCROLL, 130, 21, 258, 12, IDC_BASE_URL, EDIT_CLS, L"");
+    tb.AddItem(EDT | ES_AUTOHSCROLL, 130, 21, 354, 12, IDC_BASE_URL, EDIT_CLS, L"");
 
     // B1 row 3: API 키.
     tb.AddItem(LBL, 8, 38, 114, 9, IDC_STATIC_KEY, STATIC_CLS,
                I18n::Get(StringId::OpenAiApiKeyLabel));
-    tb.AddItem(EDT | ES_AUTOHSCROLL | ES_PASSWORD, 130, 37, 258, 12, IDC_API_KEY,
+    tb.AddItem(EDT | ES_AUTOHSCROLL | ES_PASSWORD, 130, 37, 354, 12, IDC_API_KEY,
                EDIT_CLS, L"");
 
     // B1 row 4: the masked-read-back 라벨. Set at WM_INITDIALOG from
     // StringId::OpenAiKeyMasked (the key itself lands in the password edit
     // above); spans the full content width like the declaration lines below.
-    tb.AddItem(LBL, 8, 54, 380, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
+    tb.AddItem(LBL, 8, 54, 476, 9, IDC_MASKED_LABEL, STATIC_CLS, L"");
 
     // B1 row 5: 모델 + [모델 목록 가져오기]. The fetch button is right-aligned
     // (w=126 = the widest locale, ml, + 8) and the combo fills the gap; a
     // hand-typed id longer than the combo scrolls (CBS_DROPDOWN's edit leg).
     tb.AddItem(LBL, 8, 70, 114, 9, IDC_STATIC_MODEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiModelLabel));
-    tb.AddItem(COMBO, 130, 69, 128, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
-    tb.AddItem(BTN, 262, 69, 126, 12, IDC_FETCH_BTN, BTN_CLS,
+    tb.AddItem(COMBO, 130, 69, 224, 64, IDC_MODEL_COMBO, COMBO_CLS, L"");
+    tb.AddItem(BTN, 358, 69, 126, 12, IDC_FETCH_BTN, BTN_CLS,
                I18n::Get(StringId::OpenAiFetchModels));
 
     // B1 row 6: 추론강도. The combo is a CLOSED list whose widest ITEM is the
-    // localized server-default label (bg 194 DLU < 258-4), so no locale
+    // localized server-default label (bg 194 DLU < 354-4), so no locale
     // clips the closed box.
     tb.AddItem(LBL, 8, 86, 114, 9, IDC_REASONING_LABEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiReasoningLabel));
-    tb.AddItem(COMBO_LIST, 130, 85, 258, 64, IDC_REASONING_COMBO, COMBO_CLS, L"");
+    tb.AddItem(COMBO_LIST, 130, 85, 354, 64, IDC_REASONING_COMBO, COMBO_CLS, L"");
 
     // B1 row 7: the 언어 선언 섹션 (261116_0003 P9c-1b) — the title, ONE
     // multi-select LISTBOX of every OpenAI-capable language (display name),
     // and the fail-open hint line. The hint wraps to at most two lines in
-    // every locale (offline-measured; worst vi fills the 376-DLU usable
-    // width exactly) and two lines fit cy=18.
-    tb.AddItem(LBL, 8, 98, 380, 9, IDC_DECLARE_TITLE, STATIC_CLS,
+    // every locale (offline-measured; worst ta fills 616 DLU, so the grown
+    // 476-DLU static holds it in two lines with room to spare) and two lines
+    // fit cy=18.
+    tb.AddItem(LBL, 8, 98, 476, 9, IDC_DECLARE_TITLE, STATIC_CLS,
                I18n::Get(StringId::OpenAiDeclaredTitle));
-    tb.AddItem(LIST, 8, 109, 380, 52, IDC_DECLARE_LIST, LISTBOX_CLS, L"");
-    tb.AddItem(LBL, 8, 164, 380, 18, IDC_DECLARE_HINT, STATIC_CLS,
+    tb.AddItem(LIST, 8, 109, 476, 52, IDC_DECLARE_LIST, LISTBOX_CLS, L"");
+    tb.AddItem(LBL, 8, 164, 476, 18, IDC_DECLARE_HINT, STATIC_CLS,
                I18n::Get(StringId::OpenAiDeclaredHint));
 
     // B1 row 8: the 액션 행. REQ-051 (Symptom D): the [설정 삭제] button owns
@@ -1786,9 +1913,9 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // REQ-050: OK/Cancel are real i18n strings (StringId::DialogOk /
     // DialogCancel), not hardcoded English — the locale tables carry the
     // conventional native button label for each locale.
-    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 250, 186, 64, 13, IDOK, BTN_CLS,
+    tb.AddItem(BTN | BS_DEFPUSHBUTTON, 346, 186, 64, 13, IDOK, BTN_CLS,
                I18n::Get(StringId::DialogOk));
-    tb.AddItem(BTN, 318, 186, 70, 13, IDCANCEL, BTN_CLS,
+    tb.AddItem(BTN, 414, 186, 70, 13, IDCANCEL, BTN_CLS,
                I18n::Get(StringId::DialogCancel));
 }
 
@@ -1820,7 +1947,14 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // in the B1 row order with the 4-control profile row on top (16 -> 20
     // items), and the OFFLINE-measured 89-locale geometry (worst offender +
     // margin) grows the shell to 396x208 DLU — see BuildOpenAiTemplate.
-    tb.Begin(title, 396, 208, /*itemCount=*/20);
+    // 261122_0001 B-U6fix (design items 1 + 4c): the U6 hidden-window probe
+    // found the one remaining defect — the closed profile picker (108 DLU) could
+    // not show a realistic derived profile name (341 px = 195 DLU) in ANY of the
+    // 89 locales. The row's buttons were already at their measured minimum, so
+    // the shell grows 396 -> 492 DLU and the profile combo takes 204 DLU; every
+    // other row re-anchors to the new content right edge (484). See
+    // BuildOpenAiTemplate for the full measurement trail.
+    tb.Begin(title, 492, 208, /*itemCount=*/20);
     BuildOpenAiTemplate(tb);
 
     const INT_PTR rc = ::DialogBoxIndirectParamW(

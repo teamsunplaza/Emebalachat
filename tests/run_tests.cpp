@@ -74,6 +74,7 @@
 #include <cstdlib> // REQ-046 P4-3: _dupenv_s (secure getenv for the mock port)
 #include <filesystem>
 #include <fstream>
+#include <functional> // 261122_0001 B-U6fix: the dropped-width plan's measurer type
 #include <future> // D2: promise/future seam for the re-entrant Submit deadlock test
 #include <iostream>
 #include <iomanip> // REQ-005 (M6 T6): std::setw/std::setfill in the bootstrap mock hash

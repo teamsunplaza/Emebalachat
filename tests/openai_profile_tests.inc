@@ -46,6 +46,15 @@ bool PlanOpenAiProfileSave(const std::vector<OpenAiProfile>& library,
 std::wstring FormatOpenAiProfileLimitNotice(std::wstring_view message, std::size_t limit);
 bool ResolveOpenAiProfileKeyPair(std::string& key_edit, const OpenAiConfig& existing,
                                  OpenAiConfig& out);
+// 261122_0001 B-U6fix (design item 4b): the opened-list width plan, defined at
+// namespace scope in src/ui/openai_settings_window.cpp for the same cross-TU
+// reason as the planners above: the suite drives the exact planning function
+// the dialog hands to CB_SETDROPPEDWIDTH, with a deterministic measurer instead
+// of GDI. The measurer is a std::function so the planner itself stays pure (no
+// window, no DC, no GDI inside it).
+int PlanOpenAiProfileDroppedWidth(
+    const std::vector<std::string>& labels, int combo_width_px,
+    const std::function<int(std::wstring_view)>& measure_utf16);
 } // namespace emebalachat
 
 namespace openai_profile_tests {
@@ -1142,6 +1151,174 @@ void TestOpenAiProfileDialogBehavior() {
         TEST_CHECK(select == 0 && effective == "xhigh" && still_pending,
                    "R3: a server-extension effort stays pending against the fallback "
                    "list (never silently lost by a profile pick)");
+    }
+
+    // ---- (A9) the B-U6fix opened-list width plan (design item 4b) ------
+    // The closed profile picker truncates by OS design (see the contract note
+    // in BuildOpenAiTemplate); the OPENED list must always carry the full name.
+    // CB_SETDROPPEDWIDTH takes PIXELS, and the planning is pure: the suite
+    // injects a deterministic measurer (5 px per UTF-16 code unit) so every rule
+    // is exact — no GDI, no window, no font.
+    {
+        const auto measure = [](std::wstring_view text) {
+            return static_cast<int>(text.size()) * 5;
+        };
+        constexpr int kClosedPx = 357; // the shipped 204-DLU closed box at 96 DPI
+
+        // (i) empty library => the closed box width (the OS default stands).
+        TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth({}, kClosedPx, measure) == kClosedPx,
+                   "B-U6fix plan (i): an empty library leaves the OS default list width "
+                   "(the closed box)");
+
+        // (ii) a name that already fits changes nothing: the list is never
+        // NARROWER than the box it drops from.
+        {
+            const std::vector<std::string> labels = {"openai / gpt-4o-mini"};
+            const int widest_px = measure(ToUtf16(labels[0]));
+            TEST_CHECK(widest_px < kClosedPx,
+                       "B-U6fix plan (ii): the fixture name is narrower than the box");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, kClosedPx, measure) ==
+                           kClosedPx,
+                       "B-U6fix plan (ii): a name shorter than the closed box keeps the "
+                       "closed width (never a narrower list)");
+        }
+
+        // (iii) the longest entry + the 8-px margin, taken over the WHOLE
+        // library (a short first entry must not mask a long second one). The
+        // fixture is deliberately wider than the closed box, so the floor rule
+        // cannot mask the margin rule.
+        {
+            const std::vector<std::string> labels = {
+                "a", std::string(80, '0'), "0123456789"};
+            const int widest_px = measure(ToUtf16(labels[1]));
+            TEST_CHECK(widest_px > kClosedPx && widest_px + 8 < 640,
+                       "B-U6fix plan (iii): the fixture is wider than the box and under "
+                       "the 640-px cap");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, kClosedPx, measure) ==
+                           widest_px + 8,
+                       "B-U6fix plan (iii): the opened list is the longest entry + 8 px");
+        }
+
+        // (iv) the 96-byte pathological name (the OPENED-list target): 96 'x' at
+        // 5 px each = 480 px + 8 = 488, still inside the 640-px cap and far
+        // beyond the closed box — the exact contract the U6 probe re-checks.
+        {
+            const std::vector<std::string> labels(1, std::string(kMaxOpenAiProfileNameBytes,
+                                                                 'x'));
+            TEST_CHECK(labels[0].size() == 96,
+                       "B-U6fix plan (iv): the pathological fixture is the 96-byte cap");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, kClosedPx, measure) ==
+                           480 + 8,
+                       "B-U6fix plan (iv): the 96-byte name gets a 488-px opened list "
+                       "(the audited closed-truncation contract)");
+            TEST_CHECK(488 > kClosedPx,
+                       "B-U6fix plan (iv): the opened list is WIDER than the closed box "
+                       "(the truncation is never information loss)");
+        }
+
+        // (v) the cap: min(3 x closed width, 640 px). A 1000-px name is clamped
+        // to 640 on the shipped box; a narrow box clamps to 3x itself.
+        {
+            const std::vector<std::string> huge(1, std::string(200, 'x')); // 1000 px
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(huge, kClosedPx, measure) == 640,
+                       "B-U6fix plan (v): the list is capped at 640 px on the shipped box "
+                       "(3 x 357 exceeds it)");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(huge, 100, measure) == 300,
+                       "B-U6fix plan (v): a narrow box caps the list at 3x its own width");
+        }
+
+        // (vi) the floor always wins: a short name on a WIDE box keeps the box.
+        {
+            const std::vector<std::string> labels = {"a"};
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, 700, measure) == 700,
+                       "B-U6fix plan (vi): the closed box is the floor (a name narrower "
+                       "than the box never shrinks the list)");
+        }
+
+        // (vii) a measure failure falls back to the floor instead of guessing.
+        {
+            const std::vector<std::string> labels = {"openai / gpt-4o-mini"};
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(
+                           labels, kClosedPx, [](std::wstring_view) { return 0; }) ==
+                           kClosedPx,
+                       "B-U6fix plan (vii): a zero extent falls back to the closed width");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, kClosedPx,
+                                                         nullptr) == kClosedPx,
+                       "B-U6fix plan (vii): an absent measurer falls back to the closed "
+                       "width");
+        }
+
+        // (viii) the plan measures UTF-16 UNIT COUNTS, not UTF-8 bytes: a CJK
+        // name (3 code points, 9 UTF-8 bytes) must reach the measurer as 3 units
+        // — measuring the UTF-8 length would over-ask by 3x.
+        {
+            const std::vector<std::string> labels = {"\xED\x94\x84\xEB\xA1\x9C\xED\x95\x84"};
+            TEST_CHECK(labels[0].size() == 9,
+                       "B-U6fix plan (viii): the fixture name is 9 UTF-8 bytes");
+            TEST_CHECK(eb::PlanOpenAiProfileDroppedWidth(labels, 10, measure) == 3 * 5 + 8,
+                       "B-U6fix plan (viii): the measurer receives UTF-16 code units "
+                       "(9 bytes -> 3 units -> 15 px + 8)");
+        }
+    }
+
+    // ---- (A10) the B-U6fix dialog wiring (source-structure) -------------
+    // The plan must be APPLIED on every combo rebuild, not just at init: a
+    // [저장]/[삭제] can change the longest name, and the list width is planned
+    // from the names just added. The probe's live pass covers the runtime effect;
+    // this pin keeps the call site from drifting out of the refill helper.
+    {
+        std::string osw_src;
+        const char* candidates[] = {"src/ui/openai_settings_window.cpp",
+                                    "../src/ui/openai_settings_window.cpp",
+                                    "../../src/ui/openai_settings_window.cpp"};
+        for (const char* cand : candidates) {
+            std::ifstream in(cand, std::ios::binary);
+            if (!in) continue;
+            osw_src.assign((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+            break;
+        }
+        TEST_CHECK(!osw_src.empty(),
+                   "B-U6fix wiring: src/ui/openai_settings_window.cpp is resolvable");
+        if (!osw_src.empty()) {
+            const auto count_of = [](const std::string& hay, const std::string& needle) {
+                std::size_t n = 0;
+                for (std::size_t p = hay.find(needle); p != std::string::npos;
+                     p = hay.find(needle, p + needle.size())) {
+                    ++n;
+                }
+                return n;
+            };
+            TEST_CHECK(count_of(osw_src, "PlanOpenAiProfileDroppedWidth(") == 2,
+                       "B-U6fix wiring: the plan is defined and called exactly once "
+                       "(definition + the CB_SETDROPPEDWIDTH site)");
+            TEST_CHECK(count_of(osw_src, "::SendMessageW(combo, CB_SETDROPPEDWIDTH") == 1,
+                       "B-U6fix wiring: exactly one CB_SETDROPPEDWIDTH send exists (the "
+                       "comments that name the message do not count)");
+            const std::size_t refill_at = osw_src.find("void RefillOpenAiProfileCombo(");
+            TEST_CHECK(refill_at != std::string::npos,
+                       "B-U6fix wiring: the profile combo refill helper is locatable");
+            if (refill_at != std::string::npos) {
+                // The next definition after the refill helper bounds its body
+                // (CRLF-safe: no "\n}\n" scan needed).
+                const std::size_t apply_sel_at =
+                    osw_src.find("void ApplyOpenAiProfileSelection(", refill_at);
+                const std::string body = osw_src.substr(
+                    refill_at, apply_sel_at == std::string::npos ? std::string::npos
+                                                                 : apply_sel_at - refill_at);
+                const std::size_t reset_at = body.find("CB_RESETCONTENT");
+                const std::size_t plan_at = body.find("ApplyOpenAiProfileDroppedWidth(");
+                TEST_CHECK(reset_at != std::string::npos && plan_at != std::string::npos &&
+                               reset_at < plan_at,
+                           "B-U6fix wiring: the width is re-planned AFTER the rebuild "
+                           "(CB_RESETCONTENT -> … -> the apply call)");
+                TEST_CHECK(body.find("WM_GETFONT") == std::string::npos &&
+                               osw_src.find("SendMessageW(combo, WM_GETFONT") !=
+                                   std::string::npos,
+                           "B-U6fix wiring: the measurer runs in the apply helper with the "
+                           "combo's OWN font (WM_GETFONT), not the refill");
+            }
+        }
     }
 
     // ---- (B) the proc wiring / the fold contract (source-structure) ------

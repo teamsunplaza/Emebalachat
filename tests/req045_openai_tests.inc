@@ -831,10 +831,13 @@ void TestReq050OpenAiEndpointJoin() {
         // 261121_0001 U-H added the reasoning-effort row (262x190, 16 controls);
         // 261122_0001 B-U3 rebuilt the template in the B1 row order with the
         // profile row and the offline-measured 89-locale geometry (396x208,
-        // 20 controls) — the shell pin follows the production Begin call.
-        TEST_CHECK(src.find("tb.Begin(title, 396, 208") != std::string::npos,
-                   "REQ-050 (C): the dialog template is 396 x 208 DLU (B-U3 B1 rebuild: "
-                   "P9c-1b grew the shell to 262x174, U-H to 262x190, B-U3 to 396x208)");
+        // 20 controls); 261122_0001 B-U6fix grew the width to 492 so the closed
+        // profile picker can show a realistic derived profile name — the shell
+        // pin follows the production Begin call.
+        TEST_CHECK(src.find("tb.Begin(title, 492, 208") != std::string::npos,
+                   "REQ-050 (C): the dialog template is 492 x 208 DLU (B-U6fix: B-U3 "
+                   "built 396x208 from the 262x190 U-H shell, and the profile picker "
+                   "forced the width up)");
         TEST_CHECK(src.find("I18n::Get(StringId::DialogOk)") != std::string::npos &&
                    src.find("I18n::Get(StringId::DialogCancel)") != std::string::npos,
                    "REQ-050 (E): OK/Cancel buttons use the i18n dialog strings");

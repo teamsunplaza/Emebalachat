@@ -44,24 +44,43 @@ constexpr WORD kBtnCls    = 0x0080;
 constexpr WORD kComboCls  = 0x0085;
 constexpr WORD kListboxCls = 0x0083;
 
-// 261122_0001 B-U3 (design-pick.md items 5 + 8a): the production shell is
+// 261122_0001 B-U3 (design-pick.md items 5 + 8a): the production shell was
 // 396x208 DLU after the OFFLINE 89-locale measurement widened the design
 // 300x208 start (label column 78 -> 114, edit column x=90 w=202 -> x=130
 // w=258); every width below is worst-locale-string + margin — see
 // BuildOpenAiTemplate's header comment and TestOpenAiLabelFits (the per-build
-// GDI pin). Geometry summary: label column x=8 w=114; edit column x=130
-// (w=258 for the full-width edits/reasoning combo); content right edge 388;
-// masked label + declaration section span x=8 w=380; the profile-row and
-// model-row buttons are right-aligned; the action row sits at y=186.
-constexpr short kOpenAiShellW = 396;
+// GDI pin). Geometry summary (B-U6fix values): label column x=8 w=114; edit
+// column x=130 (w=354 for the full-width edits/reasoning combo); content right
+// edge 484; masked label + declaration section span x=8 w=476; the profile-row
+// and model-row buttons are right-aligned; the action row sits at y=186.
+//
+// 261122_0001 B-U6fix (design items 1 + 4a/4c): the U6 89-locale hidden-window
+// probe found the closed profile picker (108 DLU = 189 px) could not show a
+// realistic derived profile name (341 px) in ANY locale. The row's buttons were
+// already at their measured minimum (74/68), so the shell grew 396 -> 492 and
+// the profile combo took 204 DLU; every other row re-anchored to the new
+// content right edge (484): the edit column grew 258 -> 354, the full-width
+// items 380 -> 476, the fetch/OK/Cancel buttons moved right.
+constexpr short kOpenAiShellW = 492;
 constexpr short kOpenAiShellH = 208;
 constexpr short kOpenAiLabelX = 8;
 constexpr short kOpenAiLabelW = 114;
 constexpr short kOpenAiEditX  = 130;
-constexpr short kOpenAiEditW  = 258;
+constexpr short kOpenAiEditW  = 354;
 constexpr short kOpenAiFullX  = 8;
-constexpr short kOpenAiFullW  = 380;
-constexpr short kOpenAiRight  = 388; // shell - 8 (content right edge)
+constexpr short kOpenAiFullW  = 476;
+constexpr short kOpenAiRight  = 484; // shell - 8 (content right edge)
+
+// 261122_0001 B-U6fix (design item 1): the profile row's control geometry. The
+// combo is sized to the REALISTIC worst derived name (a host at the 24-byte
+// OpenAiHostAbbrev cap + " / " + a model id at 32 bytes = 341 px = 195 DLU in
+// the DS_SETFONT-faithful base), the two buttons keep their measured minima
+// (OpenAiProfileSave @ ml 66 + 8, OpenAiProfileDelete @ ml 60 + 8), and the
+// three controls plus two 4-DLU gutters exactly fill the content width:
+// 130 + 204 + 4 + 74 + 4 + 68 == 484 == kOpenAiRight.
+constexpr short kOpenAiProfileComboW = 204;
+constexpr short kOpenAiProfileSaveW = 74;
+constexpr short kOpenAiProfileDelW = 68;
 
 // REQ-050-era geometry note (kept for history): the dialog was 262 wide
 // (labels w=56, edits x=68 w=186) before the 261122_0001 B-U3 rebuild.
@@ -89,25 +108,26 @@ constexpr WORD kB1Order[] = {
 // TestOpenAiLabelFits in every locale.
 const ItemExpectation kExpected[] = {
     {114, kStaticCls, false, L"",   8,   6, 114, 9},  // B-U3 IDC_PROFILE_LABEL (i18n)
-    {115, kComboCls,  true,  L"",   130, 5, 108, 64}, // B-U3 IDC_PROFILE_COMBO (closed)
-    {116, kBtnCls,    false, L"",   242, 5, 74,  12}, // B-U3 IDC_PROFILE_SAVE_BTN (i18n)
-    {117, kBtnCls,    false, L"",   320, 5, 68,  12}, // B-U3 IDC_PROFILE_DEL_BTN (i18n)
+    // B-U6fix: the combo that carries the profile name (108 -> 204 DLU).
+    {115, kComboCls,  true,  L"",   130, 5, kOpenAiProfileComboW, 64},
+    {116, kBtnCls,    false, L"",   338, 5, kOpenAiProfileSaveW, 12},
+    {117, kBtnCls,    false, L"",   416, 5, kOpenAiProfileDelW, 12},
     {100, kStaticCls, false, L"",   8,   22, 114, 9},  // IDC_STATIC_BASE
-    {101, kEditCls,   true,  L"",   130, 21, 258, 12}, // IDC_BASE_URL
+    {101, kEditCls,   true,  L"",   130, 21, kOpenAiEditW, 12}, // IDC_BASE_URL
     {102, kStaticCls, false, L"",   8,   38, 114, 9},  // IDC_STATIC_KEY
-    {103, kEditCls,   true,  L"",   130, 37, 258, 12}, // IDC_API_KEY
-    {107, kStaticCls, true,  L"",   8,   54, 380, 9},  // IDC_MASKED_LABEL (INITDIALOG text)
+    {103, kEditCls,   true,  L"",   130, 37, kOpenAiEditW, 12}, // IDC_API_KEY
+    {107, kStaticCls, true,  L"",   8,   54, kOpenAiFullW, 9},  // IDC_MASKED_LABEL (INITDIALOG text)
     {104, kStaticCls, false, L"",   8,   70, 114, 9},  // IDC_STATIC_MODEL
-    {105, kComboCls,  true,  L"",   130, 69, 128, 64}, // IDC_MODEL_COMBO
-    {106, kBtnCls,    false, L"",   262, 69, 126, 12}, // IDC_FETCH_BTN (i18n title)
+    {105, kComboCls,  true,  L"",   130, 69, 224, 64}, // IDC_MODEL_COMBO
+    {106, kBtnCls,    false, L"",   358, 69, 126, 12}, // IDC_FETCH_BTN (i18n title)
     {112, kStaticCls, false, L"",   8,   86, 114, 9},  // U-H IDC_REASONING_LABEL (i18n title)
-    {113, kComboCls,  true,  L"",   130, 85, 258, 64}, // U-H IDC_REASONING_COMBO
-    {109, kStaticCls, false, L"",   8,   98, 380, 9},  // P9c-1b IDC_DECLARE_TITLE (i18n title)
-    {110, kListboxCls,true,  L"",   8,   109, 380, 52},// P9c-1b IDC_DECLARE_LIST
-    {111, kStaticCls, false, L"",   8,   164, 380, 18},// P9c-1b IDC_DECLARE_HINT (i18n title)
+    {113, kComboCls,  true,  L"",   130, 85, kOpenAiEditW, 64}, // U-H IDC_REASONING_COMBO
+    {109, kStaticCls, false, L"",   8,   98, kOpenAiFullW, 9},  // P9c-1b IDC_DECLARE_TITLE (i18n title)
+    {110, kListboxCls,true,  L"",   8,   109, kOpenAiFullW, 52},// P9c-1b IDC_DECLARE_LIST
+    {111, kStaticCls, false, L"",   8,   164, kOpenAiFullW, 18},// P9c-1b IDC_DECLARE_HINT (i18n title)
     {108, kBtnCls,    false, L"",   8,   186, 142, 13},// REQ-051 IDC_DELETE_BTN (i18n title)
-    {IDOK,     kBtnCls, true, L"OK",     250, 186, 64, 13},
-    {IDCANCEL, kBtnCls, true, L"Cancel", 318, 186, 70, 13},
+    {IDOK,     kBtnCls, true, L"OK",     346, 186, 64, 13},
+    {IDCANCEL, kBtnCls, true, L"Cancel", 414, 186, 70, 13},
 };
 
 // Little-endian WORD/DWORD readers over the raw template buffer.
@@ -162,8 +182,10 @@ void TestReq048OpenAiTemplateSerialization() {
         // 261121_0001 U-H grew the shell to 262 x 190 for the reasoning row;
         // 261122_0001 B-U3 (design-pick.md items 5 + 8a) rebuilt the template
         // in the B1 order with the profile row and the OFFLINE-measured
-        // 89-locale geometry, shell 396 x 208.
-        tb.Begin(L"probe", 396, 208, /*itemCount=*/7);
+        // 89-locale geometry, shell 396 x 208; 261122_0001 B-U6fix grew the
+        // width to 492 for the profile picker (height unchanged).
+        tb.Begin(L"probe", req048_detail::kOpenAiShellW, req048_detail::kOpenAiShellH,
+                 /*itemCount=*/7);
         const auto* base = reinterpret_cast<const BYTE*>(tb.Get());
         TEST_CHECK(base != nullptr, "REQ-048 P2 (a): Begin() returns a template");
         if (base) {
@@ -179,9 +201,9 @@ void TestReq048OpenAiTemplateSerialization() {
                        "REQ-048 P2 (a): byte offset 10 == x (0)");
             TEST_CHECK(req048_detail::ReadWord(base, 12) == 0,
                        "REQ-048 P2 (a): byte offset 12 == y (0)");
-            TEST_CHECK(req048_detail::ReadWord(base, 14) == 396,
-                       "REQ-048 P2 (a): byte offset 14 == cx (396, B-U3 shell width)");
-            TEST_CHECK(req048_detail::ReadWord(base, 16) == 208,
+            TEST_CHECK(req048_detail::ReadWord(base, 14) == req048_detail::kOpenAiShellW,
+                       "REQ-048 P2 (a): byte offset 14 == cx (492, B-U6fix shell width)");
+            TEST_CHECK(req048_detail::ReadWord(base, 16) == req048_detail::kOpenAiShellH,
                        "REQ-048 P2 (a): byte offset 16 == cy (208, B-U3 shell height)");
         }
     }
@@ -1263,6 +1285,44 @@ void TestOpenAiLabelFits() {
         }
         return static_cast<int>((sz.cx * 4 + base_x - 1) / base_x); // ceil
     };
+    const auto width_px = [&](const std::wstring& s) -> int {
+        if (s.empty()) return 0;
+        SIZE sz{};
+        if (!::GetTextExtentPoint32W(dc, s.c_str(), static_cast<int>(s.size()), &sz)) {
+            return 1 << 20; // a measure failure must never read as "fits"
+        }
+        return static_cast<int>(sz.cx);
+    };
+
+    // 261122_0001 B-U6fix (design item 4c): the DS_SETFONT-faithful horizontal
+    // base. Windows lays a DS_SETFONT dialog out with the AVERAGE ADVANCE of the
+    // Latin alphabet (the classic GetCharDimensions rule), which is exactly one
+    // pixel wider than tmAveCharWidth for the 9 pt Segoe UI template font — the
+    // U6 hidden-window probe measured the live dialog at 693 px / 396 DLU = 7 px
+    // for the pre-fix shell. The kFit sweep above keeps tmAveCharWidth on
+    // purpose (14% pessimistic, which costs a label nothing); the profile-combo
+    // checks below must NOT, because 14% of a 200-DLU control is 28 DLU of
+    // dialog width the user sees as dead space. Both numbers appear in their
+    // check messages.
+    const auto faithful_base_x = [&]() -> int {
+        long long sum = 0;
+        int count = 0;
+        for (wchar_t c = L'A'; c <= L'Z'; ++c) {
+            ABC abc{};
+            if (!::GetCharABCWidthsW(dc, c, c, &abc)) return 0;
+            sum += abc.abcA + abc.abcB + abc.abcC;
+            ++count;
+        }
+        for (wchar_t c = L'a'; c <= L'z'; ++c) {
+            ABC abc{};
+            if (!::GetCharABCWidthsW(dc, c, c, &abc)) return 0;
+            sum += abc.abcA + abc.abcB + abc.abcC;
+            ++count;
+        }
+        return count > 0 ? static_cast<int>((sum + count / 2) / count) : 0;
+    }();
+    TEST_CHECK(faithful_base_x > 0,
+               "B-U6fix: the DS_SETFONT-faithful horizontal base is measurable");
 
     // StringId + the control width it renders in + the margin. The widths
     // mirror the production AddItem calls (and kExpected above): statics
@@ -1357,6 +1417,60 @@ void TestOpenAiLabelFits() {
                "B-U3: the fit pin swept every locale (count derived from "
                "GetSupportedUiLocales, not hardcoded)");
 
+    // ---- 261122_0001 B-U6fix (design items 1 + 4c): the closed profile picker
+    // is pinned against the REALISTIC worst DERIVED profile name — the name the
+    // [저장] path can produce for a real endpoint: a host at the 24-byte
+    // OpenAiHostAbbrev cap + the ASCII " / " separator + a model id at 32 bytes.
+    // The 96-byte PATHOLOGICAL name (kMaxOpenAiProfileNameBytes) is deliberately
+    // NOT a closed-box target: a closed CBS_DROPDOWNLIST truncates by OS design
+    // and the opened list carries the full name (CB_SETDROPPEDWIDTH, pinned in
+    // the profile suite). The pin is locale-independent on purpose — a stored
+    // name is user data shown verbatim; the ko/ja name TEMPLATES would add CJK
+    // volume (measured: 430 px for the ko form, still inside the opened list).
+    {
+        const std::string host24 = "wonderworks-ml-platform1";        // 24 bytes
+        const std::string model32 = "gemini-2.5-pro-exp-03-25-preview"; // 32 bytes
+        TEST_CHECK(host24.size() == 24 && model32.size() == 32,
+                   "B-U6fix: the pinned name is the 24-byte host cap + a 32-byte "
+                   "model id (the adjudicated realistic worst)");
+        const std::string derived =
+            MakeOpenAiProfileName(host24, model32, "{h} / {m}");
+        const int name_px = width_px(ToUtf16(derived));
+        // The measured number, pinned: the U6fix offline measurement
+        // (tools_tmp_261122_bu6fix/measure_profile_names.cpp) recorded 341 px for
+        // this exact pair in the template's 9 pt Segoe UI; the 4-px tolerance
+        // absorbs font-hinting drift while still failing a name that grew into a
+        // truncated frame of reference.
+        constexpr int kPinnedNamePx = 341;
+        constexpr int kPinnedNameTolerancePx = 4;
+        const int base_for_combo = faithful_base_x > 0 ? faithful_base_x : base_x;
+        const int need_dlu = (name_px * 4 + base_for_combo - 1) / base_for_combo;
+        const int combo_px = req048_detail::kOpenAiProfileComboW * base_for_combo / 4;
+        const std::string what =
+            "B-U6fix profile fit: the realistic worst derived name (" +
+            std::to_string(name_px) + " px = " + std::to_string(need_dlu) +
+            " DLU at base " + std::to_string(base_for_combo) + ", legacy base " +
+            std::to_string(width_dlu(ToUtf16(derived))) + " DLU) fits the " +
+            std::to_string(req048_detail::kOpenAiProfileComboW) + "-DLU closed combo (" +
+            std::to_string(combo_px) + " px) minus its 4-DLU margin";
+        TEST_CHECK(name_px <= kPinnedNamePx + kPinnedNameTolerancePx,
+                   "B-U6fix: the realistic worst derived name stays at the pinned 341 px");
+        TEST_CHECK(name_px <= combo_px - (4 * base_for_combo) / 4, what.c_str());
+
+        // The pathological name does NOT fit the closed box — by design (OS
+        // truncation) — and this pin fails if someone "fixes" the dialog by
+        // widening the shell until 96 arbitrary bytes fit in the closed box
+        // (that would cost ~120 DLU of shell for a name no derivation produces).
+        const std::wstring pathological(static_cast<std::size_t>(kMaxOpenAiProfileNameBytes),
+                                        L'x');
+        const int pathological_px = width_px(pathological);
+        TEST_CHECK(pathological_px > combo_px - (4 * base_for_combo) / 4,
+                   "B-U6fix: the 96-byte name cap is NOT a closed-box target (it is "
+                   "carried by the opened list; the closed box truncates by design)");
+        TEST_CHECK(pathological_px + 8 <= 640,
+                   "B-U6fix: the 96-byte name fits the opened-list cap (640 px)");
+    }
+
     // Every production control rect lies inside the shell (mirrors kExpected;
     // the U6 hidden-window probe re-runs the same sweep against a live
     // dialog).
@@ -1370,11 +1484,20 @@ void TestOpenAiLabelFits() {
         TEST_CHECK(exp.cx > 0 && exp.cy > 0, "B-U3: every control has a positive extent");
     }
     // The action row is the widest cluster: [설정 삭제] (x=8 w=142) must not
-    // touch OK (x=250), and OK/Cancel right-align to the content edge (388).
-    TEST_CHECK(8 + 142 <= 250 && 250 + 64 <= 318 &&
-                   318 + 70 == req048_detail::kOpenAiRight,
+    // touch OK (x=346), and OK/Cancel right-align to the content edge (484).
+    TEST_CHECK(8 + 142 <= 346 && 346 + 64 <= 414 &&
+                   414 + 70 == req048_detail::kOpenAiRight,
                "B-U3: the action-row buttons keep their gaps and right-align to "
                "the content edge");
+    // 261122_0001 B-U6fix: the profile row fills the same content edge — the
+    // combo and both buttons plus their 4-DLU gutters end exactly at 484, so the
+    // grown shell leaves no dead strip next to the picker.
+    TEST_CHECK(req048_detail::kOpenAiEditX + req048_detail::kOpenAiProfileComboW + 4 +
+                       req048_detail::kOpenAiProfileSaveW + 4 +
+                       req048_detail::kOpenAiProfileDelW ==
+                   req048_detail::kOpenAiRight,
+               "B-U6fix: the profile row (combo + [저장] + [삭제] + gutters) exactly "
+               "fills the content width");
 
     I18n::SetLocale(fit_initial_locale); // suite-state hygiene
     ::SelectObject(dc, old_font);
