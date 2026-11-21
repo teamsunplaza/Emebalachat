@@ -70,6 +70,90 @@ namespace {
 constexpr std::size_t kLocalProgressChunkUnits = 1200;
 } // namespace
 
+// 261122_0001 A2: the local leg's mid-flight cancel forwarder. The engine-host
+// pipe request is SYNCHRONOUS — the caller blocks inside TryTranslate for up
+// to the size-scaled request budget — while the per-request cancel token
+// (261121_0002 TranslationTaskContext::cancel) flips on another thread. This
+// bounded helper thread closes that gap: it polls the token, and once set,
+// fires engine_host::CancelTranslateRequest with the wire id the in-flight
+// TryTranslate published through IdSlot() (the client's out_request_id slot),
+// so the host aborts the job and the blocked call returns promptly with the
+// aborted (timeout) answer instead of waiting out the full budget. Model:
+//   * ONE thread per armed leg, started only when a token exists (no token
+//     -> never constructed -> byte-identical pre-feature behavior).
+//   * One shot: after firing (or on Stop) the thread exits; a cancel that
+//     races the request teardown simply no-ops in the seam.
+//   * RAII: Stop() signals + joins, so EVERY exit path of the local leg
+//     (success / cancel / failure convergence) leaves no live thread. The
+//     join is bounded by the poll cadence (~10 ms) — the seam's own write is
+//     bounded by the client's overlapped-write deadline, and firing happens
+//     at most once per leg.
+//   * The forwarder never decides the outcome: the 261121_0002 checks in
+//     the leg (discard-before-success, cancel-before-retry, cancel-before-
+//     cloud-fallback) own the Canceled mapping; this thread only makes a
+//     cancelled request return PROMPTLY.
+namespace {
+class LocalCancelForwarder {
+public:
+    LocalCancelForwarder() = default;
+    LocalCancelForwarder(const LocalCancelForwarder&) = delete;
+    LocalCancelForwarder& operator=(const LocalCancelForwarder&) = delete;
+    ~LocalCancelForwarder() { Stop(); }
+
+    // Single-use: call once, before the pipe request that should be
+    // cancellable. `token` must outlive the forwarder (the caller's
+    // TranslationTaskContext::cancel does — the task owns both).
+    void Start(const std::atomic<bool>* token) {
+        token_ = token;
+        stop_.store(false, std::memory_order_release);
+        request_id_.store(0, std::memory_order_release);
+        worker_ = std::thread([this] { Run(); });
+    }
+
+    // The publish slot handed to TryTranslate's out_request_id. Valid from
+    // Start() until the dtor returns.
+    std::atomic<std::uint64_t>* IdSlot() { return &request_id_; }
+
+    void Stop() {
+        stop_.store(true, std::memory_order_release);
+        if (worker_.joinable()) worker_.join();
+    }
+
+private:
+    void Run() {
+        for (;;) {
+            if (stop_.load(std::memory_order_acquire)) return;
+            if (ChunkLoopCancelRequested(token_)) {
+                // The user aborted. When the request has not reached the
+                // wire yet, the leg's own pre/post checks converge to
+                // Canceled without us; wait (bounded by Stop) for the
+                // published id so a wire-bound request is aborted too.
+                for (;;) {
+                    const std::uint64_t id = request_id_.load(std::memory_order_acquire);
+                    if (id != 0) {
+                        // Best-effort: the leg's 261121_0002 checks discard
+                        // the result regardless of the return value.
+                        (void)engine_host::CancelTranslateRequest(
+                            engine_host::kChatEngineHostIdentity, id);
+                        return;
+                    }
+                    if (stop_.load(std::memory_order_acquire)) return;
+                    ::Sleep(kPollMs);
+                }
+            }
+            ::Sleep(kPollMs);
+        }
+    }
+
+    static constexpr int kPollMs = 10; // cancel-observation latency bound
+
+    const std::atomic<bool>* token_ = nullptr;
+    std::atomic<std::uint64_t> request_id_{0};
+    std::atomic<bool> stop_{false};
+    std::thread worker_;
+};
+} // namespace
+
 // REQ-R01 (Batch D1): pure, model-independent head+tail sliding-window truncation.
 // Keeps the first and last `keep_per_side` UTF-16 code units joined by "\n...\n"
 // (U+2026 ellipsis). Cut points are adjusted so a UTF-16 surrogate pair is never
@@ -879,6 +963,21 @@ std::wstring TranslationManager::Translate(
             set_status(TranslationStatus::Canceled);
             return {};
         }
+        // 261122_0001 A2: arm the mid-flight cancel forwarder BEFORE the pipe
+        // request. The request is synchronous (this thread blocks inside
+        // TryTranslate for up to the size-scaled budget), so the per-request
+        // user token is forwarded to the engine-host cancel seam from this
+        // bounded helper thread: once the token flips, it fires
+        // CancelTranslateRequest with the wire id TryTranslate publishes
+        // through IdSlot(), and the host's aborted (timeout) answer returns
+        // the blocked call promptly. No token -> no slot -> no thread, the
+        // byte-identical pre-feature path.
+        LocalCancelForwarder cancel_forwarder;
+        std::atomic<std::uint64_t>* cancel_id_slot = nullptr;
+        if (ctx.cancel) {
+            cancel_forwarder.Start(ctx.cancel);
+            cancel_id_slot = cancel_forwarder.IdSlot();
+        }
         // R1-11: the seam reads the request SNAPSHOT's config copy, so the
         // whole pipe call runs with no state lock held and a concurrent
         // SetEngineHostConfig cannot mutate the block mid-request.
@@ -890,13 +989,19 @@ std::wstring TranslationManager::Translate(
         if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
-                                      host_out, host_err, served_model)) {
+                                      host_out, host_err, served_model,
+                                      cancel_id_slot)) {
             // 261121_0002: the user token outranks a completed pipe response
             // — a cancel posted while the request was in flight DISCARDS
             // host_out and reports Canceled BEFORE NoteHostSuccess / the
             // REQ-057 diagnosis (mirroring the REQ-R16 latch's treatment of
-            // an in-flight decode; the synchronous pipe cannot be aborted
-            // mid-request — design-pick "Honest limitations").
+            // an in-flight decode).
+            // 261122_0001 A2: the pipe request itself IS now abortable mid-
+            // flight (the armed LocalCancelForwarder fires the cancel seam
+            // with the published wire id, the host answers the aborted job
+            // with status=timeout, and the blocked call returns promptly) —
+            // but the race where the real result still wins the pipe is
+            // covered by THIS discard, unchanged.
             if (ChunkLoopCancelRequested(ctx.cancel)) {
                 set_status(TranslationStatus::Canceled);
                 return {};
@@ -906,6 +1011,18 @@ std::wstring TranslationManager::Translate(
             // REQ-057: served-vs-expected model id (diagnostic log only).
             DiagnoseServedModelMismatch(preferred, served_model);
             return ToUtf16(host_out);
+        }
+        // 261122_0001 A2: a failure observed after the user token flipped
+        // (typically the host's aborted answer to our cancel frame) converges
+        // to Canceled HERE — BEFORE the repair-signal recorder — so a user-
+        // aborted request neither arms the repair streak nor spends the
+        // transient retry (the warrant's cancel guard below stays as the
+        // second line of defense). Without this check an aborted request
+        // would record a spurious host failure for a cancel the user asked
+        // for.
+        if (ChunkLoopCancelRequested(ctx.cancel)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
         }
         // §V2-8.6 (b): persistent host failure — record the repair signal for
         // the T6 bootstrapper (client-internal state, never a protocol
@@ -956,7 +1073,8 @@ std::wstring TranslationManager::Translate(
             if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
-                                          host_out, host_err, served_model)) {
+                                          host_out, host_err, served_model,
+                                          cancel_id_slot)) {
                 // 261121_0002: same discard rule as the first attempt — a
                 // user cancel posted while the retry was in flight discards
                 // the result BEFORE NoteHostSuccess / the REQ-057 diagnosis.

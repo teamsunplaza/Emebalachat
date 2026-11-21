@@ -17879,9 +17879,10 @@ void TestR107PeerIdentityGate() {
 #include "req059_user_model_prompt_tests.inc"
 
 // 260930_0003 (가+다, CEO decision): the over-budget translation path -
-// n_ctx 8192 / prompt budget 6128, paragraph-boundary chunking + stitching,
-// single-huge-paragraph head+tail fallback (SplitParagraphBlocks /
-// JoinParagraphBlocks / PromptNeedsChunking in translation_common.hpp).
+// n_ctx 8192 / prompt budget 6128, chunking + stitching via the shared 4-tier
+// splitter, single-huge-paragraph head+tail fallback (PromptNeedsChunking in
+// translation_common.hpp; the blank-line paragraph family is gone per
+// 261122_0001 A1 and pinned absent).
 // Staged as an .inc next to this runner; registered right after
 // TestReq059UserModelPrompt() (same translation-core cluster).
 #include "s260930_0003_chunk_stitch_tests.inc"
@@ -18058,6 +18059,18 @@ void TestR107PeerIdentityGate() {
 // pattern: it uses ResolveRepoFile, defined above). Registered at the end of
 // main() after the v0.10.9 U-A chunker suite it complements.
 #include "translation_progress_tests.inc"
+
+// 261122_0001 A2 (builder draw 3): the local-engine REAL-TIME cancel seam —
+// the wire-exact {"op":"cancel","id":N} frame from another thread while a
+// translate is in flight (A2CancelFakeHost models the frozen abort answer),
+// the manager wiring (flag mid-translate -> seam with the same wire id ->
+// TranslationStatus::Canceled, prompt, no repair streak), the negatives, and
+// the source pins over engine.hpp/engine.cpp and the engine-repo client.
+// Staged as an .inc next to this runner (the end-of-file pattern: it reuses
+// the FakeHost helpers TestPipeName/TestTokenPath/WriteTestToken defined
+// above). Registered at the end of main() after the 261121_0002 suite it
+// extends.
+#include "a2_local_cancel_seam_tests.inc"
 
 // 261108_0002 (v0.10.6) WS4 — Chat installer upgrade-safety pins (G1/G2/G3/
 // G4/G6/G9) against installer/setup.iss, plus the frozen contracts the other
@@ -25214,6 +25227,12 @@ int main() {
     // structural pins over the worker / manager / cloud-loop / badge shapes.
     // Registered last, per the end-of-file pattern.
     TestTranslationProgressCancel();
+    // 261122_0001 A2 (builder draw 3): the local-engine real-time cancel seam
+    // — the wire-exact cancel frame from another thread, the manager wiring
+    // (mid-flight flag -> seam with the same id -> prompt Canceled), the
+    // negatives, and the source pins. Registered last, per the end-of-file
+    // pattern; reuses the in-file fake-host helpers.
+    TestA2LocalCancelSeam();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

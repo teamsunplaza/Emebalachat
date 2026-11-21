@@ -311,6 +311,13 @@ inline const EngineHostClientIdentity kChatEngineHostIdentity{"emebala-chat", "0
 // frozen connection machinery unchanged.
 // 261119 E1-B2a fix R19-01: `identity` is the required leading parameter (pass
 // kChatEngineHostIdentity); there is no identity-free overload.
+// 261122_0001 A2: OPTIONAL trailing `out_request_id` (DEFAULTED — every
+// existing call site compiles unchanged with the id unpublished). When
+// non-null, the client RELEASE-stores the request's wire id through it as
+// soon as the translate frame is on the wire — before the blocking result
+// read — so the local leg's cancel forwarder learns WHICH id to abort mid-
+// flight (see CancelTranslateRequest below). Pure publish slot: never
+// written on any path that never reached the wire.
 bool TryTranslate(const EngineHostClientIdentity& identity,
                   const EngineHostConfig& cfg,
                   const std::string& src,
@@ -319,7 +326,30 @@ bool TryTranslate(const EngineHostClientIdentity& identity,
                   const std::string& model_id,
                   std::string& out,
                   std::string& err_code,
-                  std::string& served_model);
+                  std::string& served_model,
+                  std::atomic<std::uint64_t>* out_request_id = nullptr);
+
+// 261122_0001 A2: the mid-flight local cancel seam — sends the frozen
+// {"op":"cancel","id":N} frame for an in-flight request of THIS process so a
+// blocked TryTranslate returns promptly with the host's aborted result
+// (status=timeout), closing the 261121_0002 limitation "local cancel is
+// honored when the pipe request returns". Declared HERE (not in the engine
+// repo's published client header — same REQ-060 precedent as the pinned
+// overload above): the definition lives in the shared engine repo's
+// src/engine_host_client.cpp, so consumers resolve the seam with ZERO new
+// link edges and the Chat exe stays llama-free.
+// WIRE FACT (frozen, engine-contract.md §7 / C4): the host aborts an
+// in-flight job ONLY when the cancel arrives on the OWNING connection — a
+// second connection's cancel is a defined NO-OP. The seam therefore writes
+// on the in-flight connection itself (via a DuplicateHandle of the published
+// pipe handle, the classic full-duplex fix; the blocked caller and its pipe
+// state are never touched). `identity` is REQUIRED and FIRST (repo rule),
+// validated before any I/O. Best-effort: false (no matching in-flight
+// request / identity invalid / host gone) NEVER means the translate failed;
+// the caller never branches on the result. Bounded write; at most ONE
+// shape-only stderr line; the frame carries no user text.
+bool CancelTranslateRequest(const EngineHostClientIdentity& identity,
+                            std::uint64_t request_id);
 
 // REQ-060: pushes the engine_host block + the local-route state into the
 // warmup manager, which (re)evaluates the persistent warmup connection:
@@ -451,6 +481,11 @@ public:
     // the pipe request (discarding a completed response), blocks the
     // Auto->cloud fallback with it, and feeds it to the REQ-051 transient-
     // retry warrant so a cancelled task never starts the retry pipe request.
+    // 261122_0001 A2: mid-request the local leg ALSO forwards the token to
+    // the engine-host cancel seam (a bounded helper thread fires
+    // CancelTranslateRequest with the wire id TryTranslate published), so a
+    // cancelled local request returns PROMPTLY with the host's aborted
+    // answer instead of waiting out the full pipe budget.
     // ctx.on_chunk receives the local plan-known (0, n) tick before the pipe
     // request (the badge's chunk-count label); the cloud legs tick (i+1, n)
     // themselves. The REQ-R16 RequestCancel() shutdown latch below is
