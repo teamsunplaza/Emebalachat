@@ -20,6 +20,16 @@ enum class BadgeStatus {
     Disabled      // Gray #6B7280
 };
 
+// 261122_0001 A4 (F9): the badge's {c}/{t} token fill for the localized
+// progress label (StringId::BadgeTranslatingProgress). The Translating arm of
+// FloatingBadge::Render calls exactly this function, so Render() output is
+// unchanged; it is declared here (not file-local) because it is a PURE string
+// transform - no Direct2D, no window - and was otherwise unreachable from the
+// unit suite, which left a {c}/{t} swap uncaught (only the arm precedence and
+// the per-locale token presence were pinned). index/total are the 1-based
+// chunk counter and the plan total; unknown tokens are left untouched.
+std::wstring BadgeFillProgressTokens(std::wstring text, std::size_t index, std::size_t total);
+
 class FloatingBadge {
 public:
     using ClickCallback = std::function<void()>;

@@ -1059,6 +1059,15 @@ bool ProtectOpenAiApiKey(const std::string& cleartext, std::string& out_dpapi_ba
 
 bool UnprotectOpenAiApiKey(std::string_view dpapi_base64, std::string& out_cleartext) {
     out_cleartext.clear();
+    // 261122_0001 A4 (F11.1): clear() keeps the capacity, so a LONGER previous
+    // key's tail would survive in the caller's reused buffer and the caller's
+    // own SecureZeroMemory(key.data(), key.size()) only covers the new size.
+    // Zero the whole capacity before any byte of the next key lands there (the
+    // string owns capacity()+1 bytes, so this writes only inside its own
+    // allocation - SSO included).
+    if (out_cleartext.capacity() > 0) {
+        SecureZeroMemory(out_cleartext.data(), out_cleartext.capacity());
+    }
     if (dpapi_base64.empty()) return false;
     std::vector<unsigned char> blob;
     if (!Base64Decode(dpapi_base64, blob)) return false;
@@ -1068,9 +1077,18 @@ bool UnprotectOpenAiApiKey(std::string_view dpapi_base64, std::string& out_clear
     in.cbData = static_cast<DWORD>(blob.size());
     DATA_BLOB out{};
     if (!::CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr, 0, &out)) {
+        // Nothing to scrub here: CryptUnprotectData does not hand back an
+        // allocation on failure (out.pbData stays NULL, LocalAlloc-owned only
+        // on success), so this is the one exit path with no cleartext blob.
         return false;
     }
     out_cleartext.assign(reinterpret_cast<const char*>(out.pbData), out.cbData);
+    // 261122_0001 A4 (F11.1): `out.pbData` is a LocalAlloc block holding the
+    // DPAPI CLEARTEXT key. LocalFree returns it to the process heap without
+    // wiping it, where it can outlive the string that just copied it. Scrub
+    // the WHOLE block (out.cbData, not the string's size) before the free, on
+    // this - the only - exit path that owns it.
+    SecureZeroMemory(out.pbData, out.cbData);
     ::LocalFree(out.pbData);
     return true;
 }

@@ -32,12 +32,17 @@ void BadgeReplaceAll(std::wstring& text, std::wstring_view token, const std::wst
     }
 }
 
+} // namespace
+
 // {c}/{t} fill for the localized cloud-tick label (BadgeTranslatingProgress).
+// 261122_0001 A4 (F9): exported through badge.hpp so the unit suite pins the
+// replacement itself (a {c}/{t} swap used to be uncaught: only the arm
+// precedence and the per-locale token presence were pinned). The body below is
+// the SAME code the Translating arm calls, so Render() output is unchanged.
 std::wstring BadgeFillProgressTokens(std::wstring text, std::size_t index, std::size_t total) {
     BadgeReplaceAll(text, L"{c}", std::to_wstring(index));
     BadgeReplaceAll(text, L"{t}", std::to_wstring(total));
     return text;
-}
 }
 
 FloatingBadge::FloatingBadge() = default;

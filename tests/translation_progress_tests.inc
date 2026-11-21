@@ -36,6 +36,10 @@
 //       regression pair; plus source pins for the F2 OR'd latch (and its
 //       retry-warrant mirror), the F5 badge cancelling-handler guard, and
 //       the F7 observer-gated local plan computation.
+//   (j) 261122_0001 A4 (F9): the {c}/{t} FILL itself (exported pure helper):
+//       index/total order, position independence, replace-all, token-free
+//       passthrough, the production template, every selector locale, and the
+//       Render() call-site argument order.
 //
 // Every pin is a cheap, deterministic string/index check over the sources; the
 // suite never touches the network, the registry, or a window.
@@ -582,6 +586,101 @@ void TestTranslationProgressCancel() {
         TEST_CHECK(f2_res2.empty() && f2_st == emebalachat::TranslationStatus::LocalModelMissing,
                    "261121_0002 F2: without a user cancel the pre-block keeps LocalModelMissing "
                    "(REQ-029-B survives for non-cancelled requests)");
+    }
+
+    // ---- (j) 261122_0001 A4 (F9): the {c}/{t} token FILL itself -----------
+    // Fix-list round 1 deferred this as "needs UI instantiation". That reason
+    // was wrong: Render() only COMPOSES the label; the replacement is a pure
+    // string transform (now exported through badge.hpp, body unchanged), so it
+    // is pinned here with no Direct2D target and no window. Before this block
+    // a {c}/{t} swap was uncaught: (g) pinned arm precedence, (h) pinned the
+    // per-locale token PRESENCE, nothing pinned the substitution.
+    {
+        // Distinct values (3 vs 12) so a swap changes the bytes.
+        const std::wstring a4_forward = emebalachat::BadgeFillProgressTokens(L"{c}/{t}", 3, 12);
+        TEST_CHECK(a4_forward == L"3/12",
+                   "261122_0001 A4 (F9): {c}/{t} fills index-then-total (3/12, never 12/3)");
+        // Position independence: the tokens are matched by NAME, not by order,
+        // so a reversed template still maps {t}->total and {c}->index. This
+        // fails if the implementation swaps its two replacement calls.
+        TEST_CHECK(emebalachat::BadgeFillProgressTokens(L"{t}/{c}", 3, 12) == L"12/3",
+                   "261122_0001 A4 (F9): a reversed template still maps {t}->total, {c}->index");
+        // Replace-all: every occurrence is filled, not just the first.
+        TEST_CHECK(emebalachat::BadgeFillProgressTokens(L"{c} of {t} ({c})", 2, 5) ==
+                       L"2 of 5 (2)",
+                   "261122_0001 A4 (F9): every {c}/{t} occurrence is replaced");
+        // No token -> byte-identical passthrough (the pre-feature label path).
+        TEST_CHECK(emebalachat::BadgeFillProgressTokens(L"Translating...", 3, 12) ==
+                       L"Translating...",
+                   "261122_0001 A4 (F9): a token-free label is returned unchanged");
+        // The PRODUCTION template (StringId::BadgeTranslatingProgress) filled at
+        // runtime: no raw braces survive, both numbers are present, and the
+        // swapped fill differs (the swap a real regression would produce).
+        const std::wstring a4_tpl = I18n::Get(StringId::BadgeTranslatingProgress);
+        const std::wstring a4_filled = emebalachat::BadgeFillProgressTokens(a4_tpl, 3, 12);
+        const std::wstring a4_rev = emebalachat::BadgeFillProgressTokens(a4_tpl, 12, 3);
+        TEST_CHECK(a4_tpl.find(L"{c}/{t}") != std::wstring::npos &&
+                       a4_filled.find(L"{") == std::wstring::npos &&
+                       a4_filled.find(L"3") != std::wstring::npos &&
+                       a4_filled.find(L"12") != std::wstring::npos &&
+                       a4_filled != a4_rev,
+                   "261122_0001 A4 (F9): the English progress template renders 3/12 with no "
+                   "raw braces left");
+
+        // Every selector locale, same transform (a locale row that reorders the
+        // tokens must still fill both).
+        const auto& a4_locales = GetSupportedUiLocales();
+        int a4_locale_rows_ok = 0;
+        for (const UiLocaleEntry& entry : a4_locales) {
+            I18n::SetLocale(entry.locale);
+            const std::wstring tpl = I18n::Get(StringId::BadgeTranslatingProgress);
+            const std::wstring filled = emebalachat::BadgeFillProgressTokens(tpl, 3, 12);
+            const std::wstring rev = emebalachat::BadgeFillProgressTokens(tpl, 12, 3);
+            if (filled.find(L"{") == std::wstring::npos &&
+                filled.find(L"3") != std::wstring::npos &&
+                filled.find(L"12") != std::wstring::npos && filled != rev) {
+                ++a4_locale_rows_ok;
+            }
+        }
+        I18n::SetLocale(UiLocale::English);
+        TEST_CHECK(!a4_locales.empty() &&
+                       a4_locale_rows_ok == static_cast<int>(a4_locales.size()),
+                   "261122_0001 A4 (F9): every selector locale fills {c}/{t} without leaving "
+                   "brace text (and a swapped fill differs)");
+
+        // The seam is intentional and the CALL SITE passes (index, total) in
+        // that order - a swap at the call site would leave the helper test
+        // above green, so pin the argument order too.
+        std::string a4_hpp_src;
+        TEST_CHECK(read_repo_src(L"src\\ui\\badge.hpp", a4_hpp_src) &&
+                       a4_hpp_src.find("std::wstring BadgeFillProgressTokens(") !=
+                           std::string::npos,
+                   "261122_0001 A4 (F9): the fill helper is exported through badge.hpp "
+                   "(the seam is deliberate, not a test-only hack)");
+        std::string a4_badge_src;
+        if (!read_repo_src(L"src\\ui\\badge.cpp", a4_badge_src)) {
+            std::cout << "[SKIP] src/ui/badge.cpp not resolvable; the F9 call-site pin was "
+                         "skipped." << std::endl;
+        } else {
+            const size_t a4_site = a4_badge_src.find("statusText = BadgeFillProgressTokens(");
+            TEST_CHECK(a4_site != std::string::npos,
+                       "261122_0001 A4 (F9): the Translating arm composes its label through "
+                       "BadgeFillProgressTokens");
+            if (a4_site != std::string::npos) {
+                const size_t a4_site_end = a4_badge_src.find(");", a4_site);
+                const std::string a4_args =
+                    a4_site_end == std::string::npos
+                        ? std::string()
+                        : a4_badge_src.substr(a4_site, a4_site_end - a4_site);
+                TEST_CHECK(a4_site_end != std::string::npos &&
+                               a4_args.find("progress_index, progress_total") !=
+                                   std::string::npos &&
+                               a4_args.find("progress_total, progress_index") ==
+                                   std::string::npos,
+                           "261122_0001 A4 (F9): the call site passes (index, total) in that "
+                           "order (a swapped call would go uncaught by the helper pin)");
+            }
+        }
     }
 
     if (g_failed_count == failures_before) {

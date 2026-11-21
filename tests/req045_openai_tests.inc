@@ -199,6 +199,55 @@ void TestReq045OpenAiDpapi() {
         TEST_CHECK(hpp_src.find("ProtectOpenAiApiKey(std::string_view") == std::string::npos,
                    "OF-01: no string_view ProtectOpenAiApiKey overload remains");
     }
+
+    // 261122_0001 A4 (F11.1): the block CryptUnprotectData hands back is the
+    // CLEARTEXT key, and LocalFree returns it to the process heap unscrubbed.
+    // The suite cannot observe a freed heap block (no allocator hook), so pin
+    // the SOURCE ORDER that makes the hygiene true. Exit paths audited:
+    //   * empty / non-base64 input -> returns before ANY DPAPI allocation;
+    //   * CryptUnprotectData fails -> DPAPI hands back no block (pbData NULL);
+    //   * success                  -> scrub + LocalFree, the order pinned here.
+    const std::filesystem::path client_cpp =
+        ResolveRepoFile(L"src\\openai_compatible_client.cpp");
+    std::string cpp_src;
+    if (!client_cpp.empty()) {
+        std::ifstream in(client_cpp, std::ios::binary);
+        cpp_src.assign((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+    }
+    TEST_CHECK(!cpp_src.empty(),
+               "261122_0001 A4 (F11.1): src/openai_compatible_client.cpp resolves for the "
+               "scrub-order pin");
+    if (!cpp_src.empty()) {
+        const size_t a4_unprot = cpp_src.find("bool UnprotectOpenAiApiKey(");
+        const size_t a4_unprot_end =
+            (a4_unprot == std::string::npos) ? std::string::npos
+                                             : cpp_src.find("\n}", a4_unprot);
+        TEST_CHECK(a4_unprot != std::string::npos &&
+                       a4_unprot_end != std::string::npos && a4_unprot_end > a4_unprot,
+                   "261122_0001 A4 (F11.1): the UnprotectOpenAiApiKey body is locatable and "
+                   "bounded");
+        if (a4_unprot != std::string::npos && a4_unprot_end != std::string::npos &&
+            a4_unprot_end > a4_unprot) {
+            const std::string a4_body =
+                cpp_src.substr(a4_unprot, a4_unprot_end - a4_unprot);
+            const size_t a4_scrub =
+                a4_body.find("SecureZeroMemory(out.pbData, out.cbData);");
+            const size_t a4_free = a4_body.find("::LocalFree(out.pbData);");
+            const size_t a4_ok_ret = a4_body.find("return true;");
+            TEST_CHECK(a4_scrub != std::string::npos && a4_free != std::string::npos &&
+                           a4_scrub < a4_free,
+                       "261122_0001 A4 (F11.1): the cleartext DPAPI block is scrubbed BEFORE "
+                       "LocalFree (the heap never receives the key)");
+            TEST_CHECK(a4_scrub != std::string::npos && a4_ok_ret != std::string::npos &&
+                           a4_scrub < a4_ok_ret,
+                       "261122_0001 A4 (F11.1): the success exit cannot skip the scrub");
+            TEST_CHECK(a4_body.find("SecureZeroMemory(out_cleartext.data(), "
+                                    "out_cleartext.capacity())") != std::string::npos,
+                       "261122_0001 A4 (F11.1): the caller's reused buffer capacity is zeroed "
+                       "(a longer previous key leaves no tail past size())");
+        }
+    }
 }
 
 // ---- config round-trip for the openai{} block ----

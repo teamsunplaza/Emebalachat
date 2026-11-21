@@ -100,6 +100,13 @@ bool ProtectOpenAiApiKey(const std::string& cleartext, std::string& out_dpapi_ba
 // Inverse of ProtectOpenAiApiKey. On success `out_cleartext` holds the key and
 // the caller MUST SecureZeroMemory it after use. Returns false on unprotect
 // failure (wrong user, corrupted blob).
+//
+// SCRUB CONTRACT (261122_0001 A4, F11.1): the LocalAlloc block DPAPI hands back
+// is zeroed (SecureZeroMemory) before LocalFree, so the cleartext key is not
+// left in the freed heap block; and the caller's buffer capacity is zeroed on
+// entry, so a LONGER key from a previous call cannot survive past
+// `out_cleartext.size()`. This is a memory-hygiene guarantee, not an API
+// change: callers still own the returned string and still zero it after use.
 bool UnprotectOpenAiApiKey(std::string_view dpapi_base64, std::string& out_cleartext);
 
 // REQ-045 (design §3b, User Decision 12:38): SHA-256 of a memory buffer as 64
