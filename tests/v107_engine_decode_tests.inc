@@ -371,13 +371,18 @@ int RunV107EngineDecodeTests(int& failures) {
             // kV109LocalChunkMaxUtf16Units, and the blank-line-only paragraph
             // splitter is gone from it (that splitter needed a BLANK line, so a
             // long single paragraph never chunked - the reported failure).
+            // 261122_0001 (A1): the splitter itself was then deleted (no
+            // production caller remained), so the needle is its CALL form - the
+            // history comments may still name it, nothing may call it.
             TEST_CHECK(src.find(
                            "SplitTextIntoTranslationChunks(ToUtf8(src_w), kV109LocalChunkMaxUtf16Units)") !=
                            std::string::npos,
                        "v0.10.9 U-D: the chunked path splits with the shared 4-tier chunker at the "
                        "pinned unit cap");
-            TEST_CHECK(src.find("SplitParagraphBlocks(src_w)") == std::string::npos,
-                       "v0.10.9 U-D: the blank-line-only splitter no longer selects the local chunks");
+            TEST_CHECK(src.find("SplitParagraphBlocks(") == std::string::npos &&
+                           src.find("JoinParagraphBlocks(") == std::string::npos,
+                       "v0.10.9 U-D + 261122_0001 A1: the removed blank-line paragraph splitter never "
+                       "selects (or joins) the local chunks");
             TEST_CHECK(src.find("V109BuildChunkSlices(translation_chunks, chunks, chunk_trailing_separators") !=
                            std::string::npos,
                        "v0.10.9 U-D: the chunk plan is converted (and its delimiters preserved) by "
