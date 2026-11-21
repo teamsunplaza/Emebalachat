@@ -1200,13 +1200,18 @@ class NotepadSession:
                 cleared_residue = True
             else:
                 self.foreign = True
+                # R3-3 / F-Δ3 (261121_0002 round 3): LENGTH-ONLY, the same F4
+                # rule as req027_e2e.py - this message flows into env_notes ->
+                # run-manifest.json notes + the console transcript, so it must
+                # never carry a fragment of the user's document.
                 raise EnvBlock(
                     "the Notepad window the harness adopted opened with "
                     "PRE-EXISTING content (session restore?) - refusing to "
                     "clear or close user data. Window left untouched. "
                     "Disable Notepad session restore (Settings) or close "
                     "leftover Notepad windows, then re-run. "
-                    f"first 80 chars={last.strip()[:80]!r}")
+                    f"(content withheld: {len(last.strip())} chars, "
+                    "shape-only)")
             time.sleep(POLL_S)
         raise EnvBlock(
             f"fresh Notepad document unreadable/unclearable within 5s "

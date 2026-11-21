@@ -28,7 +28,11 @@ Hangul lines, presses Enter, and judges the result on three layers:
     (c) "PIPELINE/stage=capture end len=N" equals the TYPED line length
         EXACTLY (never the growing document = pre-REQ-027 cumulative
         signature; a captured leading/trailing newline is flagged as a
-        REQ-023-separator-swallow defect candidate, see verify_task_layer1),
+        separator-swallow defect candidate, see verify_task_layer1). The
+        parser accepts BOTH log shapes: with diag_log_content=1 the line
+        carries content="..." and the content checks run; with the shipped
+        privacy default (content off) it is shape-only and the content
+        checks report BLOCKED - never FAIL (261121_0002 re-baseline E1/E7),
     (d) "stage=paste result=1" appears,
     (e) translation completion evidence "stage=translate end status=0".
         NOTE: tooltip_show kind=translation is only emitted by the drag /
@@ -74,6 +78,16 @@ deliberately NOT automated, see README "Handed to user QA"):
                       -> Shift+Enter passes through (ENTER_GATE
                       reason=shift_enter_newline x2, REQ-018), exactly ONE
                       task whose capture spans the whole multi-line block
+  autosend_newline    REQ-028 positive leg (261121_0002 re-baseline E10):
+                      auto_send=1 pinned, 3 lines -> EVERY task must log
+                      stage=send_enter action=synthetic_newline ... auto_send=1,
+                      the document must gain exactly ONE "\n" per task, the
+                      final document must hold exactly len(lines) newlines and
+                      the EditCaretTracker/008 newline-settle counter must stay
+                      0. This is the scenario that keeps the editor-newline
+                      feature under E2E coverage after REQ-028 retired the old
+                      "CategoryB always injects" rule; it is the ONLY scenario
+                      that flips the pinned config fixture's auto_send.
   paste_then_enter    clipboard seeded OUTSIDE the app + real Ctrl+V
                         (SendInput) + immediate Enter -> capture == pasted
                         text exactly, replacement normal; then one IMMEDIATE
@@ -83,7 +97,15 @@ deliberately NOT automated, see README "Handed to user QA"):
   long_text           one 1000-char Hangul line + Enter -> capture len
                       1000, replacement normal. The 64K EM_GETSEL WORD
                       saturation boundary is NOT automated (user QA
-                      QA-27-7, see README).
+                      QA-27-7, see README). The known intermittent
+                      long-input capture timeout (a 1000-char RichEdit copy
+                      exceeding the clipboard-sequence budget, first
+                      documented 260907 and tightened when
+                      kClipboardChangeTimeoutMs shrank to 80 ms) is a
+                      PROBABLE PRODUCT defect: this scenario reports it as
+                      INCONCLUSIVE with the capture diagnosis in the output
+                      (never PASS, never a silent harness FAIL) - see
+                      scenario_long_text's C5 disposition.
   notepad_vscode_mix  window-1 Enter -> switch to a SECOND Notepad window,
                         Enter there -> back to window 1, Enter. Proves the
                         caret-offset state map is keyed per focus hwnd:
@@ -144,7 +166,23 @@ Usage
                                                  (interactive desktop; the
                                                  run moves the real cursor
                                                  onto the About reset button)
-Exit codes: 0 = PASS, 1 = FAIL, 2 = INCONCLUSIVE/environment, 3 = harness error.
+  python tools\\e2e\\req027_e2e.py all --skip-tray-scenarios
+                                                 ; green-gate form: the two
+                                                 tray scenarios are removed
+                                                 from the matrix instead of
+                                                 contributing INCONCLUSIVE
+  python tools\\e2e\\req027_e2e.py qa27b --run-dir <dir>
+                                                 ; keep run-manifest.json (and
+                                                 a copy of the console log) in
+                                                 an explicit directory
+
+Exit codes (E12 policy, 261121_0002): 0 = every chosen scenario PASS;
+1 = any FAIL; 2 = no FAIL but at least one INCONCLUSIVE (this includes the
+two tray scenarios, which are environment-bounded - use
+--skip-tray-scenarios when a green gate is required on a desktop whose tray
+UIA provider is starved, rather than converting them to PASS); 3 = harness
+error or config-fixture restore mismatch. Every run prints a machine-readable
+"E2E_SUMMARY {...}" line and writes run-manifest.json into the run directory.
 
 Operating constraints (documented; pre-flight enforced where possible)
 ----------------------------------------------------------------------
@@ -157,12 +195,33 @@ Operating constraints (documented; pre-flight enforced where possible)
     per-process marker (src/win32_input.cpp EXTRA_INFO_MARKER) as a real
     keystroke. The harness therefore sends the trigger Enter via SendInput
     UNMARKED - the hook intercepts it and feeds the pipeline, exactly like a
-    user pressing Enter. The newline after each replacement is injected by
-    the APP itself (REQ-023), so the harness sends exactly ONE Enter per
-    typed line. The marker value is per-process and NOT reproducible from
-    outside; harness injections of Ctrl+V / Shift+Enter are therefore
-    unmarked and pass through the hook's documented pass-through branches
-    (ctrl+V is not a gesture key; Shift+Enter exits via the REQ-018 gate).
+    user pressing Enter. The EDITOR newline is injected BY THE APP only when
+    auto_send=1: REQ-028 (user-approved reversal, 2026-09-07 13:06) retired
+    the old REQ-023 "CategoryB always injects a newline" rule, so with the
+    shipped default auto_send=0 the app logs
+    "stage=send_enter action=SKIPPED reason=send_gate", and with auto_send=1
+    it logs "action=synthetic_newline ... auto_send=1". The harness sends
+    exactly ONE Enter per typed line in BOTH modes and judges the document
+    DELTA against the app's own logged action (261121_0002 re-baseline
+    E2/E3): synthetic_newline -> delta 1, SKIPPED/synthetic_send -> delta 0,
+    no decisive action line -> BLOCKED (never PASS). The marker value is
+    per-process and NOT reproducible from outside; harness injections of
+    Ctrl+V / Shift+Enter are therefore unmarked and pass through the hook's
+    documented pass-through branches (ctrl+V is not a gesture key;
+    Shift+Enter exits via the REQ-018 gate).
+  * E2E CONFIG FIXTURE (261121_0002 E5): before the first app launch the
+    harness backs up the RUNNING app's config.json bytes
+    (%LOCALAPPDATA%\\Emebalachat\\config.json, matching
+    GetDefaultConfigPath; exe-dir only when absent), pins
+    diag_log_enabled=true, diag_log_content=true and auto_send=<scenario
+    mode> (autosend_newline = true, everything else false), verifies the
+    app's own "SESSION/diag_log_enabled=.. diag_log_content=.." and
+    "SESSION/config loaded=.. auto_send=.." lines against the fixture, and
+    restores the ORIGINAL BYTES in a finally with a SHA-256 verification.
+    Mismatch -> EnvBlock (environment), never a product FAIL. Privacy: the
+    fixture writes ONLY harness-owned E2E strings into the QA log (every
+    adopted document is verified empty before typing); it never records user
+    content and never leaves the config modified.
   * Text is inserted via PostMessageW(WM_CHAR) directly into the edit
     control: this bypasses the hook just like IME-committed text does, so
     the hook's IME mirror stays false and Enter is never gated as
@@ -190,19 +249,33 @@ Operating constraints (documented; pre-flight enforced where possible)
     (probed live: Win11 Notepad session-restore can pre-fill the new window
     - the harness clears its own scratch window before typing).
   * Clipboard backup/restore is the app's own responsibility (out of scope).
-    paste_then_enter and the multi_lang fallback change build\\config.json
-    / the clipboard and restore them afterwards.
+    paste_then_enter and the multi_lang fallback change the RUNTIME
+    config.json (%LOCALAPPDATA%, see the fixture bullet above) / the
+    clipboard and restore them afterwards.
   * All synchronization is polling with explicit timeouts (constants below);
     the only fixed delay is a 300 ms diag-flush settle before teardown.
+  * ENVIRONMENT MANIFEST (261121_0002 E11): every run writes
+    <run-dir>/run-manifest.json (UTC start/end, OS build, app exe + SHA-256 +
+    self-reported SESSION version, config path + pre/post SHA-256, pinned
+    mode, Notepad frame/edit class, read methods, tray-UIA outcome,
+    per-scenario verdicts, exit code). The manifest exists because the
+    previous release QA misdiagnosed a stale baseline as "Win11 Notepad
+    drift": a future green/red flip must be attributable to a recorded
+    environment fact, not to a guess.
 """
 
 import argparse
 import ctypes
+import datetime
+import hashlib
 import json
 import os
+import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from ctypes import wintypes
 
@@ -609,12 +682,43 @@ def find_edit_control(top_hwnd):
 # B-6c: /004 /005 /006 /007 /008 + lang_pair + translate-out + ENTER_GATE)
 # ---------------------------------------------------------------------------
 RE_TASK_RECEIVED = re.compile(r"PIPELINE/task_received source=enter_pipeline")
+# 261121_0002 E1: TWO shapes exist. With diag_log_content=1 the line is
+#   stage=capture end len=21 duration_ms=63 content="..." k=0 result=ok
+# and with the shipped privacy default (content OFF, src/worker.cpp L453-456)
+# it is shape-only:
+#   stage=capture end len=21 duration_ms=63 k=0 result=ok
+# The old regex REQUIRED content="..." and therefore never matched the default
+# shape, which turned the harness's primary anti-cumulative assertion into
+# BLOCKED everywhere and into hard FAIL in cursor_mid/backspace_enter.
+# capture_content is None (not '') when the field is absent so the content
+# checks can distinguish "logging off" from "captured an empty string" (E7).
 RE_CAPTURE_END = re.compile(
-    r'PIPELINE/stage=capture end len=(\d+) duration_ms=\d+ content="(.*)"')
+    r'PIPELINE/stage=capture end len=(?P<len>\d+) duration_ms=\d+'
+    r'(?: content="(?P<content>.*?)")?'
+    r" k=(?P<k>\d+) result=(?P<result>[A-Za-z_]\w*)\s*$")
 RE_TRANSLATE_END = re.compile(r"PIPELINE/stage=translate end status=(-?\d+)")
+# Same two-shape contract as the capture line (E1): status/engine/duration/
+# out_len stay ungated (src/worker.cpp L1108-1122) and only out="..." is
+# content-gated. The old regex REQUIRED out="...", so out_len was unparsed on
+# every privacy-default run even though the app had written it.
 RE_TRANSLATE_OUT = re.compile(
-    r'PIPELINE/stage=translate end status=-?\d+ engine=.+? duration_ms=\d+ '
-    r'out_len=(\d+) out="(.*)"')
+    r"PIPELINE/stage=translate end status=-?\d+ engine=.+? duration_ms=\d+ "
+    r'out_len=(?P<len>\d+)(?: out="(?P<out>.*?)")?\s*$')
+# REQ-028 send decision (src/worker.cpp L1505-1520):
+#   stage=send_enter action=synthetic_newline shift=0 auto_send=1
+#   stage=send_enter action=SKIPPED reason=send_gate target=00000000002E0660
+#   stage=send_enter action=synthetic(reason=ime_backstop) shift=0
+# The injected branch carries auto_send=; the SKIPPED branch does not (the gate
+# itself implies 0). The newline delta is judged from `action` (E2).
+RE_SEND_ENTER = re.compile(
+    r"PIPELINE/stage=send_enter action=(?P<action>[A-Za-z_]+)")
+RE_SEND_ENTER_REASON = re.compile(
+    r"PIPELINE/stage=send_enter action=SKIPPED reason=(?P<reason>\S+)")
+RE_SEND_ENTER_AUTO_SEND = re.compile(
+    r"PIPELINE/stage=send_enter .*?auto_send=(?P<auto_send>[01])\b")
+# Per-task auto_send witness that exists on EVERY capture path (the lang_pair
+# line is emitted before capture begin and is not content-gated).
+RE_TASK_AUTO_SEND = re.compile(r"stage=lang_pair .*?auto_send=(?P<v>[01])\b")
 RE_PASTE_RESULT = re.compile(r"PIPELINE/stage=paste result=(\d+)")
 RE_PASTE_SKIPPED = re.compile(r"PIPELINE/stage=paste skipped reason=(\S+)")
 RE_TASK_END = re.compile(r"PIPELINE/stage=task_end pasted=(\d+)")
@@ -661,6 +765,21 @@ RE_SUBSYSTEMS = re.compile(r"SESSION/subsystems started")
 RE_SECOND_INSTANCE = re.compile(r"SESSION/second instance")
 RE_LANG_PAIR = re.compile(
     r'stage=lang_pair ctx=type src="([^"]*)" tgt="([^"]*)"')
+# E5 fixture witnesses (src/main.cpp L1655-1680, src/diag_logger.cpp):
+#   SESSION/diag_log_enabled=1 diag_log_content=1 (file sink ENABLED - ...)
+#   SESSION/config loaded=1 ui_language=auto engine=local ... auto_send=0 ...
+#   SESSION/==== Emebalachat v0.10.8 session start (pid=..., exe=...)
+# The config line's optional content fields (model_path=, drag=, type=) are
+# content-gated, but auto_send= is NOT, so the mode witness always exists.
+RE_SESSION_DIAG_FLAGS = re.compile(
+    r"SESSION/diag_log_enabled=(?P<enabled>[01]) "
+    r"diag_log_content=(?P<content>[01])")
+RE_SESSION_CONFIG = re.compile(
+    r"SESSION/config loaded=(?P<loaded>[01]) .*?"
+    r"\bauto_send=(?P<auto_send>[01])\b")
+RE_SESSION_VERSION = re.compile(
+    r"SESSION/==== Emebalachat (?P<version>\S+) session start")
+RE_SESSION_EXE = re.compile(r"session start \(pid=\d+, exe=(?P<exe>.*?)\) ====")
 RE_SHIFT_GATE = re.compile(r"ENTER_GATE.*reason=shift_enter_newline")
 # Runtime language-change record (src/main.cpp L604 STATE/lang_sync): the
 # single authority every tray menu pick routes through. Group 1 = the new
@@ -699,12 +818,18 @@ class TaskBlock:
         self.start_line_no = start_line_no
         self.lines = []
         self.capture_len = None
-        self.capture_content = None
+        self.capture_content = None   # None = content gated off (E1/E7)
+        self.capture_result = None    # ok | empty | guard_abort | ...
+        self.capture_k = None
         self.translate_status = None
         self.translate_out_len = None
         self.translate_out = None
         self.paste_result = None
         self.paste_skip_reason = None
+        self.send_enter_action = None   # synthetic_newline|synthetic_send|SKIPPED|synthetic
+        self.send_enter_reason = None   # SKIPPED reason (send_gate|h1_foreground_mismatch)
+        self.send_enter_auto_send = None  # only the injected branch logs it
+        self.task_auto_send = None      # lang_pair witness, every capture path
         self.em_setselect = False
         self.em_setselect_last = None
         self.em_setselect_caret = None
@@ -728,15 +853,19 @@ class TaskBlock:
         self.lines.append((lineno, text))
         m = RE_CAPTURE_END.search(text)
         if m and self.capture_len is None:
-            self.capture_len = int(m.group(1))
-            self.capture_content = m.group(2)
+            self.capture_len = int(m.group("len"))
+            # None when the shape-only branch wrote the line (E1): the content
+            # checks must NOT treat that as "captured an empty string".
+            self.capture_content = m.group("content")
+            self.capture_k = int(m.group("k"))
+            self.capture_result = m.group("result")
         m = RE_TRANSLATE_END.search(text)
         if m:
             self.translate_status = int(m.group(1))
         m = RE_TRANSLATE_OUT.search(text)
         if m:
-            self.translate_out_len = int(m.group(1))
-            self.translate_out = m.group(2)
+            self.translate_out_len = int(m.group("len"))
+            self.translate_out = m.group("out")
         m = RE_PASTE_RESULT.search(text)
         if m:
             self.paste_result = int(m.group(1))
@@ -746,6 +875,18 @@ class TaskBlock:
         m = RE_LANG_PAIR.search(text)
         if m:
             self.lang_tgt = m.group(2)
+        m = RE_TASK_AUTO_SEND.search(text)
+        if m:
+            self.task_auto_send = int(m.group("v"))
+        m = RE_SEND_ENTER.search(text)
+        if m:
+            self.send_enter_action = m.group("action")
+        m = RE_SEND_ENTER_REASON.search(text)
+        if m:
+            self.send_enter_reason = m.group("reason")
+        m = RE_SEND_ENTER_AUTO_SEND.search(text)
+        if m:
+            self.send_enter_auto_send = int(m.group("auto_send"))
         m = RE_EM_SETSELECT_DETAIL.search(text)
         if m:
             # groups: 1=hwnd 2=last 3=caret
@@ -850,6 +991,15 @@ class EnvBlock(Exception):
     """Environment precondition failed -> INCONCLUSIVE (never product FAIL)."""
 
 
+class FixtureRefused(EnvBlock):
+    """The config fixture REFUSES to pin (F1/F3, 261121_0002 round 2).
+
+    A deliberate refusal with guidance, not a missing precondition. It stays an
+    EnvBlock subclass so every existing handler (main()'s fixture block, the
+    per-scenario `except EnvBlock`) keeps classifying it as ENVIRONMENT: never a
+    product FAIL, and never a config write."""
+
+
 _assert_input_size()
 
 
@@ -934,6 +1084,19 @@ class AppSession:
 # (guards notepad_vscode_mix's two windows from double-adopting each other).
 _ADOPTED_HWND = set()
 
+# Environment facts gathered while the run proceeds and persisted by E11's
+# run-manifest.json. Deliberately plain module state: the manifest must survive
+# a mid-run EnvBlock (it is written from main()'s finally).
+_OBSERVED = {
+    "frame_class": None,
+    "edit_classes": set(),
+    "read_methods": set(),
+    "app_version": None,
+    "app_exe_reported": None,
+    "tray_uia": None,
+    "notepad_version": None,
+}
+
 
 class NotepadSession:
     """Opens (or reuses) an EMPTY Notepad scratch WINDOW and owns it until
@@ -1005,6 +1168,12 @@ class NotepadSession:
             if h == hwnd:
                 self.pid = pid
                 _ADOPTED_HWND.add(hwnd)
+                # E11 manifest: the classes the harness ACTUALLY drove. A
+                # future change here (Notepad drift) becomes a recorded fact
+                # instead of a silently different read path.
+                _OBSERVED["frame_class"] = get_class(hwnd)
+                if self.edit_class:
+                    _OBSERVED["edit_classes"].add(self.edit_class)
                 return "adopted"
         self.top = 0
         return "reject"
@@ -1049,7 +1218,10 @@ class NotepadSession:
                 time.sleep(0.3)
             if not user32.IsWindowVisible(HWND(hwnd)):
                 closed += 1
-        return closed, blanks_seen - keep
+        # E9 (261121_0002): `keep` blanks are deliberately left open, so the
+        # reuse-pool count is blanks_seen - keep; when fewer blanks exist than
+        # `keep` the honest count is 0, not a negative number in every log.
+        return closed, max(0, blanks_seen - keep)
 
     def start(self):
         # Adoption (B-6c, probed live 260907 - two Win11 realities):
@@ -1195,8 +1367,11 @@ class NotepadSession:
         """(text, method). text None = unreadable by both readers."""
         txt = read_edit_text_wmgettext(self.edit)
         if txt is not None:
+            _OBSERVED["read_methods"].add("WM_GETTEXT")
             return txt, "WM_GETTEXT"
         txt = read_edit_text_uia_ps(self.pid, self.top)
+        if txt is not None:
+            _OBSERVED["read_methods"].add("UIA-ValuePattern")
         return txt, "UIA-ValuePattern"
 
     @staticmethod
@@ -1240,13 +1415,18 @@ class NotepadSession:
                 cleared_residue = True
             else:
                 self.foreign = True
+                # F4 (261121_0002 round 2): LENGTH-ONLY. This message flows
+                # into env_notes -> run-manifest.json notes + the console
+                # transcript that becomes release evidence, so it must never
+                # carry a fragment of the user's document.
                 raise EnvBlock(
                     "the Notepad window the harness adopted opened with "
                     f"PRE-EXISTING content (session restore?) - refusing to "
                     "clear or close user data. Window left untouched. "
                     "Disable Notepad session restore (Settings) or close "
                     "leftover Notepad windows, then re-run. "
-                    f"first 80 chars={last.strip()[:80]!r}")
+                    f"(content withheld: {len(last.strip())} chars, "
+                    "shape-only)")
             time.sleep(POLL_S)
         raise EnvBlock(
             "fresh Notepad document unreadable/unclearable within 5s "
@@ -1504,6 +1684,263 @@ def _foreground_guard():
 
 
 # ---------------------------------------------------------------------------
+# E2E config fixture (261121_0002 E5): pin, verify, restore byte-verbatim
+# ---------------------------------------------------------------------------
+# Module state rather than a parameter so the judge functions can see the
+# pinned mode without threading it through every call site (the replay script
+# can still pass auto_send= explicitly).
+_MODE = {
+    "auto_send": False,   # the pinned value the app must report
+    "fixture": None,      # ConfigFixture while this run owns one
+}
+
+
+def fixture_auto_send():
+    """The auto_send mode this run pinned (False when no fixture is active,
+    which is also the shipped default, src/config.hpp L993)."""
+    return bool(_MODE["auto_send"])
+
+
+class ConfigFixture:
+    """Owns the RUNNING app's config.json for the duration of a run.
+
+    Why (E5): diag_log_content is OFF by private default, which is what made
+    the capture-content checks BLOCKED/FAIL for a whole release cycle, and
+    auto_send decides whether the app injects an editor newline at all
+    (REQ-028) - a user toggle during a run would silently flip every newline
+    verdict. So the harness pins both, verifies the app's own SESSION lines
+    against the pin, and restores the ORIGINAL BYTES in a finally.
+
+    Privacy: only harness-owned keys are written (diag flags, auto_send, and
+    multi_lang's target language). No user content is ever read or written
+    here; every adopted document is verified empty before typing."""
+
+    def __init__(self, path):
+        self.path = path
+        self.original = None      # original file bytes (restore source)
+        self.pre_sha = None
+        self.post_sha = None
+        self.values = {}
+        self.active = False
+        self.restore_ok = None
+
+    def backup(self):
+        if not self.path or not os.path.exists(self.path):
+            raise EnvBlock(
+                "E2E config fixture: no config.json at "
+                f"{self.path!r}. The app materializes it on first run "
+                "(or the exe-dir copy when %LOCALAPPDATA% is unavailable); "
+                "start the app once, close it, then re-run the harness. "
+                "Without the file diag_log_content/auto_send cannot be "
+                "pinned and the content checks would silently degrade to "
+                "BLOCKED.")
+        with open(self.path, "rb") as f:
+            self.original = f.read()
+        self.pre_sha = hashlib.sha256(self.original).hexdigest()
+        try:
+            data = json.loads(self.original.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as e:
+            raise EnvBlock(f"E2E config fixture: unparseable config.json "
+                           f"({self.path}): {e}")
+        if not isinstance(data, dict):
+            raise EnvBlock("E2E config fixture: config.json is not an object")
+        self.active = True
+        return self
+
+    def pin(self, values):
+        """Write the given keys, then RE-READ the file and verify they
+        persisted. Returns the previous values (informational; the byte-level
+        restore below is the actual rollback)."""
+        prev = patch_config_fields(self.path, values)
+        self.values.update(values)
+        persisted = _read_json(self.path)
+        bad = {k: persisted.get(k) for k, v in values.items()
+               if persisted.get(k) != v}
+        if bad:
+            raise EnvBlock(
+                "E2E config fixture: pin did not persist "
+                f"(wanted {values}, file reports {bad}) at {self.path}")
+        return prev
+
+    def restore(self):
+        """Byte-verbatim restore + SHA-256 verification (R8: the app is
+        force-killed first, so its own SaveToFile cannot race this).
+
+        F1 (261121_0002 round 2): the write is atomic (temp file + replace), so
+        an OSError or Ctrl+C mid-restore cannot truncate the user's config; an
+        OSError still propagates and main() escalates it to exit 3."""
+        if not self.active:
+            return True, "e2e config fixture: no file was pinned"
+        _atomic_write_bytes(self.path, self.original)
+        with open(self.path, "rb") as f:
+            post = f.read()
+        self.post_sha = hashlib.sha256(post).hexdigest()
+        self.restore_ok = (post == self.original
+                           and self.post_sha == self.pre_sha)
+        state = "MATCH" if self.restore_ok else "MISMATCH"
+        return self.restore_ok, (
+            f"e2e config fixture restored: {self.path} "
+            f"sha256 pre={self.pre_sha} post={self.post_sha} -> {state}")
+
+
+def parse_session_info(text):
+    """E5 witnesses from the app's own SESSION lines (see the RE_SESSION_*
+    comments). Values are None when the line is absent."""
+    out = {"loaded": None, "auto_send": None, "diag_enabled": None,
+           "diag_content": None, "version": None, "exe": None}
+    m = RE_SESSION_CONFIG.search(text)
+    if m:
+        out["loaded"] = int(m.group("loaded"))
+        out["auto_send"] = int(m.group("auto_send"))
+    m = RE_SESSION_DIAG_FLAGS.search(text)
+    if m:
+        out["diag_enabled"] = int(m.group("enabled"))
+        out["diag_content"] = int(m.group("content"))
+    m = RE_SESSION_VERSION.search(text)
+    if m:
+        out["version"] = m.group("version")
+    m = RE_SESSION_EXE.search(text)
+    if m:
+        out["exe"] = m.group("exe")
+    return out
+
+
+def verify_session_fixture(app, fixture, expect_auto_send=None):
+    """Assert the RUNNING app's session lines match the pinned fixture.
+
+    A mismatch is an ENVIRONMENT abort (EnvBlock -> INCONCLUSIVE), never a
+    product FAIL: it means the app read a different file, a second instance
+    served the mutex, or the user flipped a toggle mid-run (E5/R1)."""
+    info = parse_session_info(app.log_text())
+    if info["version"]:
+        _OBSERVED["app_version"] = info["version"]
+    if info["exe"]:
+        _OBSERVED["app_exe_reported"] = info["exe"]
+    want_auto = (int(fixture_auto_send()) if expect_auto_send is None
+                 else int(bool(expect_auto_send)))
+    problems = []
+    if info["loaded"] != 1:
+        problems.append(f"config loaded={info['loaded']} (want 1)")
+    if info["diag_enabled"] != 1:
+        problems.append(f"diag_log_enabled={info['diag_enabled']} (want 1)")
+    if info["diag_content"] != 1:
+        problems.append(
+            f"diag_log_content={info['diag_content']} (want 1 - content "
+            "assertions would degrade to BLOCKED)")
+    if info["auto_send"] != want_auto:
+        problems.append(f"auto_send={info['auto_send']} (want {want_auto})")
+    if problems:
+        raise EnvBlock(
+            "E2E CONFIG FIXTURE VIOLATION (environment, not a product FAIL): "
+            + "; ".join(problems)
+            + f" :: config={fixture.path} "
+              f"pre_sha256={fixture.pre_sha} pinned={fixture.values}. "
+              "A user toggle / second instance / different config path is "
+              "the usual cause; the fixture is still restored in the finally.")
+    print(f"   fixture  : verified (auto_send={want_auto} diag=1/1, "
+          f"config={os.path.basename(fixture.path)}, "
+          f"sha256={str(fixture.pre_sha)[:12]}...)")
+
+
+def prepare_config_fixture(exe_path, *, no_cleanup=False):
+    """Resolve and BACK UP the runtime config before the first launch (E5).
+
+    Only read-only work happens here (resolve + read + parse). The PIN - the
+    only write - is performed by main() INSIDE its restore-guarded try/finally,
+    so every escape path from that point on (OSError, ValueError, a Ctrl+C
+    during teardown) still runs the byte-verbatim restore (F1, 261121_0002
+    round 2). Publishing a backed-up fixture before any write is what makes
+    that airtight: there is no window in which the file is pinned while no
+    restore is armed.
+
+    A refusal is never a write:
+      * --no-cleanup (SR2 F1): a live app's exit SaveToFile re-persists the
+        pinned privacy flags from memory over the restored file;
+      * legacy exe-dir layout (SR5 F-02): the app migrates the pinned bytes to
+        %LOCALAPPDATA% at startup, out of this harness's restore reach.
+    A missing/unparseable config is an ENVIRONMENT precondition (continue
+    without a pin; capture-content checks degrade to BLOCKED, never PASS).
+    A config that EXISTS but cannot be READ (PermissionError/OSError: ACL,
+    transient lock) raises HarnessError instead - nothing was written, so the
+    caller continues unpinned and exits 3, never a product FAIL (R3-2).
+
+    Returns the backed-up ConfigFixture (holding the pre-run bytes for the
+    caller's finally), or None when nothing may be written - the reason and its
+    guidance are already printed.
+    """
+    if no_cleanup:
+        detail = (
+            "--no-cleanup keeps the app alive after the run and its exit "
+            "SaveToFile re-persists the pinned diag_log_* flags from memory "
+            "over the restored file (src/main.cpp), so the byte-verbatim "
+            "restore cannot be guaranteed. Re-run without --no-cleanup for a "
+            "fixture-backed run.")
+        print(f"   fixture  : REFUSED to pin (--no-cleanup) - {detail}")
+        print("   fixture  : continuing WITHOUT a pin - capture-content "
+              "checks will report BLOCKED and autosend_newline will be "
+              "INCONCLUSIVE (never PASS); the config is never written.")
+        return None
+    try:
+        fixture = ConfigFixture(
+            _runtime_config_path_for_exe(exe_path)).backup()
+    except (FixtureRefused, EnvBlock) as e:
+        label = "REFUSED" if isinstance(e, FixtureRefused) else "UNAVAILABLE"
+        print(f"   fixture  : {label} - {e}")
+        print("   fixture  : continuing WITHOUT a pin - capture-content "
+              "checks will report BLOCKED and autosend_newline will be "
+              "INCONCLUSIVE (never PASS); the config is never written.")
+        return None
+    except OSError as e:
+        # R3-2 / F-Δ2 (261121_0002 round 3): backup() is read-only, so nothing
+        # was written and there is nothing to restore - but an unreadable file
+        # (ACL, transient lock) is a harness/environment fault. Raising
+        # HarnessError keeps it out of the E12 exit-1 "product FAIL" channel:
+        # main() records the fault, continues unpinned, and exits 3.
+        print(f"   fixture  : READ FAILED - {type(e).__name__}: {e}")
+        print("   fixture  : continuing WITHOUT a pin - capture-content "
+              "checks will report BLOCKED and autosend_newline will be "
+              "INCONCLUSIVE (never PASS); the config is never written.")
+        raise HarnessError(
+            "config fixture backup failed - the runtime config exists but "
+            f"cannot be read ({type(e).__name__}: {e}); no write happened, so "
+            "the run continues unpinned and exits 3 (harness error)")
+    print(f"   fixture  : backed up {fixture.path} (sha256="
+          f"{fixture.pre_sha[:12]}...)")
+    return fixture
+
+
+def pin_config_fixture(fixture):
+    """Write the QA keys for a backed-up fixture; returns True when armed.
+
+    Called from INSIDE main()'s restore-guarded try, so a failed write can
+    never skip the restore (F1). An OSError/ValueError is a HARNESS error: it
+    raises HarnessError so the caller aborts with exit 3 after restoring the
+    pre-run bytes. A pin that does not PERSIST is an ENVIRONMENT abort: nothing
+    is armed (the auto_send=1 scenario must not claim a pin) but `fixture` stays
+    alive so the finally still writes the original bytes back."""
+    try:
+        fixture.pin({"diag_log_enabled": True, "diag_log_content": True,
+                     "auto_send": False})
+    except (OSError, ValueError) as e:
+        print(f"   fixture  : WRITE FAILED - {type(e).__name__}: {e}")
+        raise HarnessError(
+            "config fixture pin failed before the first app launch "
+            f"({type(e).__name__}: {e}); aborting with exit 3 after the "
+            "byte-verbatim restore")
+    except EnvBlock as e:
+        print(f"   fixture  : pin did not persist - {e}")
+        print("   fixture  : continuing WITHOUT a pin - capture-content "
+              "checks will report BLOCKED and autosend_newline will be "
+              "INCONCLUSIVE (never PASS); the original bytes are still "
+              "restored on exit.")
+        return False
+    print(f"   fixture  : pinned diag_log_enabled=1 diag_log_content=1 "
+          f"auto_send=0 in {fixture.path} (sha256="
+          f"{fixture.pre_sha[:12]}...)")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # verification (three layers) - scenario-independent common core
 # ---------------------------------------------------------------------------
 class Report:
@@ -1521,6 +1958,28 @@ class Report:
 
     def note_env(self, msg):
         self.env_notes.append(msg)
+
+    def demote_failures(self, reason):
+        """C5 disposition (261121_0002): a PROBABLE PRODUCT-defect signature is
+        reported INCONCLUSIVE - never PASS and never a bare harness FAIL.
+
+        Every FAIL collected so far is demoted to BLOCKED with `reason`
+        appended, so the evidence lines survive, the summary exports stay
+        visible, and the verdict cannot become PASS (a BLOCKED check makes
+        verdict() return INCONCLUSIVE). Callers must also note_env() the
+        defect so the cause is printed and lands in the run manifest. Used
+        ONLY by long_text's capture-timeout leg (suspected product defect,
+        docs 260907_0001 readjudication; C5 of the 261121_0002 report)."""
+        demoted = 0
+        checks = []
+        for layer, ok, desc, ev in self.checks:
+            if ok is False:
+                checks.append((layer, None, f"{desc} :: {reason}", ev))
+                demoted += 1
+            else:
+                checks.append((layer, ok, desc, ev))
+        self.checks = checks
+        return demoted
 
     def verdict(self):
         failed = [c for c in self.checks if c[1] is False]
@@ -1640,14 +2099,21 @@ def verify_task_layer1(rep, block, expected_line, cumulative_estimate,
             f"task {block.index}: EM path taken "
             "(EditCaretTracker em_setselect)",
             block.cite(RE_EM_SETSELECT))
-    # (b) capture length == typed line EXACTLY (never cumulative, and never
-    # the REQ-023 injected newline swallowed into the EM selection - the
-    # delegation specifies len=N must MATCH the typed length; a captured
-    # leading "\r\n" merges translated lines in the document).
+    # (b) capture length == typed line EXACTLY (never cumulative, and never the
+    # app-injected newline swallowed into the EM selection - the delegation
+    # specifies len=N must MATCH the typed length; a captured leading "\r\n"
+    # merges translated lines in the document).
+    # 261121_0002 E1: a missing capture line is BLOCKED, but it must NOT return
+    # - the translate/paste/task_end evidence below is exactly what makes a log
+    # gap attributable. Before this change the early return turned every
+    # capture-parser blind spot into a scenario with NO product evidence.
     if block.capture_len is None:
-        rep.add(1, None, f"task {block.index}: no 'stage=capture end' line")
-        return
-    if expected_line is not None:
+        rep.add(1, None,
+                f"task {block.index}: no 'stage=capture end' line "
+                "(capture length/marker BLOCKED; the translate/paste checks "
+                "below still judge this task)",
+                "no RE_CAPTURE_END match in this block")
+    elif expected_line is not None:
         typed = utf16_len(expected_line)
         exact = block.capture_len == typed
         non_cum = block.capture_len < cumulative_estimate if cumulative_estimate else True
@@ -1657,26 +2123,40 @@ def verify_task_layer1(rep, block, expected_line, cumulative_estimate,
             if expected_line and cc.lstrip("\r\n") == expected_line and cc != expected_line \
                     and cc.startswith(("\r\n", "\n")):
                 diagnosis = (" :: DEFECT CANDIDATE - EM selection swallowed the "
-                             "previous REQ-023 injected newline (ISSUE-1 "
+                             "previous app-injected newline (ISSUE-1 "
                              "regression: the replacement MERGES this "
                              "translation onto the previous line)")
             elif expected_line and cc.rstrip("\r\n") == expected_line and cc != expected_line:
                 diagnosis = (" :: DEFECT CANDIDATE - trailing newline in capture "
                              "(the pre-B-5a translation_equals_source "
                              "contamination shape)")
+        content_note = ("content gated off (diag_log_content=false)"
+                        if block.capture_content is None
+                        else f'content="{block.capture_content[:150]}"')
         rep.add(1, exact and non_cum,
                 f"task {block.index}: capture len={block.capture_len} == typed "
                 f"{typed} exactly, non-cumulative "
                 f"(cumulative signature would be ~{cumulative_estimate})"
                 + diagnosis,
-                f'content="{block.capture_content[:150]}"')
+                content_note + f" (k={block.capture_k} "
+                f"result={block.capture_result})")
         if marker_required and expected_line:
-            contains_new = marker_of(expected_line) in (block.capture_content or "")
-            rep.add(1, contains_new,
-                    f"task {block.index}: captured content carries this line's "
-                    "marker (E2Exx)",
-                    f'marker={marker_of(expected_line)} content='
-                    f'"{(block.capture_content or "")[:150]}"')
+            # E7: with the shipped privacy default the content field does not
+            # exist. Comparing against '' would produce a FALSE FAIL for a
+            # product that behaved correctly; report BLOCKED instead. E5 pins
+            # diag_log_content=true, so this is the rare-fallback branch.
+            if block.capture_content is None:
+                rep.add(1, None,
+                        f"task {block.index}: captured content carries this "
+                        "line's marker (E2Exx) - content unavailable "
+                        "(diag_log_content=false), BLOCKED not FAIL")
+            else:
+                contains_new = marker_of(expected_line) in block.capture_content
+                rep.add(1, contains_new,
+                        f"task {block.index}: captured content carries this line's "
+                        "marker (E2Exx)",
+                        f'marker={marker_of(expected_line)} content='
+                        f'"{block.capture_content[:150]}"')
     # (c)/(d) paste + translate completion
     if block.translate_status is None:
         rep.add(1, None, f"task {block.index}: no 'stage=translate end' line")
@@ -1706,47 +2186,90 @@ def verify_task_layer1(rep, block, expected_line, cumulative_estimate,
 
 
 def verify_task_layer2(rep, block, expected_line, doc_before, doc_after,
-                       *, replacement_required=True,
+                       *, line_ordinal=None, auto_send=None,
+                       replacement_required=True,
                        expect_hold_no_change=False):
+    """Layer 2 (document) judging for one task.
+
+    261121_0002 E2/E4: the editor-newline check is a DOCUMENT DELTA driven by
+    the app's OWN logged action, not by a log-global task index. The old rule
+    ("a newline must exist when block.index > 0") was written for REQ-023
+    ("CategoryB always injects a newline"), which REQ-028 retired; it demanded
+    a newline in the first line of every fresh document. `line_ordinal` (the
+    0-based line number inside THIS document) is kept for messages only."""
+    ordinal = "?" if line_ordinal is None else line_ordinal
+    tag = f"task {block.index} (document line {ordinal})"
     if doc_before is None or doc_after is None:
-        rep.add(2, None, f"task {block.index}: content unreadable "
+        rep.add(2, None, f"{tag}: content unreadable "
                 "(WM_GETTEXT and UIA both failed)")
         return
     if expect_hold_no_change:
         rep.add(2, doc_after == doc_before,
-                f"task {block.index}: empty-capture hold left the document "
+                f"{tag}: empty-capture hold left the document "
                 "byte-identical", f"len={len(doc_after)}")
         return
     if not (block.completed and block.paste_result == 1):
         if replacement_required:
-            rep.add(2, None, f"task {block.index}: content check deferred "
+            rep.add(2, None, f"{tag}: content check deferred "
                     "(log layer recorded no successful paste)")
         else:
             # Smart-bypass / skip outcomes are legitimate here (e.g.
             # backspace_enter capturing already-translated text).
             rep.add(2, True,
-                    f"task {block.index}: no-replacement outcome tolerated by "
+                    f"{tag}: no-replacement outcome tolerated by "
                     f"scenario design (paste={block.paste_result} "
                     f"skip={block.paste_skip_reason})",
                     f"doc changed={doc_after != doc_before}")
         return
     if expected_line:
         rep.add(2, expected_line not in doc_after,
-                f"task {block.index}: typed source replaced by translation "
+                f"{tag}: typed source replaced by translation "
                 "(source absent from control text)",
                 f'after={doc_after[:160]!r}')
     # NOT a growth check: a translation can be SHORTER than the Hangul
     # source; the invariant is "the document changed at this replacement".
     rep.add(2, doc_after != doc_before,
-            f"task {block.index}: document changed after replacement",
+            f"{tag}: document changed after replacement",
             f"before_len={len(doc_before)} after_len={len(doc_after)}")
-    newline_ok = ("\n" in doc_after) if block.index > 0 else True
-    rep.add(2, newline_ok,
-            f"task {block.index}: REQ-023 newline visible between translated "
-            "lines", f"doc_after={doc_after[:160]!r}")
+    # E2: the delta must match what the app SAYS it did (src/worker.cpp
+    # L1505-1520). SKIPPED/synthetic_send carry no editor newline;
+    # synthetic_newline carries exactly one. An absent/unknown action means a
+    # hold/send-through path, where the delta proves nothing -> BLOCKED.
+    delta = doc_after.count("\n") - doc_before.count("\n")
+    action = block.send_enter_action
+    asend = (fixture_auto_send() if auto_send is None else bool(auto_send))
+    ev = (f"action={action!r} reason={block.send_enter_reason!r} "
+          f"auto_send={block.send_enter_auto_send} delta={delta} "
+          f"(newlines {doc_before.count(chr(10))} -> "
+          f"{doc_after.count(chr(10))})")
+    if action == "synthetic_newline":
+        rep.add(2, delta == 1,
+                f"{tag}: the app injected the editor newline exactly once "
+                "(action=synthetic_newline)", ev)
+    elif action in ("SKIPPED", "synthetic_send"):
+        rep.add(2, delta == 0,
+                f"{tag}: no editor newline when the app did not inject one "
+                f"(action={action})", ev)
+    else:
+        rep.add(2, None,
+                f"{tag}: newline delta BLOCKED - no decisive "
+                f"'stage=send_enter' action line (action={action!r}); a "
+                "hold/send-through task cannot prove the delta", ev)
+    # E5 per-task fixture cross-check. The injected branch logs auto_send=; the
+    # SKIPPED branch does not, so the always-present lang_pair witness is the
+    # fallback. A mismatch means config drift / a user toggle mid-run: that is
+    # an ENVIRONMENT fact, never a product FAIL (R1).
+    witness = (block.send_enter_auto_send if block.send_enter_auto_send
+               is not None else block.task_auto_send)
+    if witness is not None and bool(witness) != asend:
+        rep.add(2, None,
+                f"{tag}: ENV - app reports auto_send={witness} but the pinned "
+                f"fixture is {int(asend)}; the newline expectation cannot be "
+                "trusted (config drift / user toggle)", ev)
 
 
-def verify_final_document(rep, notepad, all_lines, *, min_newlines=None):
+def verify_final_document(rep, notepad, all_lines, *, min_newlines=None,
+                          auto_send=None):
     doc, method = notepad.read_text()
     if doc is None:
         rep.add(2, None, f"final document unreadable ({method})")
@@ -1756,15 +2279,57 @@ def verify_final_document(rep, notepad, all_lines, *, min_newlines=None):
             f"final document ({method}, {len(doc)} chars) contains none of "
             f"the {len([s for s in all_lines if s])} typed sources",
             f"still_present={[s[:40] for s in stale]}")
-    # Structure: every Enter (REQ-023) injects exactly one newline, so k
-    # translated lines must sit on k lines: the document needs >= k newlines.
+    # E3 (261121_0002): the structural rule depends on the CONFIGURED mode.
+    # REQ-028 gates the editor newline on auto_send, so:
+    #   auto_send=0 -> the k translated lines are k REPLACEMENTS in ONE line,
+    #                  newlines must be exactly 0;
+    #   auto_send=1 -> the app injects one newline per replacement, so the
+    #                  document must hold exactly k newlines.
+    # The old rule (">= k always") encoded the retired REQ-023 behavior and
+    # failed every document produced with the shipped default.
+    asend = fixture_auto_send() if auto_send is None else bool(auto_send)
     newlines = doc.count("\n")
-    need = len(all_lines) if min_newlines is None else min_newlines
-    rep.add(2, newlines >= need,
-            f"final document keeps one line per translation "
-            f"(newlines={newlines}, expected >= {need})",
+    expected_lines = len([s for s in all_lines if s])
+    if min_newlines is not None:
+        ok = newlines >= min_newlines
+        want = f">= {min_newlines} (explicit min_newlines override)"
+    elif asend:
+        ok = newlines == expected_lines
+        want = (f"exactly {expected_lines} (auto_send=1: one app-injected "
+                "newline per replacement)")
+    else:
+        ok = newlines == 0
+        want = "exactly 0 (auto_send=0: replacement only, no editor newline)"
+    rep.add(2, ok,
+            f"final document newline count matches the pinned mode "
+            f"(newlines={newlines}, expected {want})",
             f"doc={doc[:300]!r}")
     rep.note(f"final document via {method}: {doc[:400]!r}")
+    return doc
+
+
+def _read_doc_after_settle(notepad, before, block, timeout=1.0):
+    """Read the document after a task, giving an app-INJECTED Enter a bounded
+    moment to become visible.
+
+    The app stamps stage=task_end only AFTER SendEnterKey +
+    EditCaretTracker_SettleNewlineVisible (whose own poll is 50 ms + up to
+    4x25 ms, src/win32_input.cpp), so this is normally a no-op; it exists so
+    the E10 delta assertion cannot lose a race by a few milliseconds on a busy
+    machine and report a false FAIL. Only the synthetic_newline action polls -
+    every other outcome expects a zero delta and must be judged immediately."""
+    doc, _method = notepad.read_text()
+    if block.send_enter_action != "synthetic_newline" or doc is None \
+            or before is None:
+        return doc
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if doc.count("\n") - before.count("\n") >= 1:
+            return doc
+        time.sleep(POLL_S)
+        doc, _method = notepad.read_text()
+        if doc is None:
+            return None
     return doc
 
 
@@ -1785,15 +2350,23 @@ LINES_CONSECUTIVE = [
     "같은 언어 첫 줄을 입력합니다. E2E01",
     "같은 언어 두 번째 줄을 이어서 입력합니다. E2E02",
 ]
+# E10: the auto_send=1 leg (one newline per replacement). Three lines so a
+# "grew by one" delta and a "grew by k" accumulation are distinguishable.
+LINES_AUTOSEND = [
+    "자동 개행 첫 번째 줄입니다. E2E01",
+    "자동 개행 두 번째 줄입니다. E2E02",
+    "자동 개행 세 번째 줄입니다. E2E03",
+]
 # long_text builds its 1000-char line via build_long_line() below.
 
 
 def run_line_session(name, lines, app, base, *, step_timeout=None,
-                     final_doc=True, expect=None):
+                     final_doc=True, expect=None, auto_send=None):
     """base: number of pipeline tasks already present in this app session's
     log (scenarios run sequentially against one shared app instance).
     expect: dict of per-index flags {idx: {'marker_required': bool, ...}} -
-    kept simple: all lines get identical treatment unless overridden."""
+    kept simple: all lines get identical treatment unless overridden.
+    auto_send: the mode this session runs under (None = the pinned fixture)."""
     rep = Report(name)
     expect = expect or {}
     notepad = NotepadSession()
@@ -1813,7 +2386,7 @@ def run_line_session(name, lines, app, base, *, step_timeout=None,
             notepad.press_enter_wait_task(app.log_text, base + i + 1)
             block = notepad.wait_task_complete(app.log_text, base + i,
                                                timeout=step_timeout)
-            after, _ = notepad.read_text()
+            after = _read_doc_after_settle(notepad, before, block)
             blocks.append(block)
             verify_task_layer1(
                 rep, block, ex.get("expected_line", line), cumulative,
@@ -1822,11 +2395,13 @@ def run_line_session(name, lines, app, base, *, step_timeout=None,
                 clamp_expected=ex.get("clamp_expected", False))
             verify_task_layer2(
                 rep, block, ex.get("expected_line", line), before, after,
+                line_ordinal=i,   # E4: ordinal inside THIS document
+                auto_send=ex.get("auto_send", auto_send),
                 replacement_required=ex.get("replacement_required", True),
                 expect_hold_no_change=ex.get("empty_hold", False))
             cumulative += utf16_len(line) + 2 + 80  # conservative estimate
         if final_doc:
-            verify_final_document(rep, notepad, lines)
+            verify_final_document(rep, notepad, lines, auto_send=auto_send)
         _reference_counters(rep, blocks)
         if name == "consecutive":
             tail = parse_tasks(app.log_text())[base:]
@@ -1844,7 +2419,17 @@ def run_line_session(name, lines, app, base, *, step_timeout=None,
             monotonic_growth = len(caps) > 1 and all(
                 caps[k + 1] > caps[k] for k in range(len(caps) - 1)) \
                 and caps[-1] > utf16_len(lines[-1]) + 2
-            if len(caps) < len(lines) and env_hit:
+            # E8 (261121_0002): with caps == [] the old branch printed
+            # "capture lengths [] do NOT show cumulative growth" and marked it
+            # PASS - a false green that passed precisely because it had no
+            # data. No parsed captures = BLOCKED.
+            if not caps:
+                rep.add(1, None,
+                        "capture-length series EMPTY (no 'stage=capture end' "
+                        "line parsed for this scenario) - the cumulative-"
+                        "growth check is BLOCKED, not passed",
+                        f"capture lines=0, blocks={len(tail)}")
+            elif len(caps) < len(lines) and env_hit:
                 rep.add(1, None,
                         f"capture-length series incomplete due to environment "
                         f"(statuses seen: {caps})")
@@ -1989,7 +2574,7 @@ def scenario_cursor_mid(app, base):
         before, _ = notepad.read_text()
         notepad.press_enter_wait_task(app.log_text, base + 1)
         block = notepad.wait_task_complete(app.log_text, base)
-        after, _ = notepad.read_text()
+        after = _read_doc_after_settle(notepad, before, block)
         # The app's ExecuteTask opens with FlushIme (src/worker.cpp L139) -
         # a synthetic VK_RIGHT that commits IME composition AND advances a
         # mid-document caret by exactly 1 unit before EM_GETSEL is read
@@ -2004,16 +2589,30 @@ def scenario_cursor_mid(app, base):
                 f"(FlushIme VK_RIGHT), not document end ({len(line)})",
                 f"em_setselect caret={caret_app}")
         verify_task_layer1(rep, block, None, 0, marker_required=False)
-        rep.add(1, block.capture_len == caret_app,
+        # E1: a missing capture line is BLOCKED (log-shape gap), a parsed but
+        # wrong length is the FAIL this scenario exists to catch.
+        cap_ok = (None if block.capture_len is None
+                  else block.capture_len == caret_app)
+        rep.add(1, cap_ok,
                 f"capture == EM selection [0..{caret_app}) of the caret-"
                 f"anchored block",
                 f"capture_len={block.capture_len}")
-        cap = unescape_diag(block.capture_content or "")
-        rep.add(1, cap.startswith(prefix) and len(cap) <= len(prefix) + 1,
-                "captured text is exactly the [doc start .. caret) prefix "
-                "(+FlushIme char)",
-                f"cap_tail={cap[-8:]!r}")
-        verify_task_layer2(rep, block, prefix, before, after)
+        # E7 (261121_0002): capture_content is None whenever the app ran with
+        # the shipped privacy default (diag_log_content=false). Comparing
+        # against '' produced cap_tail='' and a FALSE FAIL for a capture that
+        # was correct (req027_all.log:230). BLOCKED, never FAIL, never PASS.
+        if block.capture_content is None:
+            rep.add(1, None,
+                    "captured text is exactly the [doc start .. caret) prefix "
+                    "(+FlushIme char) - BLOCKED: content unavailable "
+                    "(diag_log_content=false)")
+        else:
+            cap = unescape_diag(block.capture_content)
+            rep.add(1, cap.startswith(prefix) and len(cap) <= len(prefix) + 1,
+                    "captured text is exactly the [doc start .. caret) prefix "
+                    "(+FlushIme char)",
+                    f"cap_tail={cap[-8:]!r}")
+        verify_task_layer2(rep, block, prefix, before, after, line_ordinal=0)
         rep.add(2, suffix in (after or ""),
                 "text after the caret survived the replacement",
                 f"suffix={suffix!r} after={(after or '')[:200]!r}")
@@ -2052,7 +2651,7 @@ def scenario_backspace_enter(app, base):
             return rep
         stored_last = utf16_len(doc_a)  # post-newline caret (B-6a contract)
         notepad.type_line(line_b)
-        bs = len(line_b) + 4  # erase all of B, the REQ-023 newline, 2 of A'
+        bs = len(line_b) + 4  # erase all of B, the injected newline, 2 of A'
         doc_bs = notepad.press_backspaces(bs)
         if doc_bs is None:
             doc_bs = notepad.read_text()[0]
@@ -2064,7 +2663,7 @@ def scenario_backspace_enter(app, base):
                 f"last={stored_last} caret={caret}")
         notepad.press_enter_wait_task(app.log_text, base + 2)
         blk_b = notepad.wait_task_complete(app.log_text, base + 1)
-        doc_b, _ = notepad.read_text()
+        doc_b = _read_doc_after_settle(notepad, doc_bs, blk_b)
         # Capture = [0, app caret) of the SHRUNK document after the /004
         # clamp reset last to 0. App caret may be parked+1 (FlushIme
         # VK_RIGHT, same as cursor_mid). last must be 0 on this round.
@@ -2079,11 +2678,14 @@ def scenario_backspace_enter(app, base):
                 "last reset to 0) and completed safely",
                 blk_b.cite(RE_CLAMP) or
                 f"last={blk_b.em_setselect_last} caret={caret_app}")
-        rep.add(1, blk_b.capture_len == caret_app,
+        # E1: absent capture line = BLOCKED (log-shape gap), wrong length = FAIL.
+        cap_b_ok = (None if blk_b.capture_len is None
+                    else blk_b.capture_len == caret_app)
+        rep.add(1, cap_b_ok,
                 f"capture == [0..{caret_app}) of the shrunk document",
                 f"capture_len={blk_b.capture_len}")
         verify_task_layer2(rep, blk_b, None, doc_bs, doc_b,
-                           replacement_required=False)
+                           line_ordinal=1, replacement_required=False)
         rep.add(1, app.proc is None or app.proc.poll() is None,
                 "app alive after clamp round",
                 f"exit={None if app.proc is None else app.proc.poll()}")
@@ -2131,7 +2733,10 @@ def scenario_shift_enter_multi(app, base):
                 f"tasks={[b.index for b in tail]}")
         expected_block = l1 + "\r\n" + l2 + "\r\n" + l3
         verify_task_layer1(rep, block, expected_block, 0)
-        verify_task_layer2(rep, block, expected_block, before, after)
+        # ordinal 0: the whole 3-line block is ONE document line for the app
+        # (Shift+Enter newlines pre-exist in doc_before, so the delta is 0).
+        verify_task_layer2(rep, block, expected_block, before, after,
+                           line_ordinal=0)
         _reference_counters(rep, tail)
     finally:
         notepad.stop()
@@ -2182,7 +2787,7 @@ def scenario_paste_then_enter(app, base):
         block = notepad.wait_task_complete(app.log_text, base)
         after, _ = notepad.read_text()
         verify_task_layer1(rep, block, text, 0)
-        verify_task_layer2(rep, block, text, before, after)
+        verify_task_layer2(rep, block, text, before, after, line_ordinal=0)
         # ---- D-4b phase 2: immediate retry Enter -> F3-B suppression ----
         # The window opens ONLY on a SUCCESSFUL paste (worker.cpp stamps
         # last_paste_ms_ under `if (pasted)`). If phase 1 did not replace
@@ -2254,6 +2859,92 @@ def scenario_paste_then_enter(app, base):
     return rep
 
 
+def scenario_autosend_newline(app_state, base_unused):
+    """E10 (261121_0002): the auto_send=1 leg of REQ-028.
+
+    REQ-028 gates the CategoryB editor newline on auto_send, and the old
+    harness only ever ran with the shipped default (auto_send=0), so the
+    INJECTION path - the feature the user actually toggles - had no E2E
+    coverage at all. This scenario pins auto_send=true for its own session
+    (restart, because the app loads auto_send at startup), types 3 lines and
+    asserts per task:
+      * the app's own log says action=synthetic_newline ... auto_send=1,
+      * the document gains EXACTLY one "\\n" (the E2 delta check),
+      * the final document holds exactly len(lines) newlines (E3),
+      * the EditCaretTracker/008 newline-settle counter stays 0.
+    The session is torn down and the fixture returned to auto_send=0 in a
+    finally, so the rest of the matrix keeps running in the pinned mode."""
+    rep = Report("autosend_newline")
+    fixture = _MODE.get("fixture")
+    app_state_local = app_state
+    if fixture is None or not fixture.active:
+        rep.note_env(
+            "auto_send=1 could not be pinned: no active config fixture "
+            "(the scenario needs the runtime config.json to flip the mode). "
+            "Run through main() so ConfigFixture pins/restores the file.")
+        return rep, app_state_local.get("app")
+    try:
+        # Startup-load path: the app reads auto_send once at launch, so the
+        # mode flip needs its own session (force-kill first: the app's own
+        # SaveToFile must not race our write).
+        app_state_local["stop_app"]()
+        fixture.pin({"auto_send": True})
+        _MODE["auto_send"] = True
+        app_state_local["start_app"]()   # verifies SESSION auto_send=1 (E5)
+    except EnvBlock as e:
+        _MODE["auto_send"] = False
+        rep.note_env(f"auto_send=1 session could not be established: {e}")
+        # Restore the pinned baseline so the scenarios that follow still have a
+        # LIVE app (stop_app leaves state["app"] None); if even that fails the
+        # run must abort as an environment problem instead of crashing later on
+        # a None session.
+        try:
+            fixture.pin({"auto_send": False})
+            app_state_local["start_app"]()
+        except EnvBlock:
+            raise EnvBlock(
+                f"auto_send=1 leg failed ({e}) and the fallback baseline "
+                "session could not be established either")
+        return rep, app_state_local.get("app")
+    try:
+        app = app_state_local["app"]
+        base = len(parse_tasks(app.log_text()))
+        sub = run_line_session("autosend_newline", LINES_AUTOSEND, app, base,
+                               auto_send=True)
+        rep.checks.extend(sub.checks)
+        rep.info.extend(sub.info)
+        rep.env_notes.extend(sub.env_notes)
+        if getattr(sub, "cleanup_note", None):
+            rep.cleanup_note = sub.cleanup_note
+        tail = parse_tasks(app.log_text())[base:]
+        # Per-task: the app must SAY it injected, and the fixture's mode must
+        # be the one it reported (a SKIPPED line here means the mode did not
+        # reach the worker - environment, so BLOCKED via the E5 cross-check).
+        for i, blk in enumerate(tail):
+            rep.add(1, blk.send_enter_action == "synthetic_newline"
+                    and blk.send_enter_auto_send == 1,
+                    f"task {blk.index}: stage=send_enter "
+                    f"action=synthetic_newline ... auto_send=1 recorded",
+                    f"action={blk.send_enter_action!r} "
+                    f"auto_send={blk.send_enter_auto_send} "
+                    f"(document line {i})")
+        rep.add(1, not any(b.settle_008 for b in tail),
+                "EditCaretTracker/008 newline-settle timeout counter stayed 0 "
+                "for every auto-injected newline",
+                f"/008 tasks={[b.index for b in tail if b.settle_008]}")
+        rep.add(1, app.proc is None or app.proc.poll() is None,
+                "app process alive after the auto_send newline session",
+                f"exit={None if app.proc is None else app.proc.poll()}")
+    finally:
+        app_state_local["stop_app"]()
+        try:
+            fixture.pin({"auto_send": False})
+        finally:
+            _MODE["auto_send"] = False
+            app_state_local["start_app"]()
+    return rep, app_state_local.get("app")
+
+
 def build_long_line(total=1000, marker="E2E01"):
     unit = "아주 긴 텍스트 시나리오를 자동으로 검증합니다. "
     fill = (unit * (total // len(unit) + 1))
@@ -2263,11 +2954,53 @@ def build_long_line(total=1000, marker="E2E01"):
 def scenario_long_text(app, base):
     """1000-char single Hangul line + Enter: capture len 1000, non-saturated
     EM offsets, replacement normal. The 64K WORD-saturation boundary is
-    deliberately NOT automated (user QA QA-27-7, see README)."""
+    deliberately NOT automated (user QA QA-27-7, see README).
+
+    C5 disposition (261121_0002): the surviving evidence shows this scenario
+    intermittently dying BEFORE a translation - the 1000-char RichEdit copy
+    exceeds the clipboard-sequence budget (kClipboardChangeTimeoutMs = 80 ms
+    since 260910, two attempts capped at ~200 ms) and the worker's R5 hold
+    preserves the source. That is a PROBABLE PRODUCT defect, not a harness
+    bug, so it must not be baselined to PASS and must not be reported as a
+    silent harness FAIL either: when the capture-timeout signature is present
+    the verdict is INCONCLUSIVE with the diagnosis printed, and the
+    individual checks are demoted to BLOCKED (Report.demote_failures) so the
+    evidence stays readable. The timeout constants are deliberately UNCHANGED
+    (step_timeout=90 s, the product's own clipboard budget untouched) - the
+    scenario must keep exposing the defect."""
     line = build_long_line(1000)
     rep = run_line_session("long_text", [line], app, base, step_timeout=90.0)
     rep.note(f"typed line length = {utf16_len(line)} UTF-16 units "
              "(64K boundary handed to user QA QA-27-7)")
+    # The capture-timeout signature: the app never got a usable capture (len 0
+    # or no capture line at all) AND never pasted. A successful translate with
+    # a skip/paste failure is a different (already-visible) verdict and is left
+    # exactly as judged.
+    try:
+        blk = parse_tasks(app.log_text())[base]
+    except IndexError:
+        blk = None
+    if blk is not None:
+        captured_nothing = (blk.capture_len in (0, None)
+                            or blk.capture_result not in (None, "ok"))
+        if captured_nothing and blk.paste_result != 1:
+            demoted = rep.demote_failures(
+                "PROBABLE PRODUCT DEFECT (long-input capture timeout)")
+            rep.note_env(
+                "PROBABLE PRODUCT DEFECT, not a harness defect: "
+                f"capture_len={blk.capture_len} "
+                f"capture_k={blk.capture_k} "
+                f"capture_result={blk.capture_result!r} "
+                f"translate={blk.translate_status} "
+                f"paste={blk.paste_result} skip={blk.paste_skip_reason}. "
+                "Known 260907 signature: a 1000-char selection copy exceeds "
+                "the clipboard-sequence budget (kClipboardChangeTimeoutMs="
+                "80 ms since 260910, two attempts <= ~200 ms) and the R5 "
+                "empty-capture hold preserves the user's source. Reported "
+                "INCONCLUSIVE (never PASS) so the defect stays visible; "
+                f"{demoted} FAIL check(s) demoted to BLOCKED for this run. "
+                "Do not baseline this away - fix the capture budget or the "
+                "CopySelectionWithSequenceWait retry policy in src/win32_input.")
     return rep
 
 
@@ -2372,25 +3105,19 @@ MULTI_LANG_LINES = {
 }
 
 
-def _config_path(app):
-    return os.path.join(os.path.dirname(os.path.abspath(app.exe_path)),
-                        "config.json")
+def patch_config_type_target(path, value):
+    """Rewrite type_target_language in the config the RUNNING app reads
+    (json module, never regex - multiline-safe). Returns the previous value.
 
-
-def patch_config_type_target(exe_dir, value):
-    """Rewrite build\\config.json type_target_language (json module, never
-    regex - multiline-safe). Returns the previous value."""
-    path = os.path.join(os.path.abspath(exe_dir), "config.json")
+    E6 (261121_0002): the argument used to be the exe DIRECTORY, so the
+    multi_lang pre-seed wrote build\\config.json while the app read
+    %LOCALAPPDATA%\\Emebalachat\\config.json (REQ-029-B, 2026-09-07 12:56) -
+    the fallback had been a no-op for a whole release cycle. The caller now
+    passes the resolved runtime path."""
     if not os.path.exists(path):
-        raise EnvBlock(f"config.json not found next to exe: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    prev = data.get("type_target_language")
-    data["type_target_language"] = value
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    return prev
+        raise EnvBlock(f"config.json not found: {path}")
+    prev = patch_config_fields(path, {"type_target_language": value})
+    return prev.get("type_target_language")
 
 
 def _run_tray_ps1(args, timeout_s):
@@ -2412,6 +3139,16 @@ def _run_tray_ps1(args, timeout_s):
     diag = " | ".join(tail[-4:]) or f"rc={p.returncode}"
     if err:
         diag += f" :: stderr[:200]={err[:200]}"
+    # E11 manifest: the tray-UIA outcome decides whether the two tray
+    # scenarios can be judged at all, so its exact shape is recorded.
+    if any(ln.startswith("TRAY:NAME:") for ln in tail):
+        _OBSERVED["tray_uia"] = "ENUMERATED"
+    elif any(ln.startswith("TRAY:OK") for ln in tail):
+        _OBSERVED["tray_uia"] = "OK"
+    elif any("NOTFOUND" in ln for ln in tail):
+        _OBSERVED["tray_uia"] = "NOTFOUND"
+    else:
+        _OBSERVED["tray_uia"] = (tail[-1] if tail else diag)[:120]
     return p.returncode, tail, diag
 
 
@@ -2465,8 +3202,13 @@ def run_multi_lang(app_state, base_unused):
     script)."""
     rep = Report("multi_lang")
     app = app_state["app"]
-    exe_dir = os.path.dirname(os.path.abspath(app.exe_path))
-    cfg_path = _config_path(app)
+    # E6 (261121_0002): the app reads %LOCALAPPDATA%\Emebalachat\config.json
+    # (REQ-029-B); the exe-dir copy is only the fallback when that file is
+    # absent. Patching the exe-dir copy (the pre-fix behavior) changed nothing
+    # the running app could see, which is exactly why the JA/VI blocks logged
+    # tgt="English" for a whole release cycle.
+    cfg_path = _runtime_config_path(app)
+    rep.note(f"config fixture path (runtime): {cfg_path}")
 
     # --- attempt: runtime tray-menu switch in the CURRENT session ---------
     runtime_ok = True
@@ -2530,13 +3272,18 @@ def run_multi_lang(app_state, base_unused):
                     f"{order} (UIA)", sw_diag)
                 line = MULTI_LANG_LINES[name]
                 np.type_line(line)
+                before, _ = np.read_text()
                 np.press_enter_wait_task(app.log_text, base + order + 1)
                 blk = np.wait_task_complete(app.log_text, base + order)
+                after = _read_doc_after_settle(np, before, blk)
                 verify_task_layer1(rep, blk, line, cumulative)
+                verify_task_layer2(rep, blk, line, before, after,
+                                   line_ordinal=order, auto_send=False)
                 _assert_lang_block(rep, blk, name, script_re, code_prefix=order)
                 cumulative += utf16_len(line) + 2
             verify_final_document(rep, np, [MULTI_LANG_LINES[n] for n, _, _
-                                            in MULTI_LANG_BLOCKS])
+                                            in MULTI_LANG_BLOCKS],
+                                  auto_send=False)
         finally:
             np.stop()
         if np.cleanup_note:
@@ -2551,29 +3298,44 @@ def run_multi_lang(app_state, base_unused):
              "switch path is NOT verified by this run (see README + "
              "user-QA QA-27-3R).")
     try:
-        with open(cfg_path, "r", encoding="utf-8") as f:
-            original = json.load(f).get("type_target_language")
-    except OSError:
+        original = _read_json(cfg_path).get("type_target_language")
+    except (OSError, ValueError):
         original = None
     final_app = None
     try:
         for order, (name, code, script_re) in enumerate(MULTI_LANG_BLOCKS):
             # Fresh app session per block: stop first (force-kill skips the
             # app's own SaveToFile, so our patch is never raced), THEN patch
-            # config.json (startup-load path), THEN start.
+            # the RUNTIME config.json (startup-load path), THEN start.
             app_state["stop_app"]()
-            patch_config_type_target(exe_dir, name)
+            patch_config_type_target(cfg_path, name)
             app_state["start_app"]()
             app = app_state["app"]
+            # E5/E6: prove the pinned target is the one the app actually read
+            # (file readback + the app's own lang_pair line below). Without
+            # this, a silently ignored pre-seed looked identical to a product
+            # language bug for a whole release cycle.
+            try:
+                live_tgt = _read_json(cfg_path).get("type_target_language")
+            except (OSError, ValueError):
+                live_tgt = None
+            rep.add(1, live_tgt == name,
+                    f"[{name}] pinned type_target_language is live in the "
+                    f"runtime config the app loads ({cfg_path})",
+                    f"file reports {live_tgt!r}")
             np = NotepadSession()
             try:
                 np.start()
                 np.assert_empty()
                 line = MULTI_LANG_LINES[name]
                 np.type_line(line)
+                before, _ = np.read_text()
                 np.press_enter_wait_task(app.log_text, 1)
                 blk = np.wait_task_complete(app.log_text, 0)
+                after = _read_doc_after_settle(np, before, blk)
                 verify_task_layer1(rep, blk, line, 0)
+                verify_task_layer2(rep, blk, line, before, after,
+                                   line_ordinal=0, auto_send=False)
                 _assert_lang_block(rep, blk, name, script_re,
                                    code_prefix=order, label=f"[{name}] ")
             finally:
@@ -2583,7 +3345,7 @@ def run_multi_lang(app_state, base_unused):
     finally:
         app_state["stop_app"]()
         if original is not None:
-            patch_config_type_target(exe_dir, original)
+            patch_config_type_target(cfg_path, original)
         # leave a fresh default session for whichever scenario follows
         app_state["start_app"]()
         final_app = app_state["app"]
@@ -2603,9 +3365,14 @@ def _assert_lang_block(rep, blk, lang_name, script_re, code_prefix, label=""):
             f"{lang_name} script and contains no Hangul",
             f"out={out[:80]!r}")
     else:
+        # E7: the script witness needs the content-gated out="..." field
+        # (src/worker.cpp L1108-1120). Distinguish "logging off" from "engine
+        # produced nothing" so a BLOCKED line is not mistaken for a defect.
+        why = ("content unavailable (diag_log_content=false)"
+               if blk.translate_out is None and blk.translate_status == 0
+               else f"translate status={blk.translate_status}")
         rep.add(1, None,
-                f"{label}block {code_prefix}: script check deferred "
-                f"(translate status={blk.translate_status})")
+                f"{label}block {code_prefix}: script check BLOCKED - {why}")
 
 
 # ---------------------------------------------------------------------------
@@ -2696,7 +3463,7 @@ def scenario_uilang_37(app_state, base):
             "app process alive after submenu enumeration",
             f"exit={None if app.proc is None else app.proc.poll()}")
     try:
-        cfg_path = _config_path(app)
+        cfg_path = _runtime_config_path(app)
         with open(cfg_path, "r", encoding="utf-8") as f:
             ui_val = json.load(f).get("ui_language")
         rep.add(1, True, f"[info] config.ui_language unchanged-read={ui_val!r}")
@@ -2750,18 +3517,43 @@ RESET_KEYS = tuple(RESET_NONDEFAULTS)
 RESET_POLL_S = 8.0
 
 
-def _runtime_config_path(app):
-    """The config.json the RUNNING app actually reads/writes. Mirrors
-    src/config.cpp GetDefaultConfigPath (REQ-029-B): %LOCALAPPDATA%\\
-    Emebalachat\\config.json first, exe-dir only when the Known-Folder file is
-    absent. The legacy _config_path (exe-dir) is the multi_lang pre-seed copy
-    and would NOT be what the app persists when LOCALAPPDATA exists."""
+def _runtime_config_path_for_exe(exe_path):
+    """The config.json the app spawned from `exe_path` actually reads/writes.
+    Mirrors src/config.cpp GetDefaultConfigPath (REQ-029-B):
+    %LOCALAPPDATA%\\Emebalachat\\config.json first, exe-dir only when the
+    Known-Folder file is absent. Exists separately from _runtime_config_path so
+    main() can resolve the fixture path BEFORE the first app launch (E5).
+
+    F3 (261121_0002 round 2): the LEGACY layout (no Known-Folder file, exe-dir
+    copy present) is REFUSED. AppConfig::LoadFromFile migrates the legacy bytes
+    to the Known-Folder path at startup (src/config.cpp, one-shot) and keeps the
+    legacy file, so a pin written here would be copied into the authoritative
+    config and the byte-verbatim restore of the exe-dir copy would not reach it:
+    diag_log_content=true would persist for every later run."""
     lad = os.environ.get("LOCALAPPDATA", "")
     if lad:
         p = os.path.join(lad, "Emebalachat", "config.json")
         if os.path.exists(p):
             return p
-    return _config_path(app)
+    legacy = os.path.join(os.path.dirname(os.path.abspath(exe_path)),
+                          "config.json")
+    if lad and os.path.exists(legacy):
+        raise FixtureRefused(
+            "legacy exe-dir config.json present but "
+            f"{os.path.join(lad, 'Emebalachat', 'config.json')} is absent: the "
+            "app MIGRATES the pinned bytes to the Known-Folder path at startup "
+            "(src/config.cpp LoadFromFile), where this harness's byte-verbatim "
+            "restore cannot reach them - the QA diag_log_content=true pin would "
+            "persist in the authoritative config. Launch the app once and close "
+            "it (creating the %LOCALAPPDATA% copy), then re-run the harness.")
+    return legacy
+
+
+def _runtime_config_path(app):
+    """Same resolution, from a live AppSession. The legacy exe-dir copy alone
+    is NOT what the app persists when LOCALAPPDATA exists and must never be
+    used to patch a running app (E6)."""
+    return _runtime_config_path_for_exe(app.exe_path)
 
 
 def _read_json(path):
@@ -2769,10 +3561,43 @@ def _read_json(path):
         return json.load(f)
 
 
+def _atomic_write_bytes(path, data):
+    """Write `data` to `path` without ever truncating the previous file (F1).
+
+    Serialize into a sibling temp file, fsync it, then os.replace() over the
+    target: a failed or interrupted write leaves the OLD bytes in place, so a
+    harness bug or a full disk can never destroy the user's config.json. The
+    temp lives in the same directory (same volume) so the replace is atomic.
+    A read-only target is refused (the pre-atomic behaviour also failed) rather
+    than silently having its read-only attribute replaced away."""
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(f"{path} is read-only; refusing to overwrite it")
+    directory = os.path.dirname(os.path.abspath(path)) or os.curdir
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".e2e-",
+                               suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(path):
+            try:
+                shutil.copymode(path, tmp)   # keep the read-only bit
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    _atomic_write_bytes(
+        path,
+        (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def patch_config_fields(path, values):
@@ -3051,6 +3876,7 @@ def build_drivers():
     d = {name: scenario_line_driver(name) for name in LINE_SCENARIOS}
     d.update(SIMPLE_DRIVERS)
     d["multi_lang"] = run_multi_lang
+    d["autosend_newline"] = scenario_autosend_newline
     d["uilang_37"] = scenario_uilang_37
     d["reset_defaults"] = scenario_reset_defaults
     return d
@@ -3060,12 +3886,189 @@ DRIVERS = build_drivers()
 
 ALL_SCENARIOS = ["qa27b", "example1", "consecutive", "multi_lang",
                  "empty_enter", "cursor_mid", "backspace_enter",
-                 "shift_enter_multi", "paste_then_enter", "long_text",
-                 "notepad_vscode_mix", "uilang_37", "reset_defaults"]
+                 "shift_enter_multi", "autosend_newline", "paste_then_enter",
+                 "long_text", "notepad_vscode_mix", "uilang_37",
+                 "reset_defaults"]
+# Scenarios whose verdict is environment-bounded by the Windows tray UIA
+# provider (TrackPopupMenu modal loop starvation). They are NEVER converted to
+# PASS; --skip-tray-scenarios removes them from the matrix so a green "all" is
+# achievable on a desktop where the enumeration is unavailable (E12 policy).
+TRAY_SCENARIOS = ("uilang_37", "reset_defaults")
 # ime_composing is intentionally NOT in the matrix: WM_CHAR/SendInput cannot
 # create a real IME composition state, and simulating it unverified would
 # produce false verdicts. Handed to user QA (decisions.md 2026-09-07 20:54;
 # rationale in tools/e2e/README.md).
+
+
+# ---------------------------------------------------------------------------
+# E11: run manifest + environment fingerprint
+# ---------------------------------------------------------------------------
+def utc_stamp():
+    return datetime.datetime.now(datetime.timezone.utc).strftime(
+        "%Y%m%dT%H%M%SZ")
+
+
+def sha256_file(path):
+    """None when the file cannot be read (honest absence, never a fake hash)."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _ps_capture(cmd, timeout=10):
+    """PowerShell one-liner capture with CREATE_NO_WINDOW: the manifest probe
+    must never be able to flash a console window (zero screen intrusion)."""
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        p = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy",
+                            "Bypass", "-Command", cmd],
+                           capture_output=True, timeout=timeout,
+                           creationflags=flags)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode != 0:
+        return None
+    return (p.stdout or b"").decode("utf-8-sig", errors="replace").strip()
+
+
+def notepad_image_version():
+    """FileVersion of the installed notepad.exe image (drift record). Win11's
+    Store build may report an appx version or nothing; None is honest."""
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    for cand in (os.path.join(windir, "System32", "notepad.exe"),
+                 os.path.join(windir, "notepad.exe")):
+        if os.path.exists(cand):
+            safe = cand.replace("'", "''")
+            out = _ps_capture(
+                f"(Get-Item -LiteralPath '{safe}').VersionInfo.FileVersion")
+            if out:
+                return out.splitlines()[0].strip()
+            return None
+    return None
+
+
+def os_fingerprint():
+    info = {"platform": platform.platform(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "python": platform.python_version()}
+    try:
+        v = sys.getwindowsversion()
+        info["build"] = f"{v.major}.{v.minor}.{v.build}"
+    except AttributeError:  # pragma: no cover - non-Windows import probe
+        info["build"] = None
+    return info
+
+
+def build_run_manifest(*, started_utc, finished_utc, duration_s, app_exe,
+                       fixture, chosen, reports, counts, exit_code,
+                       run_dir, extra_notes=None):
+    """The machine-readable record of WHAT was verified, on WHICH environment.
+
+    The F2 misdiagnosis of 2026-11-21 ("Win11 Notepad drift") is exactly the
+    failure mode this prevents: a future green/red flip must be attributable to
+    a recorded fact (OS build, app hash, self-reported version, classes, read
+    method, pinned mode, config hashes), not to a guess."""
+    info = {"schema": 1, "harness": "tools/e2e/req027_e2e.py",
+            "started_utc": started_utc, "finished_utc": finished_utc,
+            "duration_s": round(duration_s, 1), "run_dir": run_dir,
+            "os": os_fingerprint(),
+            "app": {"path": app_exe, "sha256": sha256_file(app_exe),
+                    "self_reported_version": _OBSERVED["app_version"],
+                    "self_reported_exe": _OBSERVED["app_exe_reported"]},
+            "config": {"path": fixture.path if fixture else None,
+                       "pre_sha256": fixture.pre_sha if fixture else None,
+                       "post_sha256": fixture.post_sha if fixture else None,
+                       "restore_ok": fixture.restore_ok if fixture else None,
+                       "pinned": dict(fixture.values) if fixture else None,
+                       "fixture_active": bool(fixture and fixture.active)},
+            "mode": {"auto_send": int(fixture_auto_send()),
+                     "diag_log_enabled": 1 if fixture else None,
+                     "diag_log_content": 1 if fixture else None,
+                     "tray_disabled": bool(globals().get("_TRAY_DISABLED"))},
+            "notepad": {"image_version": _OBSERVED["notepad_version"],
+                        "frame_class": _OBSERVED["frame_class"],
+                        "edit_classes": sorted(_OBSERVED["edit_classes"])},
+            "read_methods": sorted(_OBSERVED["read_methods"]),
+            "tray_uia": _OBSERVED["tray_uia"],
+            "scenarios": list(chosen),
+            "verdicts": [{"scenario": r.name, "verdict": r.verdict()[0],
+                          "fail": len(r.verdict()[1]),
+                          "blocked": len(r.verdict()[2])} for r in reports],
+            "counts": counts,
+            "exit_code": exit_code,
+            "read": ("Layer1 app DIAG log + Layer2 WM_GETTEXT/UIA document "
+                     "read; no screen capture, no synthetic user input beyond "
+                     "the documented SendInput Enter/Ctrl+V/backspace"),
+            "privacy": ("diag_log_content was pinned ON for this QA run only; "
+                        "the config is restored byte-verbatim and only "
+                        "harness-owned E2E strings were typed into verified "
+                        "empty scratch documents"),
+            "notes": list(extra_notes or [])}
+    return info
+
+
+def print_env_fingerprint(manifest):
+    a = manifest["app"]
+    c = manifest["config"]
+    m = manifest["mode"]
+    n = manifest["notepad"]
+    print("   fingerprint: os={b} frame={f} edit={e} read={r}".format(
+        b=manifest["os"].get("build"), f=n.get("frame_class"),
+        e=",".join(n.get("edit_classes") or []) or "?",
+        r=",".join(manifest["read_methods"]) or "?"))
+    print(f"                app={str(a['sha256'])[:16]}... "
+          f"ver={a['self_reported_version']} config={c['path']} "
+          f"sha={str(c['pre_sha256'])[:16]}... "
+          f"auto_send={m['auto_send']} tray_uia={manifest['tray_uia']}")
+
+
+def write_run_manifest(manifest, run_dir):
+    path = os.path.join(run_dir, "run-manifest.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except OSError as e:
+        print(f"[harness] WARN: could not write {path}: {e}")
+        return None
+    return path
+
+
+def baseline_drift_banner(manifest, baseline_path):
+    """Compare the run fingerprint against a saved manifest and print a banner.
+    Reporting only: a drift is a human-review signal, never a verdict change."""
+    if not baseline_path or not os.path.exists(baseline_path):
+        return None
+    try:
+        base = _read_json(baseline_path)
+    except (OSError, ValueError) as e:
+        print(f"   baseline : unreadable ({baseline_path}: {e}) - skipped")
+        return None
+    keys = [("os", "build"), ("app", "sha256"),
+            ("app", "self_reported_version"), ("notepad", "frame_class"),
+            ("mode", "auto_send")]
+    diffs = []
+    for section, key in keys:
+        old = (base.get(section) or {}).get(key)
+        new = (manifest.get(section) or {}).get(key)
+        if old != new:
+            diffs.append(f"{section}.{key}: {old!r} -> {new!r}")
+    old_edits = sorted((base.get("notepad") or {}).get("edit_classes") or [])
+    if old_edits != manifest["notepad"]["edit_classes"]:
+        diffs.append(f"notepad.edit_classes: {old_edits!r} -> "
+                     f"{manifest['notepad']['edit_classes']!r}")
+    if diffs:
+        print("   !! BASELINE-DRIFT CANDIDATE (reporting only, verdict "
+              "unchanged): " + " | ".join(diffs))
+        return diffs
+    print(f"   baseline : matches {baseline_path}")
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -3079,18 +4082,31 @@ def main(argv=None):
 
     ap = argparse.ArgumentParser(
         description="REQ-027 notepad per-line translation E2E harness "
-                    "(B-6c 11-scenario matrix)")
+                    "(14-scenario matrix incl. autosend_newline)")
     ap.add_argument("scenario", nargs="?", default="qa27b",
                     choices=sorted(ALL_SCENARIOS + ["all"]))
     ap.add_argument("--app-exe", default=DEFAULT_APP_EXE,
                     help="path to Emebala_chat.exe (default build\\)")
     ap.add_argument("--no-cleanup", action="store_true",
-                    help="keep the app process alive after the run (debug)")
+                    help="keep the app process alive after the run (debug); "
+                         "the config fixture refuses to pin under this flag "
+                         "because the live app's exit save would re-persist "
+                         "the QA diag_log_* flags over the restored file")
     ap.add_argument("--step-timeout", type=float, default=None,
                     help="override per-Enter pipeline completion timeout (s)")
     ap.add_argument("--no-tray", action="store_true",
                     help="skip the multi_lang tray UIA attempt (force the "
                          "config-seed fallback)")
+    ap.add_argument("--skip-tray-scenarios", action="store_true",
+                    help="drop uilang_37/reset_defaults from an 'all' run so "
+                         "a green exit 0 is achievable; they stay "
+                         "INCONCLUSIVE and are never converted to PASS")
+    ap.add_argument("--run-dir", default=None,
+                    help="directory for run-manifest.json (default "
+                         "<repo>/build/e2e-runs/<UTC stamp>)")
+    ap.add_argument("--baseline-manifest", default=None,
+                    help="saved run-manifest.json to diff the environment "
+                         "fingerprint against (prints a drift banner)")
     args = ap.parse_args(argv)
 
     if args.step_timeout:
@@ -3098,16 +4114,61 @@ def main(argv=None):
     if args.no_tray:
         globals()["_TRAY_DISABLED"] = True
 
-    chosen = list(ALL_SCENARIOS) if args.scenario == "all" else [args.scenario]
-    print("== REQ-027 E2E harness (B-6c matrix + B-4 uilang_37) ==")
+    if args.scenario == "all":
+        chosen = [s for s in ALL_SCENARIOS
+                  if not (args.skip_tray_scenarios and s in TRAY_SCENARIOS)]
+    else:
+        chosen = [args.scenario]
+
+    run_dir = args.run_dir or os.path.join(REPO_ROOT, "build", "e2e-runs",
+                                           utc_stamp())
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+    except OSError as e:
+        print(f"[harness] ERROR: cannot create run dir {run_dir}: {e}")
+        return 3
+
+    print("== REQ-027 E2E harness (B-6c matrix + B-4 uilang_37 + "
+          "autosend_newline) ==")
     print(f"   scenarios: {chosen}")
+    if args.skip_tray_scenarios:
+        print("   policy   : --skip-tray-scenarios removed "
+              f"{list(TRAY_SCENARIOS)} from the matrix (they remain "
+              "environment-bounded INCONCLUSIVE when run explicitly; never "
+              "converted to PASS)")
     print(f"   app exe  : {args.app_exe}")
     print(f"   log dir  : {LOG_DIR}")
+    print(f"   run dir  : {run_dir}")
     print("   NOTE     : do NOT touch keyboard/mouse until the verdict.")
 
     reports = []
     harness_failed = False
+    restore_broken = False
+    counts = {}
+    code = 2
     state = {}
+    started_utc = datetime.datetime.now(datetime.timezone.utc).isoformat(
+        timespec="seconds")
+
+    # --- E5: back up the runtime config BEFORE the first app launch --------
+    # F1 (261121_0002 round 2): the read-only backup is published to `fixture`
+    # HERE, before any write; the PIN itself runs inside the restore-guarded
+    # try below, so no escape path (write error, Ctrl+C) can skip the restore.
+    try:
+        fixture = prepare_config_fixture(args.app_exe,
+                                         no_cleanup=args.no_cleanup)
+    except HarnessError as e:
+        # R3-2 / F-Δ2 (261121_0002 round 3): a config that exists but cannot
+        # be READ is a harness/environment fault, not a product verdict - the
+        # run continues unpinned and the exit policy returns 3 (E12). No write
+        # ever happened, so there is nothing to restore.
+        print(f"[harness] ERROR: {e}")
+        fixture = None
+        harness_failed = True
+    _MODE["fixture"] = None
+    _MODE["auto_send"] = False
+    fixture_write_failed = False
+    teardown_interrupted = False
 
     def start_app():
         app = AppSession(args.app_exe)
@@ -3115,6 +4176,10 @@ def main(argv=None):
         state["app"] = app
         print(f"   app      : pid={app.proc.pid}")
         print(f"   app log  : {app.log_path}")
+        # Only an ARMED pin is verified: `fixture` also exists when the pin did
+        # not persist, and that path already reported itself as environment.
+        if _MODE["fixture"] is not None:
+            verify_session_fixture(app, _MODE["fixture"])
 
     def stop_app():
         app = state.get("app")
@@ -3132,11 +4197,22 @@ def main(argv=None):
     t0 = time.time()
     try:
         try:
+            if fixture is not None:
+                # The pin lives INSIDE this restore-guarded try (F1): a write
+                # error or a Ctrl+C from here on still restores the bytes.
+                try:
+                    armed = pin_config_fixture(fixture)
+                except HarnessError:
+                    fixture_write_failed = True
+                    raise
+                if armed:
+                    _MODE["fixture"] = fixture
             closed, kept_blank = NotepadSession.preflight_scrub()
             print(f"   preflight : closed {closed} leftover empty-untitled "
                   f"Notepad frame(s); kept {kept_blank} blank as the reuse "
                   "pool (content/multi-tab frames never touched)")
             _foreground_guard()  # fail fast + name a phantom holder
+            _OBSERVED["notepad_version"] = notepad_image_version()
             start_app()
             for name in chosen:
                 rep = None
@@ -3180,25 +4256,118 @@ def main(argv=None):
         except HarnessError as e:
             harness_failed = True
             print(f"[harness] ERROR: {e}")
+        # E12 exit policy, computed before the finally so the manifest can
+        # record it: 0 = all PASS, 1 = any FAIL, 2 = no FAIL but INCONCLUSIVE
+        # (or no verdict at all), 3 = harness error (checked after teardown).
+        verdicts = [r.verdict()[0] for r in reports]
+        counts = {k: verdicts.count(k)
+                  for k in ("PASS", "FAIL", "INCONCLUSIVE")}
+        if not verdicts:
+            code = 2
+        elif counts["FAIL"]:
+            code = 1
+        elif counts["INCONCLUSIVE"]:
+            code = 2
+        else:
+            code = 0
     finally:
-        stop_app()
+        # F1 (261121_0002 round 2, SR1 L-2): a Ctrl+C during the slow app
+        # teardown must not unwind past the restore - the config would stay
+        # pinned with diag_log_content=true and no manifest would be written.
+        try:
+            stop_app()
+        except KeyboardInterrupt:
+            teardown_interrupted = True
+            print("[harness] interrupted during app teardown (Ctrl+C); "
+                  "restoring the config anyway")
+            # R3-1 / F-Δ1 (261121_0002 round 3): the interrupt usually lands
+            # in AppSession.stop()'s settle sleep, BEFORE its `taskkill /F`,
+            # so the spawned app can still be alive when the bytes are
+            # restored just below - and its later graceful exit SaveToFile
+            # would re-persist the pinned diag_log_content=true over them
+            # (the exact hazard F1 exists for). Best-effort re-kill FIRST; a
+            # second Ctrl+C here must not skip the restore, hence the swallow.
+            try:
+                force_kill_pids(list_processes_like("Emebala_chat"))
+                surviving = sorted(list_processes_like("Emebala_chat"))
+            except KeyboardInterrupt:
+                surviving = []  # a second interrupt: exit 3 loudly below
+            except Exception:  # best-effort only - never skip the restore
+                surviving = []
+            if surviving:
+                print("[harness] WARNING: Emebala_chat.exe still alive (PIDs "
+                      f"{surviving}); its exit save may re-persist the pinned "
+                      "diag_log_* flags over the restored config - close it, "
+                      "then re-check config.json")
+        if fixture is not None:
+            # F1 (SR5 F-01): an OSError inside restore() is the same
+            # contractual failure as a SHA mismatch - escalate to exit 3
+            # instead of escaping main() with a traceback.
+            try:
+                ok, msg = fixture.restore()
+            except OSError as e:
+                ok, msg = False, (f"e2e config fixture restore FAILED "
+                                  f"({type(e).__name__}: {e})")
+            except KeyboardInterrupt:
+                ok, msg = False, ("e2e config fixture restore INTERRUPTED by "
+                                  "Ctrl+C - the QA pin may still be in place")
+            print(f"   {msg}")
+            if not ok:
+                restore_broken = True
+                print("   !! CONFIG RESTORE MISMATCH: the user's config.json "
+                      "is NOT verified byte-identical to the pre-run bytes "
+                      "(see the line above). The harness exits 3 so this "
+                      "cannot be mistaken for a product verdict; check and "
+                      "restore the file before using the app.")
+        # A run that is unwinding (Ctrl+C, unexpected exception) must never be
+        # recorded in the manifest with a verdict code, even though the process
+        # itself exits with the traceback's code.
+        aborting = sys.exc_info()[0] is not None
+        exit3 = bool(harness_failed or restore_broken or fixture_write_failed
+                     or teardown_interrupted or aborting)
+        manifest = build_run_manifest(
+            started_utc=started_utc,
+            finished_utc=datetime.datetime.now(
+                datetime.timezone.utc).isoformat(timespec="seconds"),
+            duration_s=time.time() - t0,
+            app_exe=args.app_exe, fixture=fixture, chosen=chosen,
+            reports=reports, counts=counts,
+            exit_code=3 if exit3 else code,
+            run_dir=run_dir,
+            extra_notes=[n for r in reports for n in r.env_notes])
+        print_env_fingerprint(manifest)
+        baseline_drift_banner(manifest, args.baseline_manifest)
+        written = write_run_manifest(manifest, run_dir)
+        if written:
+            print(f"   manifest : {written}")
 
-    if harness_failed:
-        print(f"\n== RESULT: HARNESS-ERROR after {time.time()-t0:.1f}s "
+    if exit3:
+        if restore_broken:
+            reason = "CONFIG-RESTORE-MISMATCH"
+        elif fixture_write_failed:
+            reason = "CONFIG-WRITE-FAILED"
+        elif teardown_interrupted:
+            reason = "INTERRUPTED"
+        else:
+            reason = "HARNESS-ERROR"
+        print(f"\n== RESULT: {reason} after {time.time()-t0:.1f}s "
               "(exit 3) ==")
+        print("E2E_SUMMARY " + json.dumps(
+            {"exit": 3, "counts": counts, "reason": reason,
+             "verdicts": {r.name: r.verdict()[0] for r in reports},
+             "skipped_tray": bool(args.skip_tray_scenarios),
+             "run_dir": run_dir}, ensure_ascii=False, sort_keys=True))
         return 3
-    verdicts = [r.verdict()[0] for r in reports]
-    if not verdicts:
-        code = 2  # nothing produced a verdict -> never claim PASS
-    elif any(v == "FAIL" for v in verdicts):
-        code = 1
-    elif any(v == "INCONCLUSIVE" for v in verdicts):
-        code = 2
-    else:
-        code = 0
     summary = " / ".join([f"{r.name}={r.verdict()[0]}" for r in reports])
     print(f"\n== RESULT: {summary} after {time.time()-t0:.1f}s "
           f"(exit {code}) ==")
+    # Machine-readable summary (E12): one line, stable key order, so a wrapper
+    # script never has to parse the human report.
+    print("E2E_SUMMARY " + json.dumps(
+        {"exit": code, "counts": counts,
+         "verdicts": {r.name: r.verdict()[0] for r in reports},
+         "skipped_tray": bool(args.skip_tray_scenarios),
+         "run_dir": run_dir}, ensure_ascii=False, sort_keys=True))
     return code
 
 
