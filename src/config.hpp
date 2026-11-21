@@ -586,6 +586,107 @@ std::vector<std::string> PublishOpenAiDeclaredLanguages(
 bool OpenAiLanguagesDeclared();
 bool OpenAiLanguageDeclared(std::string_view code);
 
+// ---- 261122_0001 B-U1 (OpenAI 설정 창 프로필 재설계, design-pick §1/§2/§7):
+// the OpenAI-compatible PROFILE LIBRARY ----
+//
+// The existing "openai" block stays the ACTIVE profile's mirror (design-pick
+// item 1: the engine/worker/REQ-051 runtime consumption paths keep reading
+// `openai` and never learn about the library). The library is the optional
+// top-level "openai_profiles" array (the openai_declared_languages optional-key
+// convention): an entry is the 6-field OpenAiConfig block shape PLUS "name".
+// There is deliberately NO version key (design-pick item 4, recorded decision):
+// an entry is homomorphic to OpenAiConfig, so it is self-describing; a future
+// breaking change adds an additive optional key INSIDE an entry.
+//
+// Wire form (one entry shown; emitted ONLY while the library is non-empty):
+//   "openai_profiles": [
+//     {
+//       "name": "openai / gpt-4o-mini",
+//       "base_url": "https://api.openai.com",
+//       "model": "gpt-4o-mini",
+//       "reasoning_effort": "",
+//       "api_key_dpapi": "<base64 DPAPI blob>",
+//       "api_key_sha256": "<64 lowercase hex>",
+//       "http_consent_given": false
+//     }
+//   ]
+//
+// Key material (api_key_dpapi + api_key_sha256) round-trips as OPAQUE strings,
+// exactly like the active block; it is never logged, printed or otherwise
+// surfaced (shape-only posture, AGENTS.md §Security).
+//
+// Load semantics (design-pick item 2, the lenient posture ParseOpenAiBlock
+// already takes): the reader captures the raw array verbatim; a non-array value
+// reads as an EMPTY library; a malformed single entry is SKIPPED, never a hard
+// load failure; entries past kMaxOpenAiProfiles are dropped. A PRESENT key is
+// authoritative (it replaces the in-memory library); an ABSENT key keeps the
+// current value, exactly like every other key in this reader.
+//
+// Migration (design-pick item 2/§"마이그레이션"): when the key is ABSENT and the
+// "openai" block is non-empty (any of base_url / model / api_key_dpapi /
+// api_key_sha256 set), ONE profile is synthesized from the block with a name
+// derived by the pure helpers below; the "openai" block itself stays BYTE-
+// IDENTICAL (it is copied, never moved). When the key is PRESENT, nothing is
+// synthesized. The load-time derivation uses the FIXED ASCII template
+// "{h} / {m}" (the en form of OpenAiProfileNameTemplate) so the synthesis is
+// DETERMINISTIC — the same input file always yields the same library. The
+// UI-locale template derivation at dialog save time (design-pick §7 "저장 시점
+// UI 로케일로 1회 파생") is the dialog unit's (U4) job, not the load path's.
+//
+// WRITER DISCIPLINE (261122_0001 B-U1): the library is mutated ONLY on the GUI
+// thread (the settings dialog fold, unit U4) and persisted by the single
+// caller-side SaveToFile (design-pick item 4, P9c-1c 단일 writer). The pipeline
+// worker reads only the `openai` active block, so — exactly like `openai`
+// itself — this member needs no mutex_ and no Snapshot entry. Direct
+// assignment is legal only before any thread exists (startup seeding, unit
+// tests, the load path above).
+struct OpenAiProfile {
+    std::string name;  // derived display name, fixed as user data once saved
+    OpenAiConfig cfg;  // the full 6-field openai block shape, stored verbatim
+};
+
+// Bounds for the library (the reader caps the block instead of trusting it).
+inline constexpr std::size_t kMaxOpenAiProfiles = 32;
+inline constexpr std::size_t kMaxOpenAiProfileNameBytes = 96;
+
+// Pure display-name derivation helpers (design-pick §7; i18n-INDEPENDENT, so
+// they live in this config TU and are unit-test targets). They take base_url /
+// model as DATA: control/bidi characters are NOT stripped here — sanitizing
+// before save is the dialog's duty (design-pick §7, the R2-M/G-02 sanitize-
+// before-save precedent).
+//
+// OpenAiHostAbbrev: strips scheme / userinfo / port / path / query down to the
+// host, then abbreviates: a multi-label DNS hostname yields its SECOND-TO-LAST
+// label lowercased (api.openai.com -> "openai", the design-pick host token); a
+// single label or an IP literal (IPv4, or [v6] WITH its brackets) yields the
+// whole host; an empty/relative base (no host at all) yields "". The result is
+// capped at 24 UTF-8 bytes on a code-point boundary, with a "…" suffix when
+// truncated (the ellipsis counts toward the cap).
+std::string OpenAiHostAbbrev(std::string_view base_url);
+
+// MakeOpenAiProfileName: substitutes the {h} and {m} tokens of name_template.
+// An empty host yields the model alone; an empty model yields the host alone;
+// both empty yields "" (the CALLER handles that degenerate case). The result is
+// capped at kMaxOpenAiProfileNameBytes on a code-point boundary.
+std::string MakeOpenAiProfileName(std::string_view host_abbrev,
+                                  std::string_view model,
+                                  std::string_view name_template);
+
+// MakeUniqueOpenAiProfileName: appends " (2)", " (3)" … on a name collision
+// (exact, case-sensitive comparison — a name is user data). The suffix is
+// always kept whole: the base is truncated to cap-minus-suffix on a code-point
+// boundary first, so the result never exceeds kMaxOpenAiProfileNameBytes.
+std::string MakeUniqueOpenAiProfileName(const std::vector<OpenAiProfile>& existing,
+                                        std::string_view base_name);
+
+// PlanOpenAiProfileUpsert (design-pick item 3; consumed by the dialog unit U4,
+// pure here so it is pinned now): the storage identity is (base_url ASCII
+// case-insensitive, model case-SENSITIVE). Returns the index of the matching
+// entry (save = overwrite that entry's cfg wholesale, keep its name), or
+// existing.size() when no entry matches (save = append a new profile).
+std::size_t PlanOpenAiProfileUpsert(const std::vector<OpenAiProfile>& existing,
+                                    const OpenAiConfig& candidate_identity);
+
 // Looks up a language by its code (case-insensitive, e.g. "ko", "KO", "ZH-CN").
 const LanguageInfo* FindLanguageByCode(std::string_view code);
 
@@ -1069,6 +1170,19 @@ struct AppConfig {
     // Reads on the GUI thread are direct (the settings dialog and the menus live
     // there), exactly like the openai block it sits next to.
     std::vector<std::string> openai_declared_languages;
+
+    // 261122_0001 B-U1 (design-pick §1): the OpenAI-compatible profile library,
+    // persisted as the optional top-level "openai_profiles" array (schema and
+    // load/migration semantics documented at the OpenAiProfile declaration
+    // above). Empty = the key is NOT emitted = the pre-261122_0001 posture.
+    //
+    // WRITER DISCIPLINE (same as the openai block it extends): GUI-thread-only
+    // mutation (the settings dialog fold, unit U4), persisted by the single
+    // caller-side SaveToFile (design-pick item 4). The pipeline worker reads
+    // ONLY the active `openai` block above and never this library, so no mutex_
+    // or Snapshot entry is needed. Direct assignment is legal only before any
+    // thread exists (startup seeding, unit tests, the load path).
+    std::vector<OpenAiProfile> openai_profiles;
 
     // 261116_0003 P9a (plan §3 D5/D6): the user-defined language registry and
     // its probe-verdict cache, serialized as "user_languages" +

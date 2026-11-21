@@ -18125,6 +18125,13 @@ void TestR107PeerIdentityGate() {
 // source-scan proof that no other mutation site of the registry survives.
 #include "p9b3_user_language_dialog_tests.inc"
 
+// 261122_0001 B-U1 (OpenAI 설정 창 프로필 재설계, design-pick items 1/2/3/7):
+// the OpenAI profile library - config schema (optional "openai_profiles" key,
+// entry caps, load-time migration synthesis), the pure display-name helpers
+// (OpenAiHostAbbrev / MakeOpenAiProfileName / MakeUniqueOpenAiProfileName)
+// and the PlanOpenAiProfileUpsert identity planner. Zero network, zero UI.
+#include "openai_profile_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -25233,6 +25240,11 @@ int main() {
     // negatives, and the source pins. Registered last, per the end-of-file
     // pattern; reuses the in-file fake-host helpers.
     TestA2LocalCancelSeam();
+    // 261122_0001 B-U1 (builder draw 5): the OpenAI profile library — schema
+    // round-trip / caps / migration, the pure name-derivation helpers, the
+    // upsert identity planner, and the key-material emission pin. Registered
+    // last, per the end-of-file pattern.
+    openai_profile_tests::TestOpenAiProfileConfigSchema();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

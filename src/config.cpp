@@ -648,6 +648,49 @@ void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
     }
 }
 
+// REQ-045 P4-3 (design §3b): applies ONE parsed key/value pair of the OpenAI
+// block to `out`. Shared by ParseOpenAiBlock (the active "openai" block) and
+// the 261122_0001 B-U1 profile-entry parser: an openai_profiles entry body IS
+// the openai block shape plus "name", so the two parsers must agree on the
+// exact field semantics (lenient absent-key posture, the reasoning_effort
+// clamp) and this function is that single source of truth.
+void ApplyOpenAiConfigPair(const std::string& k, const std::string& v, OpenAiConfig& out) {
+    if (k == "base_url") {
+        out.base_url = v;
+    } else if (k == "model") {
+        out.model = v;
+    } else if (k == "api_key_dpapi") {
+        out.api_key_dpapi = v;
+    } else if (k == "api_key_sha256") {
+        out.api_key_sha256 = v;
+    } else if (k == "http_consent_given") {
+        out.http_consent_given = (v == "true");
+    } else if (k == "reasoning_effort") {
+        // 261121_0001 U-H (contract C2): the reasoning effort sent to the
+        // OpenAI-compatible endpoint. "" (absent key, empty value) means
+        // "send no reasoning_effort at all" - the mandatory default,
+        // because a non-reasoning model answers HTTP 400 to that key. Any
+        // other value is kept, bounded by the clamp below: which efforts a
+        // gateway accepts is only known from its own /v1/models metadata,
+        // so a whitelist here could reject a value the server itself
+        // advertised. The value is JSON-escaped on the write side, so it
+        // can never break the file.
+        //
+        // G-2 (261121_0001 fix round 2, SEC-F02): clamp the READ to
+        // kMaxOpenAiReasoningEffortConfigChars. Legitimate tokens are
+        // <= 8 chars (none|minimal|low|medium|high|xhigh); the settings
+        // combo caps its items at 32. A hand-edited (hostile) config.json
+        // could otherwise carry a multi-MB value that rides verbatim into
+        // EVERY per-chunk request body and every config rewrite. 64 is
+        // far above any real token yet bounded, and the truncation (not
+        // drop) keeps a long-but-real token usable in diagnosis.
+        constexpr std::size_t kMaxOpenAiReasoningEffortConfigChars = 64;
+        out.reasoning_effort = (v.size() <= kMaxOpenAiReasoningEffortConfigChars)
+                                   ? v
+                                   : v.substr(0, kMaxOpenAiReasoningEffortConfigChars);
+    }
+}
+
 // REQ-045 P4-3 (design §3b): parse the nested "openai" object captured
 // verbatim by the reader (same convention as ParseEngineHostBlock above).
 // Absent keys keep the default-initialized values; a malformed block keeps
@@ -660,40 +703,7 @@ void ParseOpenAiBlock(const std::string& raw, OpenAiConfig& out) {
         return; // malformed block: keep defaults
     }
     for (const auto& [k, v] : pairs) {
-        if (k == "base_url") {
-            out.base_url = v;
-        } else if (k == "model") {
-            out.model = v;
-        } else if (k == "api_key_dpapi") {
-            out.api_key_dpapi = v;
-        } else if (k == "api_key_sha256") {
-            out.api_key_sha256 = v;
-        } else if (k == "http_consent_given") {
-            out.http_consent_given = (v == "true");
-        } else if (k == "reasoning_effort") {
-            // 261121_0001 U-H (contract C2): the reasoning effort sent to the
-            // OpenAI-compatible endpoint. "" (absent key, empty value) means
-            // "send no reasoning_effort at all" - the mandatory default,
-            // because a non-reasoning model answers HTTP 400 to that key. Any
-            // other value is kept, bounded by the clamp below: which efforts a
-            // gateway accepts is only known from its own /v1/models metadata,
-            // so a whitelist here could reject a value the server itself
-            // advertised. The value is JSON-escaped on the write side, so it
-            // can never break the file.
-            //
-            // G-2 (261121_0001 fix round 2, SEC-F02): clamp the READ to
-            // kMaxOpenAiReasoningEffortConfigChars. Legitimate tokens are
-            // <= 8 chars (none|minimal|low|medium|high|xhigh); the settings
-            // combo caps its items at 32. A hand-edited (hostile) config.json
-            // could otherwise carry a multi-MB value that rides verbatim into
-            // EVERY per-chunk request body and every config rewrite. 64 is
-            // far above any real token yet bounded, and the truncation (not
-            // drop) keeps a long-but-real token usable in diagnosis.
-            constexpr std::size_t kMaxOpenAiReasoningEffortConfigChars = 64;
-            out.reasoning_effort = (v.size() <= kMaxOpenAiReasoningEffortConfigChars)
-                                       ? v
-                                       : v.substr(0, kMaxOpenAiReasoningEffortConfigChars);
-        }
+        ApplyOpenAiConfigPair(k, v, out);
     }
 }
 
@@ -2178,6 +2188,51 @@ void ParseUserLanguageProbesBlock(const std::string& raw, std::vector<UserLangua
     }
 }
 
+// 261122_0001 B-U1 (design-pick §1/§2): one "openai_profiles" array entry.
+// The entry body is the openai block shape plus "name": every non-name key is
+// routed through ApplyOpenAiConfigPair verbatim (identical semantics to the
+// active block, key material included — the DPAPI blob and digest round-trip
+// as opaque strings and are never logged). The name is byte-capped on a UTF-8
+// code-point boundary at the parse choke point; control/bidi sanitizing is the
+// dialog's save-time duty (design-pick §7), NOT the load path's.
+void ParseOpenAiProfileEntry(const std::vector<std::pair<std::string, std::string>>& pairs,
+                             OpenAiProfile& out) {
+    for (const auto& [k, v] : pairs) {
+        if (k == "name") {
+            out.name = CapUserLanguageField(v, kMaxOpenAiProfileNameBytes);
+        } else {
+            ApplyOpenAiConfigPair(k, v, out.cfg);
+        }
+    }
+}
+
+// 261122_0001 B-U1 (design-pick §1/§2): the "openai_profiles" raw array
+// (captured verbatim by the top-level reader, the openai_declared_languages
+// posture). Lenient by contract: a non-array value reads as an EMPTY library
+// (the '[' gate below — an object-typed value must not synthesize entries out
+// of its braces); a malformed single entry span is SKIPPED, never a hard load
+// failure (a hand-edited block must not brick the config, the
+// ParseUserLanguagesBlock precedent); entries past kMaxOpenAiProfiles are
+// dropped. Never logs content — key fields are opaque material.
+void ParseOpenAiProfilesBlock(const std::string& raw, std::vector<OpenAiProfile>& out) {
+    const std::string_view trimmed = TrimAsciiSpaceView(raw);
+    if (trimmed.empty() || trimmed.front() != '[') {
+        return; // not an array: empty library
+    }
+    for (const std::string_view span : SplitTopLevelJsonObjects(trimmed)) {
+        if (out.size() >= kMaxOpenAiProfiles) {
+            break;
+        }
+        std::vector<std::pair<std::string, std::string>> pairs;
+        if (!ParseJsonObjectSpan(span, pairs)) {
+            continue; // malformed entry: skip it, keep the rest
+        }
+        OpenAiProfile profile;
+        ParseOpenAiProfileEntry(pairs, profile);
+        out.push_back(std::move(profile));
+    }
+}
+
 // 261116_0003 P9a fix2 PR10-04: skips ASCII whitespace plus // line and
 // /* */ block notes from `pos`. Returns false when a block note is never
 // terminated (the caller then treats the text as malformed).
@@ -2343,6 +2398,36 @@ std::string SerializeUserLanguages(const std::vector<UserLanguage>& languages,
             ss << "      ]";
         }
         ss << "\n    }" << (i + 1 < languages.size() ? "," : "") << "\n";
+    }
+    ss << "  ]";
+    return ss.str();
+}
+
+// 261122_0001 B-U1 (design-pick §1): the "openai_profiles" writer. Emitted
+// ONLY while the library is non-empty (the optional-key convention — the key
+// carries no information while empty); the caller gates on that. The entry
+// shape is name + the 6-field openai block in the block's own field order, so
+// an entry differs from the active block only by the extra name line. Key
+// material is emitted as the same opaque dpapi/sha256 pair as the active
+// block, never cleartext and never any other field.
+std::string SerializeOpenAiProfiles(const std::vector<OpenAiProfile>& profiles) {
+    std::ostringstream ss;
+    ss << "[\n";
+    for (std::size_t i = 0; i < profiles.size(); ++i) {
+        const OpenAiProfile& profile = profiles[i];
+        ss << "    {\n";
+        ss << "      \"name\": \"" << EscapeJsonString(profile.name) << "\",\n";
+        ss << "      \"base_url\": \"" << EscapeJsonString(profile.cfg.base_url) << "\",\n";
+        ss << "      \"model\": \"" << EscapeJsonString(profile.cfg.model) << "\",\n";
+        ss << "      \"reasoning_effort\": \"" << EscapeJsonString(profile.cfg.reasoning_effort)
+           << "\",\n";
+        ss << "      \"api_key_dpapi\": \"" << EscapeJsonString(profile.cfg.api_key_dpapi)
+           << "\",\n";
+        ss << "      \"api_key_sha256\": \"" << EscapeJsonString(profile.cfg.api_key_sha256)
+           << "\",\n";
+        ss << "      \"http_consent_given\": "
+           << (profile.cfg.http_consent_given ? "true" : "false") << "\n";
+        ss << "    }" << (i + 1 < profiles.size() ? "," : "") << "\n";
     }
     ss << "  ]";
     return ss.str();
@@ -2937,6 +3022,212 @@ bool OpenAiLanguageDeclared(std::string_view code) {
     OpenAiDeclaredLanguageState& state = OpenAiDeclaredLanguageSnapshot();
     std::lock_guard<std::mutex> lock(state.mutex);
     return IsOpenAiLanguageDeclaredLocked(state, code);
+}
+
+// ---- 261122_0001 B-U1: the pure profile helpers (design-pick §7) -----------
+// i18n-independent by contract: the dialog unit derives the name template from
+// StringId::OpenAiProfileNameTemplate at SAVE time, while the LOAD path's
+// migration synthesis uses the fixed kOpenAiMigrationNameTemplate below. These
+// helpers take base_url / model as DATA: control/bidi stripping is the
+// dialog's sanitize-before-save duty, not done here.
+
+namespace {
+
+// ASCII fold for the DNS-label abbreviation (hostnames are case-insensitive).
+// IP literals and punycode carry no uppercase by construction and pass
+// through; a non-ASCII byte passes through untouched (UTF-8 continuation
+// bytes are >= 0x80, outside the 'A'-'Z' range).
+std::string AsciiLowerOpenAiLabel(std::string_view label) {
+    std::string out(label);
+    for (char& c : out) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+    }
+    return out;
+}
+
+bool IsAllAsciiDigits(std::string_view text) {
+    if (text.empty()) {
+        return false;
+    }
+    for (const char c : text) {
+        if (c < '0' || c > '9') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// IPv4 heuristic: only digits and dots with at least one of each. The exact
+// quad validator is unnecessary — a number-and-dots hostname is displayed
+// whole either way, which is the IP branch's whole purpose (the second-to-
+// last label of "192.168.0.10" would be the meaningless "0").
+bool LooksLikeIPv4OpenAiHost(std::string_view host) {
+    bool has_digit = false;
+    for (const char c : host) {
+        if (c >= '0' && c <= '9') {
+            has_digit = true;
+        } else if (c != '.') {
+            return false;
+        }
+    }
+    return has_digit && host.find('.') != std::string_view::npos;
+}
+
+// The FIXED migration template (the en form of the OpenAiProfileNameTemplate
+// i18n string). The load-path synthesis must be DETERMINISTIC — the same
+// input file always yields the same library — so it cannot follow the UI
+// locale the way the dialog's save-time derivation does (design-pick §7).
+constexpr std::string_view kOpenAiMigrationNameTemplate = "{h} / {m}";
+
+} // namespace
+
+std::string OpenAiHostAbbrev(std::string_view base_url) {
+    // 1. Authority extraction: scheme://[userinfo@]host[:port][/path][?query].
+    std::string_view rest = base_url;
+    const std::size_t scheme = rest.find("://");
+    if (scheme != std::string_view::npos) {
+        rest.remove_prefix(scheme + 3);
+    }
+    // A relative reference ("/v1/...", "?x=1", empty) carries no host at all.
+    if (rest.empty() || rest.front() == '/' || rest.front() == '?') {
+        return {};
+    }
+    const std::size_t delim = rest.find_first_of("/?");
+    std::string_view authority = rest.substr(0, delim);
+    const std::size_t at = authority.rfind('@');
+    if (at != std::string_view::npos) {
+        authority.remove_prefix(at + 1);
+    }
+    if (authority.empty()) {
+        return {};
+    }
+    // 2. Host extraction: an [v6] literal keeps its brackets (the design-pick
+    // table pins "[::1]"); a single colon followed by all digits is a port;
+    // multiple colons are an unbracketed v6 tail that cannot be split
+    // reliably, so the whole thing is kept.
+    std::string host;
+    if (authority.front() == '[') {
+        const std::size_t close = authority.find(']');
+        if (close == std::string_view::npos) {
+            return {}; // malformed literal: no host
+        }
+        host = std::string(authority.substr(0, close + 1));
+    } else {
+        std::string_view candidate = authority;
+        const std::size_t colon = candidate.rfind(':');
+        if (colon != std::string_view::npos && candidate.find(':') == colon &&
+            IsAllAsciiDigits(candidate.substr(colon + 1))) {
+            candidate = candidate.substr(0, colon);
+        }
+        host = std::string(candidate);
+    }
+    if (host.empty()) {
+        return {};
+    }
+    if (host.size() > 1 && host.back() == '.') {
+        host.pop_back(); // one trailing root dot is trivia, not a label
+    }
+    // 3. Abbreviation: a multi-label DNS hostname yields its SECOND-TO-LAST
+    // label (the design-pick host token: api.openai.com -> "openai"); a
+    // single label or an IP literal yields the whole host.
+    std::string abbrev;
+    const std::size_t last_dot = host.rfind('.');
+    if (last_dot != std::string::npos && last_dot > 0 &&
+        !LooksLikeIPv4OpenAiHost(host)) {
+        const std::size_t prev_dot = host.rfind('.', last_dot - 1);
+        const std::size_t label_start = (prev_dot == std::string::npos) ? 0 : prev_dot + 1;
+        abbrev = AsciiLowerOpenAiLabel(host.substr(label_start, last_dot - label_start));
+    } else {
+        abbrev = AsciiLowerOpenAiLabel(host);
+    }
+    // 4. Cap: 24 UTF-8 bytes on a code-point boundary; the "…" suffix counts
+    // toward the cap, so a truncated form is at most 24 bytes total.
+    constexpr std::size_t kMaxOpenAiHostAbbrevBytes = 24;
+    if (abbrev.size() <= kMaxOpenAiHostAbbrevBytes) {
+        return abbrev;
+    }
+    constexpr std::string_view kEllipsis = "\xE2\x80\xA6"; // U+2026
+    return CapUserLanguageField(abbrev, kMaxOpenAiHostAbbrevBytes - kEllipsis.size()) +
+           std::string(kEllipsis);
+}
+
+std::string MakeOpenAiProfileName(std::string_view host_abbrev,
+                                  std::string_view model,
+                                  std::string_view name_template) {
+    // The empty-side rules collapse the template entirely (design-pick §7):
+    // no connector fragment (" / ") may survive a missing side.
+    if (host_abbrev.empty() && model.empty()) {
+        return {};
+    }
+    std::string out;
+    if (host_abbrev.empty()) {
+        out.assign(model);
+    } else if (model.empty()) {
+        out.assign(host_abbrev);
+    } else {
+        out.reserve(name_template.size() + host_abbrev.size() + model.size());
+        for (std::size_t i = 0; i < name_template.size();) {
+            if (name_template.compare(i, 3, "{h}") == 0) {
+                out.append(host_abbrev);
+                i += 3;
+            } else if (name_template.compare(i, 3, "{m}") == 0) {
+                out.append(model);
+                i += 3;
+            } else {
+                out.push_back(name_template[i]);
+                ++i;
+            }
+        }
+    }
+    return CapUserLanguageField(out, kMaxOpenAiProfileNameBytes);
+}
+
+std::string MakeUniqueOpenAiProfileName(const std::vector<OpenAiProfile>& existing,
+                                        std::string_view base_name) {
+    const auto name_taken = [&existing](std::string_view name) {
+        for (const OpenAiProfile& profile : existing) {
+            if (profile.name == name) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // The capped base itself is the first candidate (a base within the cap
+    // returns unchanged when free).
+    std::string candidate = CapUserLanguageField(base_name, kMaxOpenAiProfileNameBytes);
+    if (!name_taken(candidate)) {
+        return candidate;
+    }
+    // " (2)", " (3)" … : the suffix is always kept whole — the base is
+    // truncated to cap-minus-suffix on a code-point boundary first, so the
+    // result can never exceed kMaxOpenAiProfileNameBytes.
+    for (int n = 2;; ++n) {
+        const std::string suffix = " (" + std::to_string(n) + ")";
+        candidate = CapUserLanguageField(base_name, kMaxOpenAiProfileNameBytes - suffix.size());
+        candidate.append(suffix);
+        if (!name_taken(candidate)) {
+            return candidate;
+        }
+    }
+}
+
+std::size_t PlanOpenAiProfileUpsert(const std::vector<OpenAiProfile>& existing,
+                                    const OpenAiConfig& candidate_identity) {
+    // Storage identity (design-pick item 3): base_url ASCII case-INSENSITIVE
+    // (hosts are case-insensitive; the scheme/host case of a hand-typed URL
+    // must not fork one logical endpoint into two profiles), model case-
+    // SENSITIVE (model ids are opaque tokens — "GPT" and "gpt" are different
+    // models to a server).
+    for (std::size_t i = 0; i < existing.size(); ++i) {
+        if (EqualsIgnoreCaseAscii<char>(existing[i].cfg.base_url,
+                                        candidate_identity.base_url) &&
+            existing[i].cfg.model == candidate_identity.model) {
+            return i;
+        }
+    }
+    return existing.size(); // no match: the caller appends
 }
 
 LanguageMenuView BuildLanguageMenuView(LanguageEngine engine,
@@ -3705,6 +3996,13 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "    \"api_key_sha256\": \"" << EscapeJsonString(openai.api_key_sha256) << "\",\n";
     ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << "\n";
     ss << "  },\n";
+    // 261122_0001 B-U1 (design-pick §1): the profile library, emitted ONLY
+    // while non-empty (the optional-key convention — an empty library carries
+    // no information, so omitting it keeps every pre-261122_0001 config.json
+    // byte-identical, the openai_declared_languages precedent).
+    if (!openai_profiles.empty()) {
+        ss << "  \"openai_profiles\": " << SerializeOpenAiProfiles(openai_profiles) << ",\n";
+    }
     // 261116_0003 P9c-1a: the OpenAI declared-language set, emitted ONLY while
     // non-empty. Unlike the openai block above (sticky keys, so an untouched
     // round trip rewrites the defaults), an EMPTY set carries no information:
@@ -3762,6 +4060,10 @@ bool AppConfig::FromJsonString(std::string_view json) {
     // array value always is) and parsed after the loop.
     std::string raw_openai_declared_languages;
     bool has_openai_declared_languages_key = false;
+    // 261122_0001 B-U1: the profile library array is captured RAW (the same
+    // posture) and parsed after the loop, next to the migration check.
+    std::string raw_openai_profiles;
+    bool has_openai_profiles_key = false;
     for (const auto& [k, v] : pairs) {
         if (k == "ui_language") {
             ui_language = v;
@@ -3821,6 +4123,12 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // the engine-view filter.
             raw_openai_declared_languages = v;
             has_openai_declared_languages_key = true;
+        } else if (k == "openai_profiles") {
+            // 261122_0001 B-U1: an ARRAY value is captured RAW by the reader,
+            // parsed after the loop next to the migration check (the key's
+            // PRESENCE suppresses the synthesis, so both need their flags).
+            raw_openai_profiles = v;
+            has_openai_profiles_key = true;
         } else if (k == "user_languages_version") {
             // 261116_0003 P9a fix PR9-09: the text is validated STRICTLY
             // (digit-only) in the deferred handling below; a non-numeric or
@@ -3991,6 +4299,30 @@ bool AppConfig::FromJsonString(std::string_view json) {
             ParseOpenAiDeclaredLanguagesArray(raw_openai_declared_languages));
     } else {
         PublishOpenAiDeclaredLanguages(openai_declared_languages);
+    }
+    // 261122_0001 B-U1 (design-pick §2 "마이그레이션"): a PRESENT key is
+    // authoritative — it replaces the in-memory library, exactly like the
+    // user_languages block. An ABSENT key never erases: when the "openai"
+    // block is non-empty (any of the four identity/key fields set — consent
+    // alone is not "configured"), ONE profile is synthesized from it with a
+    // name derived through the pure helpers under the FIXED migration
+    // template, so the same input file always yields the same library. The
+    // "openai" block itself is copied BYTE-IDENTICALLY (never moved, never
+    // rewritten); when it is empty the member keeps its current value, the
+    // reader-wide absent-key convention.
+    if (has_openai_profiles_key) {
+        std::vector<OpenAiProfile> parsed_profiles;
+        ParseOpenAiProfilesBlock(raw_openai_profiles, parsed_profiles);
+        openai_profiles = std::move(parsed_profiles);
+    } else if (!openai.base_url.empty() || !openai.model.empty() ||
+               !openai.api_key_dpapi.empty() || !openai.api_key_sha256.empty()) {
+        OpenAiProfile synthesized;
+        synthesized.name = MakeOpenAiProfileName(
+            OpenAiHostAbbrev(openai.base_url), openai.model,
+            kOpenAiMigrationNameTemplate);
+        synthesized.cfg = openai;
+        openai_profiles.clear();
+        openai_profiles.push_back(std::move(synthesized));
     }
     return true;
 }
