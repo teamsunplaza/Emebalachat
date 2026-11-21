@@ -1458,6 +1458,75 @@ bool CngSha256Hex(const std::filesystem::path& file, std::string& out_hex) {
     return ok && out_hex.size() == 64;
 }
 
+// 261122_0001 A3 (finding F12, blind-qa verified 2/2): the single-instance
+// early-exit used to warn the twice-launching user with a foreground
+// MessageBoxW that held the foreground for ~1.5-3 s (input-intercepting
+// modal). The notice now renders on the app's EXISTING non-activating
+// surface - TooltipWindow in REQ-R08 message mode (WS_EX_NOACTIVATE popup
+// shown with SWP_NOACTIVATE, 1.8 s autohide) - so the user is still
+// informed while NO window of this process can become foreground. The
+// strings stay on StringId::AppName / AppAlreadyRunning; like the old
+// MessageBox this runs BEFORE I18n::Initialize on the second instance, so
+// they render the English table (the R6 Phase 5 contract at the gate
+// below). COM/D2D/DWrite never came up on this path before, so COM is
+// initialized here and torn down on return. Degrade: when the notice
+// window cannot be created (no COM/D2D on the box), the old MessageBox
+// remains the fallback - the twice-launching user is ALWAYS informed.
+void ShowSecondInstanceNotice(HINSTANCE hInstance) {
+    const HRESULT hr_com = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool com_ok = SUCCEEDED(hr_com) || (hr_com == RPC_E_CHANGED_MODE);
+
+    bool shown = false;
+    if (com_ok) {
+        emebalachat::TooltipWindow notice;
+        if (notice.Create(hInstance)) {
+            POINT cur = {};
+            if (!::GetCursorPos(&cur)) {
+                cur = POINT{0, 0};
+            }
+            // Offset mirrors the Win+F9 toggle-notice placement (main.cpp
+            // uses cursor.x + 12, cursor.y + 12); ShowMessage clamps the
+            // card into the monitor work area itself.
+            notice.ShowMessage(
+                cur.x + 12, cur.y + 12,
+                emebalachat::I18n::Get(emebalachat::StringId::AppName),
+                emebalachat::I18n::Get(emebalachat::StringId::AppAlreadyRunning));
+            // Pump until the REQ-R08 autohide dismisses the card
+            // (kTimerMessageAutohide -> Dismiss -> MarkHidden), bounded so a
+            // stuck timer can never hold this process past ~6 s.
+            bool quit = false;
+            const DWORD deadline = ::GetTickCount() + 6000;
+            while (notice.IsVisible() && !quit && ::GetTickCount() < deadline) {
+                MSG msg = {};
+                if (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    if (msg.message == WM_QUIT) {
+                        quit = true;
+                        break;
+                    }
+                    ::TranslateMessage(&msg);
+                    ::DispatchMessageW(&msg);
+                } else {
+                    ::Sleep(10);
+                }
+            }
+            shown = true; // notice.Create succeeded: the card rendered (or autohid)
+        }
+    }
+    if (!shown) {
+        // Documented degrade (A3): D2D/DWrite unavailable -> the original
+        // informing modal, unchanged.
+        ::MessageBoxW(
+            nullptr,
+            emebalachat::I18n::Get(emebalachat::StringId::AppAlreadyRunning).c_str(),
+            emebalachat::I18n::Get(emebalachat::StringId::AppName).c_str(),
+            MB_OK | MB_ICONINFORMATION
+        );
+    }
+    if (com_ok) {
+        ::CoUninitialize();
+    }
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
     (void)hPrevInstance;
     (void)pCmdLine;
@@ -1549,20 +1618,22 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     (void)emebalachat::EnsureVulkanGuard();
 
     // 1. Single Instance Mutex
-    // NOTE (R6 Phase 5 sweep): the two startup MessageBox texts below are now
+    // NOTE (R6 Phase 5 sweep): the startup notice texts below are now
     // routed through i18n (StringId::AppAlreadyRunning / AppComFailed; the
     // captions use StringId::AppName per REQ-B-006). They run BEFORE
     // I18n::Initialize (config not loaded yet on the second instance), so
     // they render the English table - behaviorally identical to the old
     // hardcoded literals, but the strings live in exactly one place.
+    // 261122_0001 A3 (F12): the AppAlreadyRunning notice is a NON-ACTIVATING
+    // TooltipWindow card (ShowSecondInstanceNotice) instead of a foreground
+    // MessageBoxW; only the rare D2D-less degrade and the AppComFailed warn
+    // still use a MessageBox.
     HANDLE hMutex = ::CreateMutexW(nullptr, TRUE, L"Local\\Emebalachat_SingleInstance");
     if (!hMutex || ::GetLastError() == ERROR_ALREADY_EXISTS) {
-        ::MessageBoxW(
-            nullptr,
-            emebalachat::I18n::Get(emebalachat::StringId::AppAlreadyRunning).c_str(),
-            emebalachat::I18n::Get(emebalachat::StringId::AppName).c_str(),
-            MB_OK | MB_ICONINFORMATION
-        );
+        // 261122_0001 A3 (F12): the twice-launching user still gets the
+        // localized notice, but on the WS_EX_NOACTIVATE tooltip surface -
+        // this early-exit path creates no activating window.
+        ShowSecondInstanceNotice(hInstance);
         if (hMutex) {
             ::CloseHandle(hMutex);
         }
