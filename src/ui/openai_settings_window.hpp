@@ -23,6 +23,7 @@
 
 #include <windows.h>
 
+#include "../config.hpp" // 261122_0001 B-U4: OpenAiProfile (the profile library fold)
 #include "../openai_compatible_client.hpp"
 
 namespace emebalachat {
@@ -98,6 +99,36 @@ struct OpenAiDeclaredLanguagesFold {
 // (they fold the checklist but cannot persist it).
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(
     HWND parent, OpenAiConfig& cfg, OpenAiDeclaredLanguagesFold& declaration);
+
+// 261122_0001 B-U4 (design-pick items 4 + 9): the OpenAI profile LIBRARY's
+// fold, the second set of edits this dialog may stage. Same single-writer
+// principle as the declaration fold above — the dialog mutates only its own
+// WORKING COPY (seeded from `profiles` on entry) and never performs config file
+// I/O for profiles; the caller (main.cpp, U5) persists the returned library
+// through its own SaveToFile.
+//   * In:  `profiles.profiles` is the library the dialog opens with, so the
+//          profile picker can list it. The dialog deep-copies it; the caller's
+//          vector is NOT modified on entry (a cancelled dialog must leave the
+//          caller's library exactly as it was).
+//   * Out: `edited == true` (IDOK only) means `profiles` now holds the library
+//          the user staged with the [저장]/[삭제] buttons — adopt it wholesale.
+//          `edited == false` (Cancel, [설정 삭제], a failed dialog creation)
+//          means "nothing to adopt": the vector is left as it came in and the
+//          caller keeps its stored library. Note the [설정 삭제] (REQ-051
+//          kDeleted) path deliberately reports false: that button persists its
+//          own clear immediately, and the staged profile edits die with it.
+struct OpenAiProfilesFold {
+    bool edited = false;
+    std::vector<OpenAiProfile> profiles;
+};
+
+// The library-aware entry: everything the declaration overload does, plus the
+// profile fold. The profile row ([저장]/[삭제]) acts on the working copy only;
+// the active `cfg` output is still the on-screen fields (REQ-051 semantics
+// unchanged).
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(
+    HWND parent, OpenAiConfig& cfg, OpenAiDeclaredLanguagesFold& declaration,
+    OpenAiProfilesFold& profiles);
 
 // REQ-051 (Symptom C): the pick-or-insert plan for the model combo refill.
 // `items` are the freshly fetched model ids with the combo indices they were

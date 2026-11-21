@@ -25261,6 +25261,13 @@ int main() {
     // designator/positional-slot source pins. Registered last, per the
     // end-of-file pattern.
     openai_profile_tests::TestOpenAiProfileI18nStrings();
+    // 261122_0001 B-U4 (builder draw 8): the OpenAI settings dialog's PROFILE-ROW
+    // BEHAVIOR and the library fold — the pure seams the dialog proc calls (combo
+    // label plan, save/upsert plan, cap refusal, {n} notice, the key-pair matrix
+    // with real DPAPI, the reasoning re-seed rule) plus source-structure pins for
+    // the proc wiring and the IDOK / IDCANCEL / kDeleted fold semantics.
+    // Registered last, per the end-of-file pattern.
+    openai_profile_tests::TestOpenAiProfileDialogBehavior();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

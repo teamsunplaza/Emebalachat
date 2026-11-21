@@ -208,6 +208,211 @@ void PlanOpenAiReasoningComboPopulate(const std::vector<std::string>& items,
     out_pending = false;
 }
 
+// ---- 261122_0001 B-U4 (design-pick item 9): the profile-row behavior seams ---
+// Everything in this block runs on the GUI thread inside the dialog proc, and
+// every piece that can be decided without an HWND is a PURE function defined
+// here at namespace scope (the same split as the declaration folds and the
+// reasoning planners above) so tests/openai_profile_tests.inc drives the EXACT
+// algorithm the dialog applies. The suite forward-declares these; they stay out
+// of openai_settings_window.hpp on purpose (TU-scope helpers, not public API).
+
+// REQ-045/REQ-050: the masked read-back placeholder ("abcdef***") that means
+// "the saved pair is still in effect; do not treat this text as a key". Moved
+// above the anonymous namespace by B-U4 so the namespace-scope save-path helper
+// below shares this ONE definition with the IDOK / fetch-probe call sites (no
+// second mask test can drift).
+bool IsMaskedPlaceholder(std::string_view keyUtf8) {
+    return keyUtf8.size() > 3 && keyUtf8.compare(keyUtf8.size() - 3, 3, "***") == 0;
+}
+
+// The reasoning-effort re-seed rule (design item 9, risk R3). Selecting a
+// profile hands the form a NEW saved value, and the dialog's think-combo state
+// has three parts: the effective value, the combo's item list, and the F-4
+// "pending" flag. This helper owns the value it carries and whether that value
+// is still awaiting a list that can show it. The rule is exactly the F-4
+// WM_INITDIALOG convention (one saved value, one pending arm) applied to a
+// mid-dialog change of provenance:
+//   * a non-empty saved effort is PENDING (the combo can only show the standard
+//     fallback until a catalog arrives, so a server-extension value such as
+//     OpenRouter's "xhigh" must survive to the save path);
+//   * an empty saved effort is the server default, nothing to preserve.
+// RefreshReasoningCombo then reconciles the value against the current list, so
+// a standard value is selected immediately and pending clears. Out-parameter
+// form (not a struct) so the unit suite can forward-declare and drive it
+// without duplicating a type definition across TUs — the same shape as
+// PlanOpenAiReasoningComboPopulate above.
+void PlanOpenAiReasoningReseed(std::string_view saved_value, std::string& out_value,
+                               bool& out_pending) {
+    out_value.assign(saved_value);
+    out_pending = !out_value.empty();
+}
+
+// Display sanitizer for strings that came from user data (a profile name, or
+// the base_url/model a profile name is derived from). Reuses the R2-M/G-02
+// precedent rather than restating its strip set: SanitizeOpenAiErrorDetail's
+// pass 1 drops the invisible bidi/format characters (U+202A-202E, U+2066-2069,
+// U+200E/200F, U+061C, U+2060-2064, ZWSP/SHY/CGJ/MVS, U+FEFF) WHOLE and
+// collapses control/whitespace runs, which is exactly what must never reach a
+// combo row (a name with an RLO could visually reorder the list) or a derived
+// name (a bidi mark between two model tokens would survive into user data).
+// The SECOND argument is empty on purpose: no key is involved here, and the
+// mask pass is skipped by construction for an empty key (so no occurrence of a
+// configured key can ever be masked out of a profile name).
+std::string SanitizeOpenAiProfileDisplayText(std::string_view text) {
+    return SanitizeOpenAiErrorDetail(text, std::string_view{});
+}
+
+// The profile picker's label plan (design item 9.2). One UTF-8 label per
+// entry, in LIBRARY order — the combo index IS the library index, and that
+// identity is what makes CBN_SELCHANGE, [저장] and [삭제] address the same
+// entry. The dialog then selects an index itself (see RefillOpenAiProfileCombo:
+// an index at or past the end leaves the picker unselected, which is both the
+// "opened on the active block" and the "I just deleted the selected entry"
+// state).
+//   * `name_template` is the localization of OpenAiProfileNameTemplate (UTF-8);
+//     the dialog passes the current UI locale, the suite passes a literal.
+//   * `fallback_label` is the localization of OpenAiProfileLabel, used ONLY for
+//     an entry that carries neither a name nor a derivable one (a hand-edited
+//     or down-migrated library); a closed combo must never show a blank row.
+// A stored name is user data and is shown SANITIZED, never re-derived: the name
+// is fixed at save time (design item 7), so a later locale change must not
+// relabel the user's library.
+std::vector<std::string> PlanOpenAiProfileComboLabels(
+    const std::vector<OpenAiProfile>& profiles, std::string_view name_template,
+    std::string_view fallback_label) {
+    std::vector<std::string> labels;
+    labels.reserve(profiles.size());
+    for (const OpenAiProfile& profile : profiles) {
+        std::string label = SanitizeOpenAiProfileDisplayText(profile.name);
+        if (label.empty()) {
+            // Nameless entry: derive the name the save path would have derived,
+            // from the SANITIZED endpoint fields (bidi-strip before derivation,
+            // design item 7 / R2-M).
+            const std::string host =
+                SanitizeOpenAiProfileDisplayText(OpenAiHostAbbrev(profile.cfg.base_url));
+            const std::string model = SanitizeOpenAiProfileDisplayText(profile.cfg.model);
+            label = SanitizeOpenAiProfileDisplayText(
+                MakeOpenAiProfileName(host, model, name_template));
+        }
+        if (label.empty()) {
+            label.assign(fallback_label);
+        }
+        labels.push_back(std::move(label));
+    }
+    return labels;
+}
+
+// The [저장] planner (design item 9.4 + design-pick item 3). `candidate` is the
+// form already resolved by the caller: the on-screen base_url / model /
+// reasoning effort / consent, and a FINAL key pair (the masked-placeholder and
+// digest-before-protect work happens in ResolveOpenAiProfileKeyPair, because it
+// needs DPAPI and must scrub the cleartext edit buffer).
+//   * identity match  -> that entry's cfg is overwritten WHOLESALE (every field,
+//                        including the pair and the consent flag) and its NAME
+//                        is kept — the name is user data fixed at creation, and
+//                        an endpoint edit must not silently rename a profile;
+//   * no identity     -> append one entry whose name is derived from the
+//     and there is        SANITIZED endpoint (host abbreviation -> template ->
+//     room in the         de-duplication), so two saves of the same endpoint/
+//     library             model family never present two identical rows;
+//   * no identity     -> REFUSED: returns false, `out_library` is the caller's
+//     and the library     library UNCHANGED (byte-identical, the cap rule of
+//     is at the cap       design item 3 / kMaxOpenAiProfiles).
+// Out-parameter form (no plan struct) for the same cross-TU reason as
+// PlanOpenAiReasoningReseed above. `out_index` is the saved entry's index in
+// `out_library` and is meaningful only when the call returns true.
+bool PlanOpenAiProfileSave(const std::vector<OpenAiProfile>& library,
+                           const OpenAiConfig& candidate, std::string_view name_template,
+                           std::vector<OpenAiProfile>& out_library,
+                           std::size_t& out_index) {
+    out_library = library;
+    out_index = PlanOpenAiProfileUpsert(library, candidate);
+    if (out_index < library.size()) {
+        out_library[out_index].cfg = candidate; // upsert: cfg wholesale, name kept
+        return true;
+    }
+    if (library.size() >= kMaxOpenAiProfiles) {
+        return false; // append refused: the cap; nothing was modified
+    }
+    // Append: host abbreviation first, then the sanitize (the 24-byte abbrev is
+    // already bounded, so the display bound can never truncate a host), then the
+    // model, then the localized template, then uniqueness inside the library.
+    const std::string host =
+        SanitizeOpenAiProfileDisplayText(OpenAiHostAbbrev(candidate.base_url));
+    const std::string model = SanitizeOpenAiProfileDisplayText(candidate.model);
+    OpenAiProfile added;
+    added.name = MakeUniqueOpenAiProfileName(
+        library, MakeOpenAiProfileName(host, model, name_template));
+    added.cfg = candidate;
+    out_library.push_back(std::move(added));
+    out_index = out_library.size() - 1;
+    return true;
+}
+
+// The cap notice's `{n}` substitution (design item 9.4). The StringId carries
+// one token; the cap lives in code (kMaxOpenAiProfiles), so the number can
+// never drift from the reader's own bound. Every occurrence is replaced (a
+// locale may repeat it); an absent token returns the message unchanged.
+std::wstring FormatOpenAiProfileLimitNotice(std::wstring_view message, std::size_t limit) {
+    constexpr std::wstring_view kToken = L"{n}";
+    const std::wstring value = std::to_wstring(limit);
+    std::wstring out;
+    out.reserve(message.size() + value.size());
+    std::size_t pos = 0;
+    for (;;) {
+        const std::size_t hit = message.find(kToken, pos);
+        if (hit == std::wstring_view::npos) {
+            out.append(message.substr(pos));
+            return out;
+        }
+        out.append(message.substr(pos, hit - pos));
+        out.append(value);
+        pos = hit + kToken.size();
+    }
+}
+
+// The [저장] key-handling matrix (design item 9.4). `key_edit` is the API-key
+// edit's UTF-8 text and is SCRUBBED IN PLACE on every path that touched a
+// cleartext (the REQ-050/OF-01 contract: ProtectOpenAiApiKey scrubs the caller's
+// buffer itself, and the explicit SecureZeroMemory covers the failure arm).
+// `existing` is the pair the dialog carries in *st->cfg — the verified active
+// pair at open, or the selected profile's verified pair.
+//   * masked placeholder -> KEEP `existing`'s pair verbatim (the placeholder is
+//                           display text, never a key);
+//   * a typed key        -> digest BEFORE protect (hashing after protect would
+//                           store SHA-256 of the scrubbed zero buffer and the
+//                           pair would be refused forever, REQ-050 b6f98da),
+//                           then DPAPI-protect in place;
+//   * empty edit         -> an EMPTY pair (the user cleared the key; adopting
+//                           the previous profile's pair here would silently
+//                           resurrect a key the form no longer shows);
+//   * protect failure    -> false with BOTH halves cleared, so a half-pair can
+//                           never reach the refuse-forever state.
+// No plaintext survives: the edit buffer is zeroed and the only key material in
+// `out` is the opaque DPAPI blob + its digest.
+bool ResolveOpenAiProfileKeyPair(std::string& key_edit, const OpenAiConfig& existing,
+                                 OpenAiConfig& out) {
+    if (IsMaskedPlaceholder(key_edit)) {
+        out.api_key_dpapi = existing.api_key_dpapi;
+        out.api_key_sha256 = existing.api_key_sha256;
+        return true;
+    }
+    if (key_edit.empty()) {
+        out.api_key_dpapi.clear();
+        out.api_key_sha256.clear();
+        return true;
+    }
+    OpenAiSha256Hex(key_edit, out.api_key_sha256);
+    const bool protected_ok = ProtectOpenAiApiKey(key_edit, out.api_key_dpapi);
+    SecureZeroMemory(key_edit.data(), key_edit.size());
+    if (!protected_ok) {
+        out.api_key_dpapi.clear();
+        out.api_key_sha256.clear();
+        return false;
+    }
+    return true;
+}
+
 namespace {
 
 // Control IDs.
@@ -324,6 +529,20 @@ struct OpenAiDialogState {
     // a list shows the value and whenever the user makes an explicit pick. GUI
     // thread only.
     bool reasoning_effort_pending = false;
+    // 261122_0001 B-U4 (design-pick item 9.1): the profile library's WORKING
+    // COPY — the dialog's only mutable view of the library. Seeded from the
+    // caller's fold on entry, mutated by [저장] (upsert) and [삭제] (erase), and
+    // handed back through OpenAiProfilesFold on the IDOK path. The dialog never
+    // writes it to disk (single-writer: the caller persists), and the active
+    // `openai` block stays the on-screen fields (REQ-051 semantics). GUI thread
+    // only.
+    std::vector<OpenAiProfile> profiles;
+    // True once [저장] or [삭제] changed that working copy. The dialog return
+    // path reads it to decide whether the fold carries the library out — false
+    // on Cancel and on the REQ-051 [설정 삭제] path, where the staged profile
+    // edits are discarded and the caller keeps its stored library. GUI thread
+    // only.
+    bool profiles_edited = false;
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -340,10 +559,6 @@ void SetCtrlText(HWND dlg, int id, std::wstring_view text) {
     if (HWND c = ::GetDlgItem(dlg, id)) {
         ::SetWindowTextW(c, std::wstring(text).c_str());
     }
-}
-
-bool IsMaskedPlaceholder(std::string_view keyUtf8) {
-    return keyUtf8.size() > 3 && keyUtf8.compare(keyUtf8.size() - 3, 3, "***") == 0;
 }
 
 // REQ-050 (auto-fetch): debounce timer for the model-list auto-fetch. The
@@ -604,6 +819,92 @@ void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st) {
     st->reasoning_effort_pending = pending;
 }
 
+// 261122_0001 B-U4 (design item 9.2): (re)populate the profile picker from the
+// WORKING library. `select_index >= profiles.size()` leaves the picker
+// UNSELECTED — the state the dialog opens in (it always opens on the active
+// block, never on a profile) and the state after the selected entry was just
+// deleted. The label list and the index rule are the pure plan
+// (PlanOpenAiProfileCombo), so the suite pins exactly what the combo shows.
+// The picker is a closed CBS_DROPDOWNLIST: a refill can never fabricate a
+// typed profile, and CB_SETCURSEL is programmatic (it does NOT raise
+// CBN_SELCHANGE), so a refill cannot re-enter ApplyOpenAiProfileSelection.
+void RefillOpenAiProfileCombo(HWND dlg, OpenAiDialogState* st, std::size_t select_index) {
+    HWND combo = ::GetDlgItem(dlg, IDC_PROFILE_COMBO);
+    if (!combo) return;
+    const std::vector<std::string> labels = PlanOpenAiProfileComboLabels(
+        st->profiles, ToUtf8(I18n::Get(StringId::OpenAiProfileNameTemplate)),
+        ToUtf8(I18n::Get(StringId::OpenAiProfileLabel)));
+    ::SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    for (const std::string& label : labels) {
+        const std::wstring wide = ToUtf16(label);
+        ::SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(wide.c_str()));
+    }
+    // An index at or past the end leaves the picker UNSELECTED: that is the
+    // "dialog opened on the active block" state and the "the selected profile
+    // was just deleted" state, never a fabricated pick.
+    if (select_index < st->profiles.size()) {
+        ::SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(select_index), 0);
+    }
+}
+
+// 261122_0001 B-U4 (design item 9.3): a profile pick refills the form from that
+// profile's cfg. Order matters and is part of the contract:
+//   1. the KEY PAIR is resolved first, because the masked placeholder in the
+//      edit is display text and the IDOK/[저장] paths read the actual pair from
+//      the dialog's in/out copy (*st->cfg). The pair is adopted ONLY when it
+//      passes the REQ-050 integrity check (unprotect + digest re-hash); a pair
+//      that fails is NOT adopted and the key edit is cleared, which is the
+//      REQ-050 posture — the user re-enters the key once and the save path
+//      stores a valid pair. An entry with no pair clears BOTH as well: keeping
+//      the previous profile's placeholder visible would silently re-adopt the
+//      previous profile's key on the next save.
+//   2. base URL / model text. Each SetWindowTextW raises EN_CHANGE, which
+//      re-arms the REQ-050 debounce timer through the existing handler, so an
+//      https+key profile auto-fetches its model list exactly like a reopened
+//      saved dialog (and the completion repopulates the reasoning row).
+//   3. http consent, adopted from the profile so the consent gate does not
+//      re-ask about an endpoint the user already accepted.
+//   4. the reasoning effort is RE-SEEDED through the F-4 pending convention
+//      (PlanOpenAiReasoningReseed) and the combo repopulated for the model now
+//      on screen.
+void ApplyOpenAiProfileSelection(HWND dlg, OpenAiDialogState* st) {
+    HWND combo = ::GetDlgItem(dlg, IDC_PROFILE_COMBO);
+    if (!combo) return;
+    const LRESULT sel = ::SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || static_cast<std::size_t>(sel) >= st->profiles.size()) {
+        return; // no pick (or a stale index): nothing to refill
+    }
+    const OpenAiProfile& profile = st->profiles[static_cast<std::size_t>(sel)];
+
+    std::string key;
+    const bool pair_adopted = !profile.cfg.api_key_dpapi.empty() &&
+                              OpenAiKeyPairIntegrityOk(profile.cfg) &&
+                              UnprotectOpenAiApiKey(profile.cfg.api_key_dpapi, key);
+    if (pair_adopted) {
+        st->cfg->api_key_dpapi = profile.cfg.api_key_dpapi;
+        st->cfg->api_key_sha256 = profile.cfg.api_key_sha256;
+    } else {
+        st->cfg->api_key_dpapi.clear();
+        st->cfg->api_key_sha256.clear();
+        SetCtrlText(dlg, IDC_API_KEY, L"");
+        if (!profile.cfg.api_key_dpapi.empty()) {
+            // Shape-only: the key material itself is never logged.
+            DIAG_F("UI/OpenAiSettings/013: the selected profile's API-key pair failed "
+                   "the integrity check; the key field was cleared for re-entry\n");
+        }
+    }
+    SetCtrlText(dlg, IDC_BASE_URL, ToUtf16(profile.cfg.base_url));
+    SetCtrlText(dlg, IDC_MODEL_COMBO, ToUtf16(profile.cfg.model));
+    if (pair_adopted) {
+        SetCtrlText(dlg, IDC_API_KEY, ToUtf16(MaskOpenAiApiKey(key)));
+    }
+    SecureZeroMemory(key.data(), key.size());
+    st->cfg->http_consent_given = profile.cfg.http_consent_given;
+    PlanOpenAiReasoningReseed(profile.cfg.reasoning_effort, st->reasoning_effort,
+                              st->reasoning_effort_pending);
+    RefreshReasoningCombo(dlg, st);
+}
+
 // REQ-050 (auto-fetch) / REQ-052 (async): the model-list fetch shared by the
 // manual "Fetch model list" button and the debounced auto-fetch — the
 // pre-REQ-052 DoFetchModels body split at the network boundary. The GUI
@@ -798,6 +1099,11 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             KeyAvailableForFetch(dlg, st->cfg)) {
             ::SetTimer(dlg, kFetchTimerId, kFetchDebounceMs, nullptr);
         }
+        // 261122_0001 B-U4 (design item 9.2): list the working library's
+        // display names in the profile picker, with NO selection — the dialog
+        // always opens on the active block above, never on a stored profile, so
+        // an accidental [삭제] cannot claim a profile the user never picked.
+        RefillOpenAiProfileCombo(dlg, st, st->profiles.size());
         return TRUE;
     }
     case WM_TIMER:
@@ -836,6 +1142,16 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (st && LOWORD(wp) == IDC_REASONING_COMBO && HIWORD(wp) == CBN_SELCHANGE) {
             st->reasoning_effort = ReasoningEffortSelection(dlg, st);
             st->reasoning_effort_pending = false;
+            return TRUE;
+        }
+        // 261122_0001 B-U4 (design item 9.3): a pick in the profile picker
+        // refills the form from that profile's cfg (key pair / base URL /
+        // model / reasoning effort / consent — see ApplyOpenAiProfileSelection).
+        // The picker is a closed list, so this is the ONLY way a profile is
+        // ever chosen; a CBN_SELCHANGE with no current selection (raised by the
+        // CB_RESETCONTENT of a refill) is ignored by the helper.
+        if (st && LOWORD(wp) == IDC_PROFILE_COMBO && HIWORD(wp) == CBN_SELCHANGE) {
+            ApplyOpenAiProfileSelection(dlg, st);
             return TRUE;
         }
         // REQ-050 (auto-fetch): debounce model-list fetches while the user
@@ -1001,6 +1317,12 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // any later in-memory save is the documented integration gap.
             // Fail-closed: a load/save failure keeps the dialog open with
             // every field intact — nothing is ever half-cleared.
+            // 261122_0001 B-U4 (design item 9.8): the STAGED PROFILE LIBRARY
+            // edits die with this button. It ends the dialog with a NON-IDOK
+            // code, so the profile fold reports edited = false and the caller
+            // keeps its stored library — only the ACTIVE block's settings are
+            // deleted here, and a half-applied profile stage can never leak out
+            // through this path.
             AppConfig persisted;
             if (!persisted.LoadFromFile()) {
                 DIAG_F("UI/OpenAiSettings/005: delete requested but config load failed; "
@@ -1019,6 +1341,97 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             *st->cfg = OpenAiConfig{};
             st->deleted = true;
             ::EndDialog(dlg, IDC_DELETE_BTN);
+            return TRUE;
+        }
+        case IDC_PROFILE_SAVE_BTN: {
+            // 261122_0001 B-U4 (design item 9.4): [저장] upserts the CURRENT
+            // form into the working library. It performs NO config file I/O
+            // (single writer: the caller persists the folded library) and it
+            // does NOT touch the active `openai` output — that is still IDOK's
+            // on-screen fields (REQ-051 semantics unchanged).
+            OpenAiConfig candidate;
+            candidate.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
+            candidate.model = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+            // The same read IDOK performs: the reasoning combo's selected item
+            // IS the persisted value, and the F-4 pending value wins while no
+            // list can show it (the user's saved choice must survive a save).
+            candidate.reasoning_effort = ReasoningEffortSelection(dlg, st);
+            if (st->reasoning_effort_pending) {
+                candidate.reasoning_effort = st->reasoning_effort;
+            }
+            candidate.http_consent_given = st->cfg->http_consent_given;
+            // Key matrix (design item 9.4): a masked placeholder keeps the pair
+            // the dialog carries, a typed key is digested BEFORE protect and
+            // scrubbed in place, an empty edit stores no pair. No cleartext
+            // leaves this block.
+            std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
+            const bool key_ok = ResolveOpenAiProfileKeyPair(keyUtf8, *st->cfg, candidate);
+            SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+            if (!key_ok) {
+                // ProtectOpenAiApiKey failed: nothing is staged (the plan below
+                // never runs), so the working library is exactly as it was.
+                ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
+                              I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                              MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+            std::vector<OpenAiProfile> updated_library;
+            std::size_t saved_index = 0;
+            const bool saved_applied = PlanOpenAiProfileSave(
+                st->profiles, candidate,
+                ToUtf8(I18n::Get(StringId::OpenAiProfileNameTemplate)), updated_library,
+                saved_index);
+            if (!saved_applied) {
+                // The ONLY refusal reason is the cap: no identity match and the
+                // library already holds kMaxOpenAiProfiles. Refuse, say why (the
+                // cap number substituted into the localized notice), and modify
+                // NOTHING — `updated_library` was the untouched copy, so the
+                // working library stays byte-identical.
+                const std::wstring notice = FormatOpenAiProfileLimitNotice(
+                    I18n::Get(StringId::OpenAiProfileLimit), kMaxOpenAiProfiles);
+                ::MessageBoxW(dlg, notice.c_str(),
+                              I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                              MB_OK | MB_ICONINFORMATION);
+                return TRUE;
+            }
+            st->profiles = std::move(updated_library);
+            st->profiles_edited = true;
+            // Keep the just-saved entry SELECTED: saved_index is the upsert match
+            // or the appended entry, so the picker shows what [저장] just wrote.
+            RefillOpenAiProfileCombo(dlg, st, saved_index);
+            DIAG_F("UI/OpenAiSettings/012: OpenAI profile saved (index %lu, library %lu)\n",
+                   static_cast<unsigned long>(saved_index),
+                   static_cast<unsigned long>(st->profiles.size()));
+            return TRUE;
+        }
+        case IDC_PROFILE_DEL_BTN: {
+            // 261122_0001 B-U4 (design item 9.5): [삭제] removes the SELECTED
+            // profile from the WORKING library after an explicit confirmation
+            // (the prompt states that the stored key goes with it). No
+            // selection = nothing to delete = a silent no-op; the dialog never
+            // guesses "the first profile". The stored DPAPI pair dies with the
+            // entry — this path never held cleartext, so there is nothing to
+            // scrub, and the caller's stored library is untouched until it
+            // adopts the fold.
+            HWND profile_combo = ::GetDlgItem(dlg, IDC_PROFILE_COMBO);
+            const LRESULT sel =
+                profile_combo ? ::SendMessageW(profile_combo, CB_GETCURSEL, 0, 0) : CB_ERR;
+            if (sel < 0 || static_cast<std::size_t>(sel) >= st->profiles.size()) {
+                return TRUE;
+            }
+            if (::MessageBoxW(dlg, I18n::Get(StringId::OpenAiProfileDeleteConfirm).c_str(),
+                              I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                              MB_YESNO | MB_ICONWARNING) != IDYES) {
+                return TRUE;
+            }
+            st->profiles.erase(st->profiles.begin() + sel);
+            st->profiles_edited = true;
+            // Rebuild and CLEAR the selection: the row the user just deleted
+            // must not stay highlighted (a follow-up [삭제] would target the
+            // entry that slid into its index).
+            RefillOpenAiProfileCombo(dlg, st, st->profiles.size());
+            DIAG_F("UI/OpenAiSettings/014: OpenAI profile deleted (library %lu)\n",
+                   static_cast<unsigned long>(st->profiles.size()));
             return TRUE;
         }
         }
@@ -1380,13 +1793,22 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
 }
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
-                                                 OpenAiDeclaredLanguagesFold& declaration) {
+                                                 OpenAiDeclaredLanguagesFold& declaration,
+                                                 OpenAiProfilesFold& profiles) {
     // 261116_0003 P9c-1c: `declaration` starts cleared on every entry so a
     // caller that never reaches IDOK (Cancel, [삭제], a failed dialog creation)
     // reads edited=false and an empty set - the "nothing to adopt" contract.
     declaration.edited = false;
     declaration.declared_languages.clear();
     OpenAiDialogState st{&cfg, false, false};
+    // 261122_0001 B-U4 (design-pick item 9.1): seed the dialog's WORKING library
+    // copy from the fold's INPUT half. A deep copy, deliberately not a move: a
+    // caller that hands its live vector over and then cancels must still have
+    // its library intact. `edited` starts false and the fold's vector is left
+    // alone on entry, so "not edited" always means "the caller's vector is
+    // still the truth" (see OpenAiProfilesFold in the header).
+    st.profiles = profiles.profiles;
+    profiles.edited = false;
 
     const std::wstring title = I18n::Get(StringId::OpenAiSettingsTitle);
     TemplateBuilder tb;
@@ -1422,8 +1844,29 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // path. Deleted wins over saved (the button ends the dialog immediately,
     // so the two can never co-occur).
     if (st.deleted) return OpenAiSettingsOutcome::kDeleted;
-    return (st.saved && rc == IDOK) ? OpenAiSettingsOutcome::kSaved
-                                    : OpenAiSettingsOutcome::kCancelled;
+    const bool saved = st.saved && rc == IDOK;
+    // 261122_0001 B-U4 (design items 9.6/9.7/9.8): the staged profile library
+    // rides out on the IDOK path ONLY. Cancel, a failed dialog creation and the
+    // REQ-051 [설정 삭제] path all leave `edited` false — the [설정 삭제] path
+    // returned above, and its staged profile edits die with it (the caller keeps
+    // its stored library). On IDOK the caller adopts the vector wholesale and
+    // persists it through its own single SaveToFile.
+    profiles.edited = saved && st.profiles_edited;
+    if (profiles.edited) {
+        profiles.profiles = std::move(st.profiles);
+    }
+    return saved ? OpenAiSettingsOutcome::kSaved : OpenAiSettingsOutcome::kCancelled;
+}
+
+OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
+                                                 OpenAiDeclaredLanguagesFold& declaration) {
+    // 261116_0003 P9c-1c: declaration-only callers keep their exact contract.
+    // 261122_0001 B-U4: the profile row is still usable inside this dialog (it
+    // edits the local working copy), but with no library to hand out the edits
+    // are discarded on return — a caller that needs them persisted must use the
+    // library-aware overload above.
+    OpenAiProfilesFold profiles;
+    return ShowOpenAiSettingsDialogEx(parent, cfg, declaration, profiles);
 }
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg) {
