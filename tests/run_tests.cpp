@@ -25278,6 +25278,16 @@ int main() {
     // (the SEC-B5 note), so these are source-structure pins. Registered last,
     // per the end-of-file pattern.
     openai_profile_tests::TestOpenAiProfileCallerWiring();
+    // 261122_0001 fix-A1 (builder draw 11; fix-list-round1 rows R1-02 / R1-03 /
+    // R1-12): the profile library's locked SetOpenAiProfiles verb (write-
+    // surface pin over config.hpp/cpp mirroring the PR9-12 discipline), the
+    // shared-choke-point field caps (base_url 2048 B / model 512 B / dpapi
+    // blob 16384 B, UTF-8-boundary truncation), the fail-closed digest shape
+    // check (exactly 64 lowercase hex chars or BOTH key fields clear), and the
+    // R1-12 explicit-empty-array emission (delete-all survives reload +
+    // re-save; never-set still omits the key). Registered last, per the
+    // end-of-file pattern.
+    openai_profile_tests::TestOpenAiProfileFixA1();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

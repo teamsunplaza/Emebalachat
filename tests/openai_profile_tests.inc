@@ -5,7 +5,9 @@
 //
 // Covered, per the U1 unit contract:
 //   (1) round trip: parse -> emit -> re-parse equality (values AND bytes)
-//   (2) empty library => the "openai_profiles" key is NOT emitted
+//   (2) empty library => the "openai_profiles" key is NOT emitted while the
+//       fold was never touched; fix-A1 R1-12 emits an explicit [] once a
+//       present/loaded fold was emptied (see TestOpenAiProfileFixA1)
 //   (3) entry-count cap (the 33rd entry is dropped)
 //   (4) name byte cap at a UTF-8 code-point boundary
 //   (5) malformed entry skipped; non-array value => empty library
@@ -251,8 +253,12 @@ void TestOpenAiProfileConfigSchema() {
         TEST_CHECK(emptied.FromJsonString("{\"openai_profiles\": [], \"ui_language\": \"ko\"}") &&
                        emptied.openai_profiles.empty(),
                    "empty library: a present empty array reads as empty");
-        TEST_CHECK(emptied.ToJsonString().find("openai_profiles") == std::string::npos,
-                   "empty library: re-emission still omits the key");
+        // 261122_0001 fix-A1 (R1-12): a PRESENT empty array marks the fold
+        // touched, so the re-save EMITS the explicit [] — the pre-fix-A1 pin
+        // asserted the key was omitted here, which is exactly the R1-12
+        // resurrection hole (the next load's migration would re-synthesize).
+        TEST_CHECK(emptied.ToJsonString().find("\"openai_profiles\": []") != std::string::npos,
+                   "empty library: re-emission emits the explicit [] (R1-12)");
     }
 
     // ---- (3) entry-count cap: the 33rd entry is dropped -------------------
@@ -428,6 +434,429 @@ void TestOpenAiProfileConfigSchema() {
                   << std::endl;
     } else {
         std::cout << "[FAIL] 261122_0001 B-U1 OpenAI profile config schema + helpers: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 261122_0001 fix-A1 (builder draw 11; fix-list-round1 rows R1-02 / R1-03 /
+// R1-12): the profile library's LOCKED VERB, the parse FIELD CAPS, the
+// fail-closed DIGEST check, and the EXPLICIT-EMPTY-ARRAY emission.
+//
+//   R1-02  SetOpenAiProfiles mirrors SetOpenAiDeclaredLanguages: mutex_ +
+//          move-in, the same lock the serialiser takes. The write-surface pin
+//          below scans src/config.hpp + src/config.cpp ONLY — the remaining
+//          main.cpp direct caller is unit A2's migration, per the fix-A1
+//          scope (the member stays public until then; config.hpp's member
+//          contract documents the rule).
+//   R1-03  base_url <= 2048 B, model <= 512 B, api_key_dpapi <= 16384 B,
+//          truncated at a UTF-8 code-point boundary, at the shared
+//          ApplyOpenAiConfigPair choke point (active block AND entries).
+//          api_key_sha256 must be exactly 64 lowercase hex chars; anything
+//          else clears BOTH key fields (fail-closed pair atomicity).
+//   R1-12  openai_profiles_set: the verb marks it even for an empty fold, the
+//          load path marks it on a PRESENT key, the writer emits [] while
+//          set-and-empty, and the key stays omitted only while never set —
+//          so "deleted every profile" survives reload + re-save without the
+//          migration re-synthesizing (parse stays presence-gated).
+//
+// Zero network, zero UI: pure config-layer checks only.
+// ---------------------------------------------------------------------------
+void TestOpenAiProfileFixA1() {
+    std::cout << "[RUN] Testing 261122_0001 fix-A1 (R1-02/R1-03/R1-12)..." << std::endl;
+    const int failures_before = g_failed_count;
+
+    auto read_src = [](const std::filesystem::path& path, std::string& out) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            return false;
+        }
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        out = ss.str();
+        return true;
+    };
+    auto trim_ascii = [](std::string_view text) {
+        while (!text.empty() &&
+               std::isspace(static_cast<unsigned char>(text.front()))) {
+            text.remove_prefix(1);
+        }
+        while (!text.empty() &&
+               std::isspace(static_cast<unsigned char>(text.back()))) {
+            text.remove_suffix(1);
+        }
+        return std::string(text);
+    };
+    auto count_of = [](const std::string& hay, const std::string& needle) {
+        std::size_t count = 0;
+        for (std::size_t pos = hay.find(needle); pos != std::string::npos;
+             pos = hay.find(needle, pos + needle.size())) {
+            ++count;
+        }
+        return count;
+    };
+    const std::string kValidDigest(64, 'a'); // a well-formed digest stand-in
+
+    // ---- R1-02 (a): the write-surface pin over config.hpp/cpp --------------
+    {
+        const std::filesystem::path config_cpp = ResolveRepoFile(L"src\\config.cpp");
+        const std::filesystem::path config_hpp = ResolveRepoFile(L"src\\config.hpp");
+        std::string cpp_src;
+        std::string hpp_src;
+        const bool cpp_read = !config_cpp.empty() && read_src(config_cpp, cpp_src);
+        const bool hpp_read = !config_hpp.empty() && read_src(config_hpp, hpp_src);
+        // R1-07 lesson: a source pin that cannot resolve its file must HARD-FAIL,
+        // never print PASS over zero assertions.
+        TEST_CHECK(cpp_read && hpp_read,
+                   "fix-A1 R1-02: src/config.cpp + src/config.cpp resolve for the "
+                   "write-surface pin");
+        if (cpp_read) {
+            const std::size_t begin_marker = cpp_src.find("fix-A1 R1-02 BEGIN");
+            const std::size_t end_marker = cpp_src.find("fix-A1 R1-02 END");
+            const bool markers_ok = begin_marker != std::string::npos &&
+                                    end_marker != std::string::npos &&
+                                    begin_marker < end_marker;
+            TEST_CHECK(markers_ok,
+                       "fix-A1 R1-02: the write-surface region markers exist and are "
+                       "ordered");
+            const std::string region =
+                markers_ok ? cpp_src.substr(begin_marker, end_marker - begin_marker)
+                           : std::string();
+            // Structure pin, anchored so it cannot pass vacuously: the verb is
+            // DEFINED inside the region and takes mutex_ exactly once — the
+            // same shape as SetOpenAiDeclaredLanguages (guard + move-in).
+            TEST_CHECK(region.find("void AppConfig::SetOpenAiProfiles(") !=
+                           std::string::npos &&
+                           count_of(region, "std::lock_guard<std::mutex> lock(mutex_);") == 1 &&
+                           region.find("openai_profiles = std::move(profiles);") !=
+                               std::string::npos &&
+                           region.find("openai_profiles_set = true;") != std::string::npos,
+                       "fix-A1 R1-02: SetOpenAiProfiles is the region's one locked writer "
+                       "(guard + move + fold-touched mark, mirroring "
+                       "SetOpenAiDeclaredLanguages)");
+            // Every mutation-shaped mention of the member OUTSIDE the region
+            // must be one of the two documented load-path statements in
+            // FromJsonString (which already holds mutex_): the authoritative
+            // replace and the synthesis clear+append.
+            const char* const needles[] = {
+                "openai_profiles = ",          "openai_profiles.clear()",
+                "openai_profiles.push_back(",  "openai_profiles.emplace_back(",
+                "openai_profiles.erase(",      "openai_profiles.insert(",
+                "openai_profiles.assign(",     "openai_profiles.resize(",
+                "openai_profiles.pop_back(",   "openai_profiles.swap(",
+            };
+            std::size_t outside = 0;
+            std::string outside_detail;
+            std::size_t inside = 0;
+            for (const char* needle : needles) {
+                const std::string text(needle);
+                for (std::size_t pos = cpp_src.find(text); pos != std::string::npos;
+                     pos = cpp_src.find(text, pos + text.size())) {
+                    // Identifier-boundary rule (the PR9-12 pin's trick): a hit
+                    // glued to a larger name ("raw_openai_profiles = v", the
+                    // FromJsonString raw-capture variable) is not the member.
+                    if (pos > 0) {
+                        const char prev = cpp_src[pos - 1];
+                        const bool ident = (prev >= 'a' && prev <= 'z') ||
+                                           (prev >= 'A' && prev <= 'Z') ||
+                                           (prev >= '0' && prev <= '9') ||
+                                           prev == '_' || prev == '.';
+                        if (ident) {
+                            continue;
+                        }
+                    }
+                    if (markers_ok && pos > begin_marker && pos < end_marker) {
+                        ++inside;
+                        continue;
+                    }
+                    // The line the mention sits on, trimmed, must be a
+                    // whitelisted load-path statement and nothing else.
+                    const std::size_t line_begin = cpp_src.rfind('\n', pos) + 1;
+                    const std::size_t line_end = cpp_src.find('\n', pos);
+                    const std::string line =
+                        trim_ascii(std::string_view(cpp_src)
+                                       .substr(line_begin, line_end - line_begin));
+                    const bool load_path =
+                        line == "openai_profiles = std::move(parsed_profiles);" ||
+                        line == "openai_profiles.clear();" ||
+                        line == "openai_profiles.push_back(std::move(synthesized));";
+                    if (!load_path) {
+                        ++outside;
+                        outside_detail += line + " | ";
+                    }
+                }
+            }
+            TEST_CHECK(outside == 0,
+                       "fix-A1 R1-02: no openai_profiles mutation survives outside the "
+                       "locked verb and the three load-path statements");
+            if (outside != 0) {
+                std::cerr << "  [fix-A1-write-surface] " << outside_detail << std::endl;
+            }
+            TEST_CHECK(inside >= 1,
+                       "fix-A1 R1-02: the marked region really carries a mutation (the pin "
+                       "cannot pass vacuously)");
+            TEST_CHECK(count_of(cpp_src, "openai_profiles = std::move(parsed_profiles);") == 1 &&
+                           count_of(cpp_src, "openai_profiles.clear();") == 1 &&
+                           count_of(cpp_src,
+                                    "openai_profiles.push_back(std::move(synthesized));") == 1,
+                       "fix-A1 R1-02: the whitelisted load-path statements appear exactly "
+                       "once each");
+            // The fold-touched flag has exactly two writers: the verb and the
+            // present-key parse branch (never the writer emission, which reads).
+            TEST_CHECK(count_of(cpp_src, "openai_profiles_set = true;") == 2,
+                       "fix-A1 R1-12: openai_profiles_set is written in exactly two places "
+                       "(the verb + the load path)");
+        }
+        if (hpp_read) {
+            // config.hpp declares the member and the flag; it mutates neither.
+            TEST_CHECK(hpp_src.find("openai_profiles = ") == std::string::npos &&
+                           hpp_src.find("openai_profiles.push_back(") == std::string::npos &&
+                           hpp_src.find("openai_profiles.clear()") == std::string::npos,
+                       "fix-A1 R1-02: config.hpp declares the member without mutating it");
+            TEST_CHECK(count_of(hpp_src, "openai_profiles_set = false;") == 1 &&
+                           hpp_src.find("bool openai_profiles_set = false;") !=
+                               std::string::npos,
+                       "fix-A1 R1-12: the flag is declared false exactly once (never set "
+                       "outside config.cpp)");
+            TEST_CHECK(hpp_src.find("void SetOpenAiProfiles(std::vector<OpenAiProfile> "
+                                    "profiles);") != std::string::npos,
+                       "fix-A1 R1-02: the locked verb is declared on AppConfig");
+        }
+    }
+
+    // ---- R1-02 (b): the verb's observable behavior --------------------------
+    {
+        AppConfig cfg;
+        std::vector<OpenAiProfile> library;
+        library.push_back(MakeProfile("one", "https://a.example.com", "m1"));
+        library.push_back(MakeProfile("two", "https://b.example.com", "m2"));
+        cfg.SetOpenAiProfiles(library);
+        TEST_CHECK(cfg.openai_profiles.size() == 2 &&
+                       ProfileVectorsEqual(cfg.openai_profiles, library),
+                   "R1-02 verb: the library moves in and reads back verbatim");
+        // A second call replaces wholesale (the fold is authoritative).
+        cfg.SetOpenAiProfiles({MakeProfile("only", "https://c.example.com", "m3")});
+        TEST_CHECK(cfg.openai_profiles.size() == 1 &&
+                       cfg.openai_profiles[0].name == "only",
+                   "R1-02 verb: a second write replaces the library");
+        // An empty write is a real edit, observable through the writer (R1-12
+        // couples the verb to the explicit [] emission).
+        cfg.SetOpenAiProfiles({});
+        TEST_CHECK(cfg.openai_profiles.empty() &&
+                       cfg.ToJsonString().find("\"openai_profiles\": []") !=
+                           std::string::npos,
+                   "R1-02/R1-12 verb: SetOpenAiProfiles({}) empties the fold and the "
+                   "writer emits the explicit []");
+    }
+
+    // ---- R1-03 (c): the field caps on the ACTIVE openai block ---------------
+    {
+        AppConfig ascii_cap;
+        const std::string long_url(2100, 'x'); // far past the 2048-byte cap
+        TEST_CHECK(ascii_cap.FromJsonString("{\"openai\": {\"base_url\": \"" + long_url +
+                                            "\", \"model\": \"" + std::string(600, 'm') +
+                                            "\", \"api_key_dpapi\": \"" +
+                                            std::string(17000, 'k') + "\"}}"),
+                   "R1-03 caps: an oversized active block still loads (lenient posture)");
+        TEST_CHECK(ascii_cap.openai.base_url.size() == 2048,
+                   "R1-03 caps: base_url capped at 2048 bytes");
+        TEST_CHECK(ascii_cap.openai.model.size() == 512,
+                   "R1-03 caps: model capped at 512 bytes");
+        TEST_CHECK(ascii_cap.openai.api_key_dpapi.size() == 16384,
+                   "R1-03 caps: api_key_dpapi capped at 16384 bytes");
+
+        AppConfig utf8_cap;
+        // 2047 ASCII bytes + one 3-byte code point: the cap falls INSIDE the
+        // sequence, so the cut must retreat to the boundary (2047), never
+        // emit a split trailing byte. Same shape for model and the blob.
+        const std::string hangul = "\xed\x95\x9c"; // U+D55C 한
+        TEST_CHECK(utf8_cap.FromJsonString(
+                       "{\"openai\": {\"base_url\": \"" + std::string(2047, 'x') + hangul +
+                       "\", \"model\": \"" + std::string(510, 'm') + hangul +
+                       "\", \"api_key_dpapi\": \"" + std::string(16383, 'k') + hangul +
+                       "\"}}"),
+                   "R1-03 caps: a multibyte-at-the-cap block loads");
+        TEST_CHECK(utf8_cap.openai.base_url.size() == 2047 &&
+                       (utf8_cap.openai.base_url.back() & 0x80) == 0,
+                   "R1-03 caps: base_url truncated at the UTF-8 code-point boundary "
+                   "(no split sequence)");
+        TEST_CHECK(utf8_cap.openai.model.size() == 510 &&
+                       (utf8_cap.openai.model.back() & 0x80) == 0,
+                   "R1-03 caps: model truncated at the UTF-8 code-point boundary");
+        TEST_CHECK(utf8_cap.openai.api_key_dpapi.size() == 16383 &&
+                       (utf8_cap.openai.api_key_dpapi.back() & 0x80) == 0,
+                   "R1-03 caps: api_key_dpapi truncated at the UTF-8 code-point boundary");
+
+        // Honest values sit far below the caps: untouched.
+        AppConfig honest;
+        TEST_CHECK(honest.FromJsonString(
+                       "{\"openai\": {\"base_url\": \"https://api.openai.com/v1\", "
+                       "\"model\": \"gpt-4o-mini\"}}") &&
+                       honest.openai.base_url == "https://api.openai.com/v1" &&
+                       honest.openai.model == "gpt-4o-mini",
+                   "R1-03 caps: honest values pass through verbatim (no behavior change)");
+    }
+
+    // ---- R1-03 (d): the same caps on PROFILE ENTRIES (the shared choke point)
+    {
+        AppConfig entries;
+        TEST_CHECK(entries.FromJsonString(
+                       "{\"openai_profiles\": [{\"name\": \"p\", \"base_url\": \"" +
+                       std::string(2100, 'x') + "\", \"model\": \"" + std::string(600, 'm') +
+                       "\", \"api_key_dpapi\": \"" + std::string(17000, 'k') + "\"}], "
+                       "\"ui_language\": \"ko\"}"),
+                   "R1-03 caps: an oversized entry still loads");
+        TEST_CHECK(entries.openai_profiles.size() == 1 &&
+                       entries.openai_profiles[0].cfg.base_url.size() == 2048 &&
+                       entries.openai_profiles[0].cfg.model.size() == 512 &&
+                       entries.openai_profiles[0].cfg.api_key_dpapi.size() == 16384,
+                   "R1-03 caps: entry base_url/model/blob capped at the same sizes");
+    }
+
+    // ---- R1-03 (e): the digest fail-closed check -----------------------------
+    {
+        // Malformed digest shapes (writer order: dpapi BEFORE sha256): the
+        // whole key pair clears, the block's other fields are untouched.
+        const std::string uppercase = [&] {
+            std::string v = kValidDigest;
+            for (char& c : v) {
+                c = static_cast<char>(c - 'a' + 'A');
+            }
+            return v;
+        }();
+        const std::string non_hex = std::string(63, 'a') + 'g';
+        const char* const malformed[] = {
+            "0123456789abcdef", // wrong length
+            uppercase.c_str(),  // right length, wrong case
+            non_hex.c_str(),    // right length, non-hex
+            "",                 // empty digest vouches for nothing
+        };
+        for (const char* bad : malformed) {
+            const std::string doc =
+                std::string("{\"openai\": {\"base_url\": \"https://api.openai.com\", ") +
+                "\"model\": \"gpt-4o-mini\", \"reasoning_effort\": \"low\", "
+                "\"api_key_dpapi\": \"QUJD\", \"api_key_sha256\": \"" + bad +
+                "\", \"http_consent_given\": true}}";
+            AppConfig block;
+            TEST_CHECK(block.FromJsonString(doc) && block.openai.api_key_dpapi.empty() &&
+                           block.openai.api_key_sha256.empty(),
+                       std::string("R1-03 digest: malformed active-block digest clears the "
+                                   "pair (fail-closed): ") +
+                           (bad[0] == '\0' ? std::string("<empty>") : std::string(bad)));
+            TEST_CHECK(block.openai.base_url == "https://api.openai.com" &&
+                           block.openai.model == "gpt-4o-mini" &&
+                           block.openai.reasoning_effort == "low" &&
+                           block.openai.http_consent_given,
+                       "R1-03 digest: clearing the pair leaves the rest of the block intact");
+            // The same fail-closed rule runs on profile entries.
+            const std::string entry_doc =
+                std::string("{\"openai_profiles\": [{\"name\": \"p\", \"base_url\": "
+                            "\"https://api.openai.com\", \"model\": \"gpt-4o-mini\", "
+                            "\"api_key_dpapi\": \"QUJD\", \"api_key_sha256\": \"") +
+                bad + "\"}], \"ui_language\": \"ko\"}";
+            AppConfig entry;
+            TEST_CHECK(entry.FromJsonString(entry_doc) &&
+                           entry.openai_profiles.size() == 1 &&
+                           entry.openai_profiles[0].cfg.api_key_dpapi.empty() &&
+                           entry.openai_profiles[0].cfg.api_key_sha256.empty(),
+                       "R1-03 digest: malformed entry digest clears the pair (fail-closed)");
+        }
+        // A malformed digest with NO blob beside it stays a clean empty pair.
+        AppConfig no_blob;
+        TEST_CHECK(no_blob.FromJsonString(
+                       "{\"openai\": {\"api_key_sha256\": \"not-a-digest\"}}") &&
+                       no_blob.openai.api_key_dpapi.empty() &&
+                       no_blob.openai.api_key_sha256.empty(),
+                   "R1-03 digest: a malformed digest alone reads as no key material");
+        // A well-formed pair round-trips untouched, block and entry alike.
+        const std::string pair_doc =
+            std::string("{\"openai\": {\"base_url\": \"https://api.openai.com\", "
+                        "\"model\": \"gpt-4o-mini\", \"api_key_dpapi\": \"QUJD\", "
+                        "\"api_key_sha256\": \"") +
+            kValidDigest +
+            "\"}, \"openai_profiles\": [{\"name\": \"p\", \"api_key_dpapi\": \"QUJD\", "
+            "\"api_key_sha256\": \"" +
+            kValidDigest + "\"}], \"ui_language\": \"ko\"}";
+        AppConfig good;
+        TEST_CHECK(good.FromJsonString(pair_doc) && good.openai.api_key_dpapi == "QUJD" &&
+                       good.openai.api_key_sha256 == kValidDigest &&
+                       good.openai_profiles.size() == 1 &&
+                       good.openai_profiles[0].cfg.api_key_dpapi == "QUJD" &&
+                       good.openai_profiles[0].cfg.api_key_sha256 == kValidDigest,
+                   "R1-03 digest: a well-formed pair round-trips verbatim");
+    }
+
+    // ---- R1-12 (f): the explicit empty-array emission ------------------------
+    {
+        // The full resurrection-closing loop: a legacy file (no key) migrates
+        // to one synthesized profile; the user deletes every profile through
+        // the verb; the save emits []; the reload of THAT text keeps the fold
+        // empty even with the openai block still configured, and a second
+        // save stays []. (Pre-fix-A1, the reload synthesized the profile back.)
+        AppConfig migrated;
+        TEST_CHECK(migrated.FromJsonString(
+                       "{\"ui_language\": \"ko\", \"openai\": {\"base_url\": "
+                       "\"https://api.openai.com\", \"model\": \"gpt-4o-mini\"}}") &&
+                       migrated.openai_profiles.size() == 1,
+                   "R1-12: the pre-fix migration still synthesizes one profile");
+        migrated.SetOpenAiProfiles({});
+        const std::string saved = migrated.ToJsonString();
+        TEST_CHECK(saved.find("\"openai_profiles\": []") != std::string::npos,
+                   "R1-12: deleting every profile saves an explicit []");
+        AppConfig reloaded;
+        TEST_CHECK(reloaded.FromJsonString(saved) && reloaded.openai_profiles.empty(),
+                   "R1-12: the reload reads the empty fold (no migration despite the "
+                   "configured openai block)");
+        TEST_CHECK(reloaded.ToJsonString().find("\"openai_profiles\": []") !=
+                       std::string::npos,
+                   "R1-12: the re-save keeps the explicit [] (stable round trip)");
+        // A never-touched fold keeps the key omitted entirely.
+        AppConfig fresh;
+        TEST_CHECK(fresh.ToJsonString().find("openai_profiles") == std::string::npos,
+                   "R1-12: a never-touched fold omits the key entirely");
+        // A non-empty fold load sets the flag too, so deleting down to zero
+        // through the verb after any load still saves [].
+        AppConfig loaded_nonempty;
+        TEST_CHECK(loaded_nonempty.FromJsonString(
+                       "{\"openai_profiles\": [{\"name\": \"p\"}], \"ui_language\": \"ko\"}"),
+                   "R1-12: a non-empty library loads");
+        loaded_nonempty.SetOpenAiProfiles({});
+        TEST_CHECK(loaded_nonempty.ToJsonString().find("\"openai_profiles\": []") !=
+                       std::string::npos,
+                   "R1-12: delete-all after a library load saves the explicit []");
+    }
+
+    // ---- R1-03 (g): the migration synthesis inherits the caps ----------------
+    {
+        // The synthesized profile is BUILT from the parsed `openai` block, so
+        // the capped/digest-checked values flow into it for free.
+        AppConfig capped;
+        TEST_CHECK(capped.FromJsonString(
+                       "{\"openai\": {\"base_url\": \"https://api.openai.com\", "
+                       "\"model\": \"" +
+                       std::string(600, 'm') + "\"}}") &&
+                       capped.openai_profiles.size() == 1 &&
+                       capped.openai_profiles[0].cfg.model.size() == 512,
+                   "R1-03 migration: the synthesized profile inherits the capped model");
+        AppConfig bad_key;
+        TEST_CHECK(bad_key.FromJsonString(
+                       "{\"openai\": {\"base_url\": \"https://api.openai.com\", "
+                       "\"model\": \"gpt-4o-mini\", \"api_key_dpapi\": \"QUJD\", "
+                       "\"api_key_sha256\": \"not-a-digest\"}}") &&
+                       bad_key.openai_profiles.size() == 1 &&
+                       bad_key.openai_profiles[0].cfg.api_key_dpapi.empty() &&
+                       bad_key.openai_profiles[0].cfg.api_key_sha256.empty() &&
+                       bad_key.openai_profiles[0].cfg.base_url ==
+                           "https://api.openai.com",
+                   "R1-03 migration: the synthesized profile inherits the fail-closed "
+                   "pair clearing (blob + digest empty, identity fields intact)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261122_0001 fix-A1 (R1-02/R1-03/R1-12) passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261122_0001 fix-A1 (R1-02/R1-03/R1-12): "
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }

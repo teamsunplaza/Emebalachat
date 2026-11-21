@@ -648,21 +648,93 @@ void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
     }
 }
 
+// ---- 261122_0001 fix-A1 (R1-03): the OpenAI block/profile FIELD CAPS --------
+//
+// ApplyOpenAiConfigPair below is the shared parse choke point for BOTH the
+// active "openai" block and every "openai_profiles" entry (the B-U1 contract:
+// an entry body IS the block shape plus "name"), so capping here bounds every
+// load-time copy of these fields at once. The caps sit far above any honest
+// value (a base URL, a model id, a base64 DPAPI blob — real-world values are
+// tens to low-hundreds of bytes) yet keep a hostile hand-edited config from
+// feeding multi-MB strings x kMaxOpenAiProfiles into load-time copies and
+// per-chunk request bodies (the R1-03 finding). Truncation (not drop) at a
+// UTF-8 code-point boundary, the kMaxUserLanguage* cap precedent; honest
+// configs never reach the caps, so no behavior changes for them.
+constexpr std::size_t kMaxOpenAiBaseUrlConfigBytes = 2048;
+constexpr std::size_t kMaxOpenAiModelConfigBytes = 512;
+constexpr std::size_t kMaxOpenAiApiKeyDpapiConfigBytes = 16384;
+
+// Byte cap that never splits a UTF-8 code point (CapUserLanguageField's rule
+// restated beside this choke point so this anonymous namespace stays
+// independent of the P9a one defined further below).
+std::string CapOpenAiConfigField(std::string_view text, std::size_t max_bytes) {
+    if (text.size() <= max_bytes) {
+        return std::string(text);
+    }
+    std::size_t pos = 0;
+    std::size_t last_boundary = 0;
+    while (pos < text.size()) {
+        std::size_t consumed = 1;
+        language_alias_detail::DecodeUtf8CodePoint(text, pos, consumed);
+        pos += consumed;
+        if (pos > max_bytes) {
+            break;
+        }
+        last_boundary = pos;
+    }
+    return std::string(text.substr(0, last_boundary));
+}
+
+// 261122_0001 fix-A1 (R1-03): the integrity digest's only trustworthy wire
+// shape — exactly 64 lowercase hex chars. Anything else (wrong length,
+// uppercase, non-hex, empty) fails CLOSED: the digest is dropped TOGETHER
+// with the key material it vouches for (see ApplyOpenAiConfigPair).
+bool IsOpenAiSha256DigestWellFormed(std::string_view digest) {
+    if (digest.size() != 64) {
+        return false;
+    }
+    for (const char c : digest) {
+        const bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!hex) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // REQ-045 P4-3 (design §3b): applies ONE parsed key/value pair of the OpenAI
 // block to `out`. Shared by ParseOpenAiBlock (the active "openai" block) and
 // the 261122_0001 B-U1 profile-entry parser: an openai_profiles entry body IS
 // the openai block shape plus "name", so the two parsers must agree on the
 // exact field semantics (lenient absent-key posture, the reasoning_effort
-// clamp) and this function is that single source of truth.
+// clamp, the 261122_0001 fix-A1 field caps + digest shape check) and this
+// function is that single source of truth.
 void ApplyOpenAiConfigPair(const std::string& k, const std::string& v, OpenAiConfig& out) {
     if (k == "base_url") {
-        out.base_url = v;
+        // 261122_0001 fix-A1 (R1-03): cap at the shared choke point.
+        out.base_url = CapOpenAiConfigField(v, kMaxOpenAiBaseUrlConfigBytes);
     } else if (k == "model") {
-        out.model = v;
+        out.model = CapOpenAiConfigField(v, kMaxOpenAiModelConfigBytes);
     } else if (k == "api_key_dpapi") {
-        out.api_key_dpapi = v;
+        out.api_key_dpapi = CapOpenAiConfigField(v, kMaxOpenAiApiKeyDpapiConfigBytes);
     } else if (k == "api_key_sha256") {
-        out.api_key_sha256 = v;
+        // 261122_0001 fix-A1 (R1-03, fail-closed): the digest must be exactly
+        // 64 lowercase hex chars; ANYTHING else means the pair is untrustworthy
+        // and both key fields clear together (a half-pair is the refuse-
+        // forever shape, REQ-050 b6f98da / REQ-051 pair atomicity — never
+        // leave a blob whose integrity claim failed, and never a digest
+        // vouching for a blob that is not there). Honest saves always write a
+        // well-formed pair, so this only bites hand-edited files. A dpapi
+        // value listed AFTER a malformed digest lands without a digest, the
+        // same state omitting the digest key entirely already produces
+        // (WithUnprotectedKey skips the check for an empty sha256), so no new
+        // runtime capability is introduced.
+        if (IsOpenAiSha256DigestWellFormed(v)) {
+            out.api_key_sha256 = v;
+        } else {
+            out.api_key_sha256.clear();
+            out.api_key_dpapi.clear();
+        }
     } else if (k == "http_consent_given") {
         out.http_consent_given = (v == "true");
     } else if (k == "reasoning_effort") {
@@ -2403,13 +2475,14 @@ std::string SerializeUserLanguages(const std::vector<UserLanguage>& languages,
     return ss.str();
 }
 
-// 261122_0001 B-U1 (design-pick §1): the "openai_profiles" writer. Emitted
-// ONLY while the library is non-empty (the optional-key convention — the key
-// carries no information while empty); the caller gates on that. The entry
-// shape is name + the 6-field openai block in the block's own field order, so
-// an entry differs from the active block only by the extra name line. Key
-// material is emitted as the same opaque dpapi/sha256 pair as the active
-// block, never cleartext and never any other field.
+// 261122_0001 B-U1 (design-pick §1): the "openai_profiles" writer for a
+// NON-EMPTY library; the caller gates on that (an empty-but-touched library is
+// emitted by the caller as an explicit [], 261122_0001 fix-A1 R1-12, never
+// through this function). The entry shape is name + the 6-field openai block
+// in the block's own field order, so an entry differs from the active block
+// only by the extra name line. Key material is emitted as the same opaque
+// dpapi/sha256 pair as the active block, never cleartext and never any other
+// field.
 std::string SerializeOpenAiProfiles(const std::vector<OpenAiProfile>& profiles) {
     std::ostringstream ss;
     ss << "[\n";
@@ -3689,6 +3762,24 @@ std::vector<std::string> AppConfig::SetOpenAiDeclaredLanguages(
     return openai_declared_languages;
 }
 
+// ---- 261122_0001 fix-A1 R1-02 BEGIN openai_profiles write surface ---------
+// The locked write surface for the profile library (member contract next to
+// the member). The lock is the SAME mutex_ ToJsonStringLocked()/SaveToFile()
+// hold while they iterate the vector, so a GUI-thread fold edit can no longer
+// interleave with an off-thread save (the R1-02 race: GUI-thread move-assign
+// vs SaveToFile() iteration). openai_profiles_set is marked on EVERY call,
+// including an empty fold: "the user deleted every profile" must survive the
+// next save (the writer emits an explicit []) and the reload after it (R1-12).
+// The B-U5 write-surface pin in tests/openai_profile_tests.inc scans this
+// region; the FromJsonString load path (already under mutex_) is the one
+// documented writer outside it.
+void AppConfig::SetOpenAiProfiles(std::vector<OpenAiProfile> profiles) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    openai_profiles = std::move(profiles);
+    openai_profiles_set = true;
+}
+// ---- 261122_0001 fix-A1 R1-02 END openai_profiles write surface -----------
+
 void AppConfig::SetSourceLanguage(std::string value) {
     std::lock_guard<std::mutex> lock(mutex_);
     source_language = std::move(value);
@@ -3996,12 +4087,16 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "    \"api_key_sha256\": \"" << EscapeJsonString(openai.api_key_sha256) << "\",\n";
     ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << "\n";
     ss << "  },\n";
-    // 261122_0001 B-U1 (design-pick §1): the profile library, emitted ONLY
-    // while non-empty (the optional-key convention — an empty library carries
-    // no information, so omitting it keeps every pre-261122_0001 config.json
-    // byte-identical, the openai_declared_languages precedent).
+    // 261122_0001 B-U1 + fix-A1 (R1-12): the library is emitted while
+    // non-empty; an EMPTY library emits an explicit [] once the fold has been
+    // touched (openai_profiles_set — a delete-all is a real edit the next
+    // load must not migrate away). The key stays omitted only while never
+    // set, keeping every pre-261122_0001 config.json byte-identical (the
+    // openai_declared_languages precedent).
     if (!openai_profiles.empty()) {
         ss << "  \"openai_profiles\": " << SerializeOpenAiProfiles(openai_profiles) << ",\n";
+    } else if (openai_profiles_set) {
+        ss << "  \"openai_profiles\": [],\n";
     }
     // 261116_0003 P9c-1a: the OpenAI declared-language set, emitted ONLY while
     // non-empty. Unlike the openai block above (sticky keys, so an untouched
@@ -4310,10 +4405,19 @@ bool AppConfig::FromJsonString(std::string_view json) {
     // "openai" block itself is copied BYTE-IDENTICALLY (never moved, never
     // rewritten); when it is empty the member keeps its current value, the
     // reader-wide absent-key convention.
+    // 261122_0001 fix-A1 (R1-03): the synthesized profile inherits the
+    // field caps and the fail-closed digest check for free — `openai` above
+    // was parsed through the shared capped ApplyOpenAiConfigPair choke point,
+    // so its four identity/key fields are already capped/shape-checked when
+    // they are copied here.
     if (has_openai_profiles_key) {
         std::vector<OpenAiProfile> parsed_profiles;
         ParseOpenAiProfilesBlock(raw_openai_profiles, parsed_profiles);
         openai_profiles = std::move(parsed_profiles);
+        // 261122_0001 fix-A1 (R1-12): a PRESENT key marks the fold touched, so
+        // a re-save keeps emitting [] and the migration below cannot re-run on
+        // the round trip ("deleted all profiles" survives reload + save).
+        openai_profiles_set = true;
     } else if (!openai.base_url.empty() || !openai.model.empty() ||
                !openai.api_key_dpapi.empty() || !openai.api_key_sha256.empty()) {
         OpenAiProfile synthesized;

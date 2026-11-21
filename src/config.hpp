@@ -598,7 +598,9 @@ bool OpenAiLanguageDeclared(std::string_view code);
 // an entry is homomorphic to OpenAiConfig, so it is self-describing; a future
 // breaking change adds an additive optional key INSIDE an entry.
 //
-// Wire form (one entry shown; emitted ONLY while the library is non-empty):
+// Wire form (one entry shown; emitted while the library is non-empty, and as
+// an explicit "openai_profiles": [] once the fold was touched but emptied —
+// 261122_0001 fix-A1 R1-12; key omitted only while never touched):
 //   "openai_profiles": [
 //     {
 //       "name": "openai / gpt-4o-mini",
@@ -613,7 +615,11 @@ bool OpenAiLanguageDeclared(std::string_view code);
 //
 // Key material (api_key_dpapi + api_key_sha256) round-trips as OPAQUE strings,
 // exactly like the active block; it is never logged, printed or otherwise
-// surfaced (shape-only posture, AGENTS.md §Security).
+// surfaced (shape-only posture, AGENTS.md §Security). Both fields are capped
+// and digest-shape-checked at the shared ApplyOpenAiConfigPair parse choke
+// point (261122_0001 fix-A1 R1-03): base_url 2048 B, model 512 B, the dpapi
+// blob 16384 B (UTF-8-boundary truncation), and a digest that is not exactly
+// 64 lowercase hex chars fails closed by clearing BOTH key fields.
 //
 // Load semantics (design-pick item 2, the lenient posture ParseOpenAiBlock
 // already takes): the reader captures the raw array verbatim; a non-array value
@@ -633,13 +639,18 @@ bool OpenAiLanguageDeclared(std::string_view code);
 // UI-locale template derivation at dialog save time (design-pick §7 "저장 시점
 // UI 로케일로 1회 파생") is the dialog unit's (U4) job, not the load path's.
 //
-// WRITER DISCIPLINE (261122_0001 B-U1): the library is mutated ONLY on the GUI
-// thread (the settings dialog fold, unit U4) and persisted by the single
-// caller-side SaveToFile (design-pick item 4, P9c-1c 단일 writer). The pipeline
-// worker reads only the `openai` active block, so — exactly like `openai`
-// itself — this member needs no mutex_ and no Snapshot entry. Direct
-// assignment is legal only before any thread exists (startup seeding, unit
-// tests, the load path above).
+// WRITER DISCIPLINE (261122_0001 B-U1, AMENDED by fix-A1 R1-02): the library
+// is mutated ONLY through the locked verb AppConfig::SetOpenAiProfiles()
+// (takes mutex_, the same lock SaveToFile()/ToJsonStringLocked() hold while
+// serialising this vector) and persisted by the single caller-side SaveToFile
+// (design-pick item 4, P9c-1c 단일 writer). The B-U1 "GUI-thread-only, no
+// mutex" claim was wrong: the R1-02 race is the GUI thread move-assigning the
+// member (main.cpp) while a hook-thread / fx-worker SaveToFile() iterates it
+// under mutex_ — the PR9-12 class reintroduced on this member. Direct
+// assignment is FORBIDDEN once any thread exists; it stays legal only before
+// threads exist (startup seeding, unit tests) and in the FromJsonString load
+// path (which already holds mutex_). The pipeline worker reads only the
+// `openai` active block, so no Snapshot entry is needed either way.
 struct OpenAiProfile {
     std::string name;  // derived display name, fixed as user data once saved
     OpenAiConfig cfg;  // the full 6-field openai block shape, stored verbatim
@@ -1174,15 +1185,30 @@ struct AppConfig {
     // 261122_0001 B-U1 (design-pick §1): the OpenAI-compatible profile library,
     // persisted as the optional top-level "openai_profiles" array (schema and
     // load/migration semantics documented at the OpenAiProfile declaration
-    // above). Empty = the key is NOT emitted = the pre-261122_0001 posture.
+    // above). Empty = no profiles.
     //
-    // WRITER DISCIPLINE (same as the openai block it extends): GUI-thread-only
-    // mutation (the settings dialog fold, unit U4), persisted by the single
-    // caller-side SaveToFile (design-pick item 4). The pipeline worker reads
-    // ONLY the active `openai` block above and never this library, so no mutex_
-    // or Snapshot entry is needed. Direct assignment is legal only before any
-    // thread exists (startup seeding, unit tests, the load path).
+    // WRITE RULE (261122_0001 fix-A1, R1-02 — supersedes the B-U1 "GUI-thread-
+    // only, no mutex" note): every runtime write goes through the locked verb
+    // SetOpenAiProfiles() below. Direct assignment is FORBIDDEN once any
+    // thread exists (the R1-02 race: a GUI-thread move-assign interleaving
+    // with an off-thread SaveToFile() iteration under mutex_); it stays legal
+    // only before threads exist (startup seeding, unit tests) and in the
+    // FromJsonString load path (which already holds mutex_). The member stays
+    // PUBLIC only until fix-round2 unit A2 migrates the remaining main.cpp
+    // direct callers; the config.hpp/cpp write-surface pin below enforces the
+    // rule inside this file.
     std::vector<OpenAiProfile> openai_profiles;
+
+    // 261122_0001 fix-A1 (R1-12): the "fold was touched" record. Set by
+    // SetOpenAiProfiles() (INCLUDING an empty fold — a delete-all is a real
+    // edit) and by the load path when the "openai_profiles" key is PRESENT;
+    // never serialized itself. The writer emits "openai_profiles": [] when
+    // this is true and the library is empty, so "the user deleted every
+    // profile" survives a reload (a bare absent key would let the migration
+    // re-synthesize a profile from the still-configured openai block). The
+    // key stays omitted only while the fold was NEVER touched. Written ONLY
+    // by the verb and the load path, under mutex_.
+    bool openai_profiles_set = false;
 
     // 261116_0003 P9a (plan §3 D5/D6): the user-defined language registry and
     // its probe-verdict cache, serialized as "user_languages" +
@@ -1334,6 +1360,15 @@ struct AppConfig {
     // empty vector clears the declaration (the OpenAI views return to the full
     // generous set). Returns the stored canonical set.
     std::vector<std::string> SetOpenAiDeclaredLanguages(std::vector<std::string> declared);
+
+    // 261122_0001 fix-A1 (R1-02): locked write of the profile library (same
+    // discipline as SetOpenAiDeclaredLanguages - takes mutex_, so a save that
+    // is serialising the config cannot observe a half-applied vector). An
+    // EMPTY vector is a REAL edit (the user deleted every profile): it moves
+    // in verbatim and marks openai_profiles_set, so the next save emits an
+    // explicit "openai_profiles": [] and the load-time migration cannot
+    // resurrect a deleted profile (R1-12).
+    void SetOpenAiProfiles(std::vector<OpenAiProfile> profiles);
 
     // 261116_0003 P9b-3 (PR9-12): locked write surface for user_languages (the
     // member contract above). Every verb takes mutex_, so a GUI edit can never
