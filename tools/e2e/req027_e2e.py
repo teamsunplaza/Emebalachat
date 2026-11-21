@@ -248,10 +248,20 @@ Operating constraints (documented; pre-flight enforced where possible)
     verifies the window really is foreground before every Enter injection
     (probed live: Win11 Notepad session-restore can pre-fill the new window
     - the harness clears its own scratch window before typing).
-  * Clipboard backup/restore is the app's own responsibility (out of scope).
-    paste_then_enter and the multi_lang fallback change the RUNTIME
-    config.json (%LOCALAPPDATA%, see the fixture bullet above) / the
-    clipboard and restore them afterwards.
+  * CLIPBOARD (261122_0001 A4, F11.3): the APP restores what it copies (its own
+    RAII snapshot in src/win32_input.cpp), but the harness's own SEED is the
+    harness's business - paste_then_enter snapshots the user's CF_UNICODETEXT
+    before seeding and puts it back in a finally (a non-text clipboard cannot be
+    re-created and is reported, never silently emptied). paste_then_enter and
+    the multi_lang fallback also change the RUNTIME config.json
+    (%LOCALAPPDATA%, see the fixture bullet above) and restore it.
+  * HARD-KILL RECOVERY (261122_0001 A4, F11.4): a taskkill / power loss cannot
+    run that finally, so the fixture ALSO keeps a crash ledger next to the file
+    (<config>.e2e-pin.json: pre-pin bytes, pinned keys, previous values) that is
+    written BEFORE the pin and deleted after a verified restore. The next run
+    detects a leftover ledger and either self-heals (writes the pre-pin bytes
+    back, or unpins the keys when the app rewrote the file) or REFUSES to pin
+    with guidance - it never backs the pinned bytes up as "the user's own".
   * All synchronization is polling with explicit timeouts (constants below);
     the only fixed delay is a 300 ms diag-flush settle before teardown.
   * ENVIRONMENT MANIFEST (261121_0002 E11): every run writes
@@ -261,10 +271,14 @@ Operating constraints (documented; pre-flight enforced where possible)
     per-scenario verdicts, exit code). The manifest exists because the
     previous release QA misdiagnosed a stale baseline as "Win11 Notepad
     drift": a future green/red flip must be attributable to a recorded
-    environment fact, not to a guess.
+    environment fact, not to a guess. 261122_0001 A4 (F11.2): every
+    user-identifying path in the manifest (run dir, app exe, self-reported exe,
+    config, notes) is redacted to a %USERPROFILE%/%LOCALAPPDATA% token, so the
+    file can be pasted into a report without carrying an account name.
 """
 
 import argparse
+import base64
 import ctypes
 import datetime
 import hashlib
@@ -289,6 +303,17 @@ try:
 except ImportError:  # pragma: no cover - direct script invocation fallback
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from isolation_gate import IsolationGateError, check_isolation_gate
+
+# 261122_0001 A4 (F11.2, SR5 F-07): user-identifying local paths are
+# redacted to %ENV% tokens in everything this harness PRINTS or PERSISTS
+# (run-manifest.json included), so a transcript pasted into docs/ carries
+# no Windows account name. Shared with req051_drag_e2e.py, factored like
+# isolation_gate.py rather than copy-pasted.
+try:
+    from env_redact import redact_user_path
+except ImportError:  # pragma: no cover - direct script invocation fallback
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from env_redact import redact_user_path
 
 # ---------------------------------------------------------------------------
 # constants / tunables (all timeouts explicit, polling-only)
@@ -409,6 +434,13 @@ user32.EmptyClipboard.argtypes = []
 user32.EmptyClipboard.restype = wintypes.BOOL
 user32.SetClipboardData.argtypes = [UINT, ctypes.c_void_p]
 user32.SetClipboardData.restype = ctypes.c_void_p
+# 261122_0001 A4 (F11.3): the harness now SNAPSHOTS the user's clipboard before
+# seeding it, so the read half (GetClipboardData + the sequence counter) needs
+# the same declared-signature discipline as the write half above.
+user32.GetClipboardData.argtypes = [UINT]
+user32.GetClipboardData.restype = ctypes.c_void_p
+user32.GetClipboardSequenceNumber.argtypes = []
+user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
 
 PENUMCHILD = ctypes.WINFUNCTYPE(wintypes.BOOL, HWND, LPARAM)
 PENUMPTR = ctypes.WINFUNCTYPE(wintypes.BOOL, HWND, LPARAM)
@@ -550,6 +582,103 @@ def set_clipboard_text(text):
             raise HarnessError("SetClipboardData failed")
     finally:
         user32.CloseClipboard()
+
+
+def read_clipboard_text():
+    """Best-effort CF_UNICODETEXT read (never raises): (True, text) when the
+    clipboard currently holds text, (False, None) otherwise (empty clipboard,
+    image/file-list owner, or another process holding the clipboard open)."""
+    if not user32.OpenClipboard(HWND(0)):
+        return False, None
+    try:
+        handle = user32.GetClipboardData(CF_UNICODETEXT)
+        if not handle:
+            return False, None
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            return False, None
+        try:
+            return True, ctypes.wstring_at(ptr)
+        finally:
+            kernel32.GlobalUnlock(handle)
+    finally:
+        user32.CloseClipboard()
+
+
+def _clipboard_sequence():
+    """GetClipboardSequenceNumber with a None fallback (weakens only the
+    'someone else replaced the clipboard' check, never the restore itself)."""
+    try:
+        return int(user32.GetClipboardSequenceNumber())
+    except Exception:
+        return None
+
+
+class ClipboardBackup:
+    """Snapshot/restore of the USER's clipboard around a harness seed.
+
+    261122_0001 A4 (F11.3, SR5 F-06): scenario_paste_then_enter seeded its own
+    text into the clipboard and left it there - after a normal run the user's
+    clipboard was replaced by harness text, and a crash mid-run left it with no
+    way back. This is the harness-side mirror of the app's own RAII clipboard
+    discipline (src/win32_input.cpp ClipboardManager: snapshot -> use ->
+    restore), reduced to the one format the harness writes.
+
+    Honest limits, printed rather than papered over:
+      * only CF_UNICODETEXT is captured; an image / file-list clipboard cannot
+        be re-created from a text read, so it is restored to NOTHING and the
+        loss is reported (never silently replaced by an empty clipboard);
+      * a hard kill (taskkill / power loss) cannot run the finally - only a
+        clean exception, Ctrl+C, or a normal exit restores the snapshot.
+    """
+
+    def __init__(self):
+        self.had_text = False
+        self.text = None
+        self.seeded_seq = None
+        self.lost_nontext = False
+        self.restored = False
+
+    def capture(self):
+        self.had_text, self.text = read_clipboard_text()
+        self.lost_nontext = not self.had_text
+        return self
+
+    def seeded(self):
+        """Call right AFTER the harness writes its own text: records the
+        clipboard sequence the seed produced, so restore() can tell whether
+        someone ELSE replaced the clipboard in the meantime (in which case the
+        newer content wins and the snapshot is NOT written back)."""
+        self.seeded_seq = _clipboard_sequence()
+
+    def restore(self):
+        """Put the snapshot back (best effort, never raises - it runs in a
+        finally and must not mask the scenario's own outcome)."""
+        if not self.had_text:
+            if self.lost_nontext:
+                print("   clipboard: the pre-run clipboard held no TEXT (empty, "
+                      "image, or file list); the harness can only restore "
+                      "CF_UNICODETEXT, so any non-text content must be re-copied "
+                      "by the operator")
+            return False
+        try:
+            now_seq = _clipboard_sequence()
+        except Exception:
+            now_seq = None
+        if (self.seeded_seq is not None and now_seq is not None
+                and now_seq != self.seeded_seq):
+            print("   clipboard: another process replaced the clipboard during the "
+                  "run; leaving ITS content in place (the pre-run text is not "
+                  "written back)")
+            return False
+        try:
+            set_clipboard_text(self.text)
+            self.restored = True
+            print("   clipboard: pre-run text restored")
+        except Exception as e:  # noqa: BLE001 - a finally must never raise
+            print(f"   clipboard: RESTORE FAILED ({type(e).__name__}: {e}); the "
+                  "seeded harness text is still on the clipboard")
+        return self.restored
 
 
 class GUITHREADINFO(ctypes.Structure):
@@ -1694,6 +1823,11 @@ _MODE = {
     "fixture": None,      # ConfigFixture while this run owns one
 }
 
+# 261122_0001 A4 (F11.4): the crash ledger lives NEXT TO the config, under the
+# same per-user directory, so a killed run can be detected and healed by the
+# next one. The app ignores unknown sibling files.
+MARKER_SUFFIX = ".e2e-pin.json"
+
 
 def fixture_auto_send():
     """The auto_send mode this run pinned (False when no fixture is active,
@@ -1723,12 +1857,205 @@ class ConfigFixture:
         self.values = {}
         self.active = False
         self.restore_ok = None
+        # 261122_0001 A4 (F11.4, SR2 F2): the crash ledger. A hard kill cannot
+        # run main()'s finally, so the pin survives in config.json and the NEXT
+        # run backs those PINNED bytes up as "the user's original" and restores
+        # them forever - the poisoned-backup path. The marker is written BEFORE
+        # the first pin write and removed after a VERIFIED restore; a leftover
+        # marker is the crash evidence that lets the next run self-heal instead
+        # of silently re-persisting QA flags.
+        self.marker_path = (path + MARKER_SUFFIX) if path else None
+        self._marker = None
+        self._original_json = None
+        self.recovery = None      # what backup() did about a stale marker
+
+    # ---- the crash ledger (F11.4) -----------------------------------------
+    def _write_marker(self):
+        """Persist the ledger atomically. A failure is a WARNING, never an
+        abort: the run still restores byte-verbatim, only the crash self-heal
+        protection is lost (and the operator is told)."""
+        if not self.marker_path or self._marker is None:
+            return
+        try:
+            _write_json(self.marker_path, self._marker)
+        except OSError as e:
+            print("   fixture  : WARNING: could not write the pin marker "
+                  f"{redact_user_path(self.marker_path)} ({type(e).__name__}: "
+                  f"{e}); a hard kill of THIS run could not be self-healed "
+                  "next time")
+
+    def _clear_marker(self):
+        if not self.marker_path or not os.path.exists(self.marker_path):
+            return
+        try:
+            os.unlink(self.marker_path)
+        except OSError as e:
+            print("   fixture  : WARNING: could not remove the pin marker "
+                  f"{redact_user_path(self.marker_path)} ({type(e).__name__}: "
+                  f"{e}); the next run clears it (the restored bytes match its "
+                  "original hash)")
+
+    def _arm_marker(self, values):
+        """Record the pre-pin bytes and the values about to be written BEFORE
+        the write happens: from this point on a hard kill is recoverable."""
+        if self._marker is None:
+            self._marker = {
+                "schema": 1,
+                "harness": "tools/e2e/req027_e2e.py",
+                "created_utc": utc_stamp(),
+                "config": os.path.basename(self.path),
+                "original_sha256": self.pre_sha,
+                "original_b64": base64.b64encode(self.original).decode("ascii"),
+                "pinned_sha256": None,
+                "pinned_keys": {},
+                "prev_values": {},
+            }
+        for k, v in values.items():
+            self._marker["pinned_keys"][k] = v
+            self._marker["prev_values"][k] = (self._original_json or {}).get(k)
+        self._write_marker()
+
+    def _refresh_marker(self):
+        if self._marker is None:
+            return
+        try:
+            with open(self.path, "rb") as f:
+                self._marker["pinned_sha256"] = hashlib.sha256(
+                    f.read()).hexdigest()
+        except OSError:
+            pass
+        self._write_marker()
+
+    def record_pin(self, key, value, prev_value):
+        """Extend the crash ledger for a key written OUTSIDE pin().
+
+        multi_lang patches type_target_language directly (it re-pins the file
+        between blocks), so without this the ledger would miss that key and a
+        hard kill mid-multi_lang would leave the harness language in place with
+        no record of the user's own. The FIRST previous value wins: the undo
+        target must be the user's value, never a harness value an earlier block
+        already wrote."""
+        if self._marker is None:
+            return
+        self._marker["pinned_keys"][key] = value
+        self._marker["prev_values"].setdefault(key, prev_value)
+        self._refresh_marker()
+
+    def _recover_stale_pin(self):
+        """Detect a pin left behind by a HARD-KILLED run and neutralise it.
+
+        Dispositions, in order:
+          * the file already matches the marker's ORIGINAL hash -> the crash
+            happened after a successful restore; drop the marker, change
+            nothing;
+          * the file matches the marker's PINNED hash -> the crash left the QA
+            pin in place; write the pre-pin bytes back and say so LOUDLY;
+          * the file changed but every pinned key still holds its pinned value
+            -> the app rewrote/reformatted the file; unpin those keys to their
+            recorded previous values (value-level, not byte-verbatim);
+          * anything else -> REFUSE to pin. The config no longer matches the
+            ledger, so overwriting it could destroy a user edit; the marker
+            still holds the pre-pin bytes for a manual restore.
+        Returns True when a stale ledger was found (and handled)."""
+        if not self.marker_path or not os.path.exists(self.marker_path):
+            return False
+        where = redact_user_path(self.marker_path)
+        try:
+            with open(self.marker_path, "r", encoding="utf-8") as f:
+                marker = json.load(f)
+            original = base64.b64decode(marker.get("original_b64") or "")
+        except (OSError, ValueError, TypeError) as e:
+            raise FixtureRefused(
+                f"a pin marker from an interrupted run exists at {where} but "
+                f"cannot be read ({type(e).__name__}: {e}). config.json may "
+                "still carry the QA pin (diag_log_content=true). Inspect the "
+                "marker and config.json by hand, delete the marker once the "
+                "config is clean, then re-run.")
+        orig_sha = marker.get("original_sha256")
+        if not original or hashlib.sha256(original).hexdigest() != orig_sha:
+            raise FixtureRefused(
+                f"the pin marker at {where} does not carry usable pre-pin "
+                "bytes (hash mismatch). Refusing to touch config.json: reset "
+                "the diagnostic flags in the app's settings, delete the "
+                "marker, then re-run.")
+        if not os.path.exists(self.path):
+            self._clear_marker()
+            self.recovery = "marker-clear-no-config"
+            print("   fixture  : cleared a stale pin marker (config.json is gone)")
+            return True
+        with open(self.path, "rb") as f:
+            current = f.read()
+        cur_sha = hashlib.sha256(current).hexdigest()
+        if cur_sha == orig_sha:
+            self._clear_marker()
+            self.recovery = "marker-clear"
+            print("   fixture  : cleared a stale pin marker (the config already "
+                  "matched its pre-pin bytes)")
+            return True
+        if cur_sha == marker.get("pinned_sha256"):
+            _atomic_write_bytes(self.path, original)
+            with open(self.path, "rb") as f:
+                healed = hashlib.sha256(f.read()).hexdigest()
+            if healed != orig_sha:
+                raise FixtureRefused(
+                    "self-heal wrote the pre-pin bytes but the read-back hash "
+                    f"does not match ({healed} != {orig_sha}); the marker at "
+                    f"{where} still holds them - restore by hand.")
+            self._clear_marker()
+            self.recovery = "self-healed"
+            print("   fixture  : SELF-HEALED a QA pin left by a hard-killed run "
+                  f"(pre-pin bytes written back, sha256={orig_sha[:12]}...)")
+            return True
+        # Value-level recovery: the file was rewritten, but the harness-pinned
+        # keys still hold the harness values.
+        pinned_keys = marker.get("pinned_keys") or {}
+        prev_values = marker.get("prev_values") or {}
+        try:
+            cur_data = json.loads(current.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            cur_data = None
+        if (pinned_keys and isinstance(cur_data, dict) and
+                all(cur_data.get(k) == v for k, v in pinned_keys.items())):
+            patch_config_fields(self.path, prev_values)
+            self._clear_marker()
+            self.recovery = "self-healed-values"
+            print("   fixture  : SELF-HEALED a QA pin left by a hard-killed run "
+                  "(the file had been rewritten, so the pinned keys were "
+                  f"restored to their pre-pin values: {sorted(pinned_keys)})")
+            return True
+        raise FixtureRefused(
+            "a QA pin from an interrupted run cannot be neutralised safely: "
+            f"config.json no longer matches the marker at {where} and its "
+            "pinned keys are gone. Refusing to pin so the file is not "
+            "overwritten. Compare config.json with the marker's original_b64 "
+            "(it holds the pre-pin bytes), fix it by hand, delete the marker, "
+            "then re-run.")
+
+    def _warn_if_pinned_without_marker(self, data):
+        """No marker, but both QA flags are already ON: a previous run may have
+        been killed BEFORE the marker landed, or the marker was deleted. These
+        bytes are treated as the user's own (restored verbatim), but the state
+        is reported - silently carrying diag_log_content=true into the next run
+        is exactly the poisoned-backup outcome F11.4 is about."""
+        if (data.get("diag_log_enabled") is True
+                and data.get("diag_log_content") is True):
+            print("   fixture  : WARNING: config.json already has "
+                  "diag_log_enabled=true and diag_log_content=true with NO pin "
+                  "marker - a previous run may have been hard-killed before it "
+                  "could restore. These bytes are treated as YOURS and are "
+                  "restored verbatim (the flags stay ON). If you did not enable "
+                  "diagnostic logging yourself, turn it off in the app settings "
+                  "after this run.")
 
     def backup(self):
+        # 261122_0001 A4 (F11.4): neutralise a previous run's crash leftovers
+        # BEFORE reading, so the bytes captured below can never be the pinned
+        # ones (the poisoned-backup path).
+        self._recover_stale_pin()
         if not self.path or not os.path.exists(self.path):
             raise EnvBlock(
                 "E2E config fixture: no config.json at "
-                f"{self.path!r}. The app materializes it on first run "
+                f"{redact_user_path(self.path)!r}. The app materializes it on first run "
                 "(or the exe-dir copy when %LOCALAPPDATA% is unavailable); "
                 "start the app once, close it, then re-run the harness. "
                 "Without the file diag_log_content/auto_send cannot be "
@@ -1741,16 +2068,22 @@ class ConfigFixture:
             data = json.loads(self.original.decode("utf-8"))
         except (UnicodeDecodeError, ValueError) as e:
             raise EnvBlock(f"E2E config fixture: unparseable config.json "
-                           f"({self.path}): {e}")
+                           f"({redact_user_path(self.path)}): {e}")
         if not isinstance(data, dict):
             raise EnvBlock("E2E config fixture: config.json is not an object")
+        self._original_json = data
+        self._warn_if_pinned_without_marker(data)
         self.active = True
         return self
 
     def pin(self, values):
         """Write the given keys, then RE-READ the file and verify they
         persisted. Returns the previous values (informational; the byte-level
-        restore below is the actual rollback)."""
+        restore below is the actual rollback).
+
+        F11.4: the crash marker is armed BEFORE the write, so there is no
+        window in which a pinned file exists without a recovery ledger."""
+        self._arm_marker(values)
         prev = patch_config_fields(self.path, values)
         self.values.update(values)
         persisted = _read_json(self.path)
@@ -1759,7 +2092,8 @@ class ConfigFixture:
         if bad:
             raise EnvBlock(
                 "E2E config fixture: pin did not persist "
-                f"(wanted {values}, file reports {bad}) at {self.path}")
+                f"(wanted {values}, file reports {bad}) at {redact_user_path(self.path)}")
+        self._refresh_marker()
         return prev
 
     def restore(self):
@@ -1777,9 +2111,14 @@ class ConfigFixture:
         self.post_sha = hashlib.sha256(post).hexdigest()
         self.restore_ok = (post == self.original
                            and self.post_sha == self.pre_sha)
+        # F11.4: only a VERIFIED restore clears the crash marker. A mismatch
+        # keeps it, so the next run can heal from it instead of backing up the
+        # pinned bytes as the user's original.
+        if self.restore_ok:
+            self._clear_marker()
         state = "MATCH" if self.restore_ok else "MISMATCH"
         return self.restore_ok, (
-            f"e2e config fixture restored: {self.path} "
+            f"e2e config fixture restored: {redact_user_path(self.path)} "
             f"sha256 pre={self.pre_sha} post={self.post_sha} -> {state}")
 
 
@@ -1833,7 +2172,7 @@ def verify_session_fixture(app, fixture, expect_auto_send=None):
         raise EnvBlock(
             "E2E CONFIG FIXTURE VIOLATION (environment, not a product FAIL): "
             + "; ".join(problems)
-            + f" :: config={fixture.path} "
+            + f" :: config={redact_user_path(fixture.path)} "
               f"pre_sha256={fixture.pre_sha} pinned={fixture.values}. "
               "A user toggle / second instance / different config path is "
               "the usual cause; the fixture is still restored in the finally.")
@@ -1904,7 +2243,7 @@ def prepare_config_fixture(exe_path, *, no_cleanup=False):
             "config fixture backup failed - the runtime config exists but "
             f"cannot be read ({type(e).__name__}: {e}); no write happened, so "
             "the run continues unpinned and exits 3 (harness error)")
-    print(f"   fixture  : backed up {fixture.path} (sha256="
+    print(f"   fixture  : backed up {redact_user_path(fixture.path)} (sha256="
           f"{fixture.pre_sha[:12]}...)")
     return fixture
 
@@ -1935,7 +2274,7 @@ def pin_config_fixture(fixture):
               "restored on exit.")
         return False
     print(f"   fixture  : pinned diag_log_enabled=1 diag_log_content=1 "
-          f"auto_send=0 in {fixture.path} (sha256="
+          f"auto_send=0 in {redact_user_path(fixture.path)} (sha256="
           f"{fixture.pre_sha[:12]}...)")
     return True
 
@@ -2763,8 +3102,13 @@ def scenario_paste_then_enter(app, base):
     rep = Report("paste_then_enter")
     text = "클립보드로 외부에서 들어온 원본 문장입니다. E2E01"
     notepad = NotepadSession()
+    # 261122_0001 A4 (F11.3): snapshot the USER's clipboard before the seed and
+    # put it back in the finally, so a normal exit / exception / Ctrl+C never
+    # leaves harness text on the user's clipboard.
+    clipboard_backup = ClipboardBackup().capture()
     try:
         set_clipboard_text(text)
+        clipboard_backup.seeded()
         notepad.start()
         rep.note(f"notepad pid={notepad.pid} edit_class={notepad.edit_class}")
         notepad.assert_empty()
@@ -2853,7 +3197,12 @@ def scenario_paste_then_enter(app, base):
                 "app process alive after the suppressed retry",
                 f"exit={None if app.proc is None else app.proc.poll()}")
     finally:
-        notepad.stop()
+        try:
+            notepad.stop()
+        finally:
+            # 261122_0001 A4 (F11.3): restore the user's clipboard even when
+            # notepad.stop() raises - the seeded text must never survive the run.
+            clipboard_backup.restore()
     if notepad.cleanup_note:
         rep.cleanup_note = notepad.cleanup_note
     return rep
@@ -3105,6 +3454,14 @@ MULTI_LANG_LINES = {
 }
 
 
+def _record_fixture_pin(key, value, prev_value):
+    """F11.4: keep the crash ledger in sync with a config key written outside
+    ConfigFixture.pin() (multi_lang). No-op when no fixture owns the file."""
+    fx = _MODE.get("fixture")
+    if fx is not None:
+        fx.record_pin(key, value, prev_value)
+
+
 def patch_config_type_target(path, value):
     """Rewrite type_target_language in the config the RUNNING app reads
     (json module, never regex - multiline-safe). Returns the previous value.
@@ -3115,7 +3472,7 @@ def patch_config_type_target(path, value):
     the fallback had been a no-op for a whole release cycle. The caller now
     passes the resolved runtime path."""
     if not os.path.exists(path):
-        raise EnvBlock(f"config.json not found: {path}")
+        raise EnvBlock(f"config.json not found: {redact_user_path(path)}")
     prev = patch_config_fields(path, {"type_target_language": value})
     return prev.get("type_target_language")
 
@@ -3208,7 +3565,7 @@ def run_multi_lang(app_state, base_unused):
     # the running app could see, which is exactly why the JA/VI blocks logged
     # tgt="English" for a whole release cycle.
     cfg_path = _runtime_config_path(app)
-    rep.note(f"config fixture path (runtime): {cfg_path}")
+    rep.note(f"config fixture path (runtime): {redact_user_path(cfg_path)}")
 
     # --- attempt: runtime tray-menu switch in the CURRENT session ---------
     runtime_ok = True
@@ -3308,7 +3665,8 @@ def run_multi_lang(app_state, base_unused):
             # app's own SaveToFile, so our patch is never raced), THEN patch
             # the RUNTIME config.json (startup-load path), THEN start.
             app_state["stop_app"]()
-            patch_config_type_target(cfg_path, name)
+            prev_tgt = patch_config_type_target(cfg_path, name)
+            _record_fixture_pin("type_target_language", name, prev_tgt)
             app_state["start_app"]()
             app = app_state["app"]
             # E5/E6: prove the pinned target is the one the app actually read
@@ -3321,7 +3679,7 @@ def run_multi_lang(app_state, base_unused):
                 live_tgt = None
             rep.add(1, live_tgt == name,
                     f"[{name}] pinned type_target_language is live in the "
-                    f"runtime config the app loads ({cfg_path})",
+                    f"runtime config the app loads ({redact_user_path(cfg_path)})",
                     f"file reports {live_tgt!r}")
             np = NotepadSession()
             try:
@@ -3345,7 +3703,8 @@ def run_multi_lang(app_state, base_unused):
     finally:
         app_state["stop_app"]()
         if original is not None:
-            patch_config_type_target(cfg_path, original)
+            prev_tgt = patch_config_type_target(cfg_path, original)
+            _record_fixture_pin("type_target_language", original, prev_tgt)
         # leave a fresh default session for whichever scenario follows
         app_state["start_app"]()
         final_app = app_state["app"]
@@ -3540,7 +3899,7 @@ def _runtime_config_path_for_exe(exe_path):
     if lad and os.path.exists(legacy):
         raise FixtureRefused(
             "legacy exe-dir config.json present but "
-            f"{os.path.join(lad, 'Emebalachat', 'config.json')} is absent: the "
+            f"{redact_user_path(os.path.join(lad, 'Emebalachat', 'config.json'))} is absent: the "
             "app MIGRATES the pinned bytes to the Known-Folder path at startup "
             "(src/config.cpp LoadFromFile), where this harness's byte-verbatim "
             "restore cannot reach them - the QA diag_log_content=true pin would "
@@ -3571,7 +3930,7 @@ def _atomic_write_bytes(path, data):
     A read-only target is refused (the pre-atomic behaviour also failed) rather
     than silently having its read-only attribute replaced away."""
     if os.path.exists(path) and not os.access(path, os.W_OK):
-        raise PermissionError(f"{path} is read-only; refusing to overwrite it")
+        raise PermissionError(f"{redact_user_path(path)} is read-only; refusing to overwrite it")
     directory = os.path.dirname(os.path.abspath(path)) or os.curdir
     fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".e2e-",
                                suffix=".tmp", dir=directory)
@@ -3606,7 +3965,7 @@ def patch_config_fields(path, values):
     the key (the app re-derives absent keys as defaults - writing JSON null
     would be a schema the loader does not expect)."""
     if not os.path.exists(path):
-        raise EnvBlock(f"runtime config.json not found: {path}")
+        raise EnvBlock(f"runtime config.json not found: {redact_user_path(path)}")
     data = _read_json(path)
     prev = {k: data.get(k) for k in values}
     for k, v in values.items():
@@ -3976,12 +4335,16 @@ def build_run_manifest(*, started_utc, finished_utc, duration_s, app_exe,
     method, pinned mode, config hashes), not to a guess."""
     info = {"schema": 1, "harness": "tools/e2e/req027_e2e.py",
             "started_utc": started_utc, "finished_utc": finished_utc,
-            "duration_s": round(duration_s, 1), "run_dir": run_dir,
+            "duration_s": round(duration_s, 1),
+            "run_dir": redact_user_path(run_dir),
             "os": os_fingerprint(),
-            "app": {"path": app_exe, "sha256": sha256_file(app_exe),
+            "app": {"path": redact_user_path(app_exe),
+                    "sha256": sha256_file(app_exe),
                     "self_reported_version": _OBSERVED["app_version"],
-                    "self_reported_exe": _OBSERVED["app_exe_reported"]},
-            "config": {"path": fixture.path if fixture else None,
+                    "self_reported_exe":
+                        redact_user_path(_OBSERVED["app_exe_reported"])},
+            "config": {"path": (redact_user_path(fixture.path) if fixture
+                                else None),
                        "pre_sha256": fixture.pre_sha if fixture else None,
                        "post_sha256": fixture.post_sha if fixture else None,
                        "restore_ok": fixture.restore_ok if fixture else None,
@@ -4009,7 +4372,7 @@ def build_run_manifest(*, started_utc, finished_utc, duration_s, app_exe,
                         "the config is restored byte-verbatim and only "
                         "harness-owned E2E strings were typed into verified "
                         "empty scratch documents"),
-            "notes": list(extra_notes or [])}
+            "notes": [redact_user_path(n) for n in (extra_notes or [])]}
     return info
 
 
@@ -4035,7 +4398,7 @@ def write_run_manifest(manifest, run_dir):
             json.dump(manifest, f, ensure_ascii=False, indent=2)
             f.write("\n")
     except OSError as e:
-        print(f"[harness] WARN: could not write {path}: {e}")
+        print(f"[harness] WARN: could not write {redact_user_path(path)}: {e}")
         return None
     return path
 
@@ -4048,7 +4411,7 @@ def baseline_drift_banner(manifest, baseline_path):
     try:
         base = _read_json(baseline_path)
     except (OSError, ValueError) as e:
-        print(f"   baseline : unreadable ({baseline_path}: {e}) - skipped")
+        print(f"   baseline : unreadable ({redact_user_path(baseline_path)}: {e}) - skipped")
         return None
     keys = [("os", "build"), ("app", "sha256"),
             ("app", "self_reported_version"), ("notepad", "frame_class"),
@@ -4067,7 +4430,7 @@ def baseline_drift_banner(manifest, baseline_path):
         print("   !! BASELINE-DRIFT CANDIDATE (reporting only, verdict "
               "unchanged): " + " | ".join(diffs))
         return diffs
-    print(f"   baseline : matches {baseline_path}")
+    print(f"   baseline : matches {redact_user_path(baseline_path)}")
     return []
 
 
@@ -4125,7 +4488,7 @@ def main(argv=None):
     try:
         os.makedirs(run_dir, exist_ok=True)
     except OSError as e:
-        print(f"[harness] ERROR: cannot create run dir {run_dir}: {e}")
+        print(f"[harness] ERROR: cannot create run dir {redact_user_path(run_dir)}: {e}")
         return 3
 
     print("== REQ-027 E2E harness (B-6c matrix + B-4 uilang_37 + "
@@ -4136,9 +4499,9 @@ def main(argv=None):
               f"{list(TRAY_SCENARIOS)} from the matrix (they remain "
               "environment-bounded INCONCLUSIVE when run explicitly; never "
               "converted to PASS)")
-    print(f"   app exe  : {args.app_exe}")
+    print(f"   app exe  : {redact_user_path(args.app_exe)}")
     print(f"   log dir  : {LOG_DIR}")
-    print(f"   run dir  : {run_dir}")
+    print(f"   run dir  : {redact_user_path(run_dir)}")
     print("   NOTE     : do NOT touch keyboard/mouse until the verdict.")
 
     reports = []
@@ -4162,7 +4525,7 @@ def main(argv=None):
         # be READ is a harness/environment fault, not a product verdict - the
         # run continues unpinned and the exit policy returns 3 (E12). No write
         # ever happened, so there is nothing to restore.
-        print(f"[harness] ERROR: {e}")
+        print(f"[harness] ERROR: {redact_user_path(str(e))}")
         fixture = None
         harness_failed = True
     _MODE["fixture"] = None
@@ -4175,7 +4538,7 @@ def main(argv=None):
         app.start()
         state["app"] = app
         print(f"   app      : pid={app.proc.pid}")
-        print(f"   app log  : {app.log_path}")
+        print(f"   app log  : {redact_user_path(app.log_path)}")
         # Only an ARMED pin is verified: `fixture` also exists when the pin did
         # not persist, and that path already reported itself as environment.
         if _MODE["fixture"] is not None:
@@ -4255,7 +4618,7 @@ def main(argv=None):
             print(text)
         except HarnessError as e:
             harness_failed = True
-            print(f"[harness] ERROR: {e}")
+            print(f"[harness] ERROR: {redact_user_path(str(e))}")
         # E12 exit policy, computed before the finally so the manifest can
         # record it: 0 = all PASS, 1 = any FAIL, 2 = no FAIL but INCONCLUSIVE
         # (or no verdict at all), 3 = harness error (checked after teardown).
@@ -4339,7 +4702,7 @@ def main(argv=None):
         baseline_drift_banner(manifest, args.baseline_manifest)
         written = write_run_manifest(manifest, run_dir)
         if written:
-            print(f"   manifest : {written}")
+            print(f"   manifest : {redact_user_path(written)}")
 
     if exit3:
         if restore_broken:
@@ -4356,7 +4719,7 @@ def main(argv=None):
             {"exit": 3, "counts": counts, "reason": reason,
              "verdicts": {r.name: r.verdict()[0] for r in reports},
              "skipped_tray": bool(args.skip_tray_scenarios),
-             "run_dir": run_dir}, ensure_ascii=False, sort_keys=True))
+             "run_dir": redact_user_path(run_dir)}, ensure_ascii=False, sort_keys=True))
         return 3
     summary = " / ".join([f"{r.name}={r.verdict()[0]}" for r in reports])
     print(f"\n== RESULT: {summary} after {time.time()-t0:.1f}s "
@@ -4367,7 +4730,7 @@ def main(argv=None):
         {"exit": code, "counts": counts,
          "verdicts": {r.name: r.verdict()[0] for r in reports},
          "skipped_tray": bool(args.skip_tray_scenarios),
-         "run_dir": run_dir}, ensure_ascii=False, sort_keys=True))
+         "run_dir": redact_user_path(run_dir)}, ensure_ascii=False, sort_keys=True))
     return code
 
 

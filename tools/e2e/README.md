@@ -113,7 +113,12 @@ restores). Every run also prints one machine-readable
 timestamps, OS build, app SHA-256 + self-reported SESSION version, config
 path + pre/post SHA-256, pinned mode, Notepad frame/edit class, read methods,
 tray-UIA outcome, per-scenario verdicts, exit code). No user document content
-is ever recorded: environment notes carry lengths only.
+is ever recorded: environment notes carry lengths only. 261122_0001 A4: every
+user-identifying path in the manifest (run dir, app exe, self-reported exe,
+config path, notes) and in the console transcript is redacted to a
+`%USERPROFILE%` / `%LOCALAPPDATA%`-style token by `tools/e2e/env_redact.py`,
+so a manifest or transcript can be attached to a report without carrying the
+operator's account name.
 
 The two tray scenarios (`uilang_37`, `reset_defaults`) are environment-bound:
 `TrackPopupMenu`'s modal loop can starve the UIA menu provider, which is

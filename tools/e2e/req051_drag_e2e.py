@@ -146,6 +146,15 @@ except ImportError:  # pragma: no cover - direct script invocation fallback
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from isolation_gate import IsolationGateError, check_isolation_gate
 
+# 261122_0001 A4 (F11.2, SR5 F-07): same redaction contract as req027_e2e.py -
+# every path this harness prints is rewritten to a %ENV% token, so a pasted
+# transcript carries no Windows account name. Shared helper, not a copy.
+try:
+    from env_redact import redact_user_path
+except ImportError:  # pragma: no cover - direct script invocation fallback
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from env_redact import redact_user_path
+
 # ---------------------------------------------------------------------------
 # constants / tunables (all timeouts explicit, polling-only)
 # ---------------------------------------------------------------------------
@@ -2096,8 +2105,8 @@ def main(argv=None):
 
     print("== REQ-051 drag E2E harness (Symptom A regression defense) ==")
     print(f"   scenarios: {chosen}")
-    print(f"   app exe  : {args.app_exe}")
-    print(f"   log dir  : {LOG_DIR}")
+    print(f"   app exe  : {redact_user_path(args.app_exe)}")
+    print(f"   log dir  : {redact_user_path(LOG_DIR)}")
     print("   NOTE     : do NOT touch keyboard/mouse until the verdict - the")
     print("              harness drives the REAL cursor (drag + icon click).")
 
@@ -2110,7 +2119,7 @@ def main(argv=None):
         app = AppSession(args.app_exe)
         app.start()
         print(f"   app      : pid={app.proc.pid}")
-        print(f"   app log  : {app.log_path}")
+        print(f"   app log  : {redact_user_path(app.log_path)}")
 
     def stop_app():
         nonlocal app
