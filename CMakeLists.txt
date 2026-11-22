@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.24)
 # promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see CHANGELOG
 # "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002, see
 # CHANGELOG "v0.10.6").
-project(Emebalachat VERSION 0.10.9 LANGUAGES C CXX RC)
+project(Emebalachat VERSION 0.10.10 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

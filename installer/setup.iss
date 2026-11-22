@@ -49,12 +49,12 @@ AppName=Emebala Chat
 ; "v0.10.4"); promoted to 0.10.5 on 2026-11-04 (session 261104_0001, see
 ; CHANGELOG "v0.10.5"); promoted to 0.10.6 on 2026-11-08 (session 261108_0002,
 ; see CHANGELOG "v0.10.6").
-AppVersion=0.10.9
+AppVersion=0.10.10
 AppPublisher=Team Sunplaza
 DefaultDirName={autopf}\Emebalachat
 DefaultGroupName=Emebalachat
 OutputDir=output
-OutputBaseFilename=Emebalachat_Setup_0.10.9
+OutputBaseFilename=Emebalachat_Setup_0.10.10
 WizardStyle=modern
 WizardSizePercent=110
 Compression=lzma2/ultra64
@@ -822,7 +822,9 @@ const
 // replaced, and a same-version rebuild or a corrupt "newer" record can no
 // longer strand a stale store binary (audit gaps G1/G2). The bump is still
 // required so the record advances for users upgrading from r13.
-#define ENGINE_REVISION ".r16"
+// 261122_0001 (v0.10.10): the engine binaries changed again (dead paragraph
+// family removal + client-side cancel seam), so the revision bumps to .r17.
+#define ENGINE_REVISION ".r17"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):

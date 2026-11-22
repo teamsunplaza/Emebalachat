@@ -1,3 +1,80 @@
+v0.10.10 - 2026-11-22
+====================
+
+OpenAI endpoint profiles and promptness release. The OpenAI-compatible
+settings window now stores any number of endpoint x model combinations as
+named profiles, the local engine honours a cancel while a translation is
+still in flight, deleting your settings really deletes the stored API key,
+and launching the app twice no longer steals the foreground.
+
+What's new in this build
+------------------------
+* OpenAI endpoint profiles: the settings window shows a profile picker at
+  the top. Selecting a profile fills in the base URL, API key, model and
+  reasoning effort; [Save] stores the current fields as a profile (the
+  same endpoint+model pair is updated in place, never duplicated), and
+  [Delete] removes a profile after a confirmation that says the stored
+  API key goes with it. Profile names are derived automatically from the
+  endpoint host and the model id (for example "openai / gpt-4o-mini").
+  Existing settings migrate automatically: your current configuration
+  becomes the first profile. Each profile keeps its own HTTP consent and
+  its own DPAPI-protected API key (key material is stored only as a
+  DPAPI blob plus a SHA-256 digest, never as plaintext, also inside
+  profile entries).
+* Settings window layout: the reasoning-effort row now sits directly
+  under the model row (base URL, API key, model, reasoning effort, then
+  the supported-language checklist), and the window was widened so that
+  labels and buttons are no longer cut off in long translations — every
+  one of the 89 UI languages was measured and verified.
+* Real-time cancel on the local engine: clicking the badge during a
+  local-engine translation now aborts the in-flight request immediately
+  instead of waiting for it to finish (the cancel travels on the frozen
+  engine pipe protocol; the protocol itself is unchanged). The previous
+  "cancel returns when the current request finishes" limitation is gone,
+  including for the automatic retry attempt.
+* Second-instance notice: launching the app while it is already running
+  now shows the notice in a non-activating popup instead of a message
+  box that grabbed the foreground.
+
+What's fixed
+------------
+* [설정 삭제] (delete settings) no longer leaves the API key behind in a
+  synthesized profile: the key is removed from the profile library at
+  every persist site, and deleting every profile stays deleted across
+  restarts.
+* The OpenAI profile library and the active settings block are now
+  written through locked setters, closing a race with background config
+  saves (the same fix class previously applied to the user-language
+  library).
+* Profile entry fields (base URL, model, key blob, digest) are size-capped
+  and the digest is validated, so a hand-edited config cannot smuggle
+  oversized values into the library.
+* Every cleartext copy of the API key that exists during a request
+  (request headers, conversion buffers, dialog edit buffers) is zeroed
+  before its memory is freed.
+* The transient-retry leg of a local translation is covered by the
+  cancel forwarder, so a cancel landing during the retry connects to the
+  in-flight request instead of a stale id.
+
+Engine (shared Emebala_engine repo, same release train)
+-------------------------------------------------------
+* Client-side cancel seam: the host client can send the frozen
+  op:"cancel" frame for an in-flight translation from a separate thread;
+  the wire request id is exposed through a defaulted out-parameter so
+  existing callers are unchanged.
+* Dead code removal: the unused paragraph-block split/join helper family
+  was removed (no consumer in any of the three apps).
+
+Known limitations (documented)
+------------------------------
+* Downgrading to a pre-profile build keeps the active profile (the
+  regular openai block) but drops the stored profile library on the next
+  save; back up profiles before downgrading.
+* A profile name longer than the profile picker is truncated in the
+  closed picker by design; opening the list always shows the full name.
+* Display names are fixed in the UI language that was active when the
+  profile was saved; they do not re-translate on language switch.
+
 v0.10.9 - 2026-11-21
 ====================
 

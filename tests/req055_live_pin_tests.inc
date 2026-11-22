@@ -223,8 +223,8 @@ void TestReq055LiveUserModelPin() {
         std::ifstream in(setup_iss, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#define ENGINE_REVISION \".r16\"") != std::string::npos,
-                   "REQ-059: ENGINE_REVISION pinned to .r16 (v0.10.9 engine binaries: "
+        TEST_CHECK(src.find("#define ENGINE_REVISION \".r17\"") != std::string::npos,
+                   "REQ-059: ENGINE_REVISION pinned to .r17 (v0.10.10 engine binaries: "
                    "gate corrections + token budgets + 4-tier chunking + scaled IPC "
                    "timeouts; session 261121_0001) — the pin must track the CURRENT "
                    "revision or a same-version rebuild keeps a stale store copy");
