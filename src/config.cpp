@@ -3785,7 +3785,7 @@ void AppConfig::SetOpenAiProfiles(std::vector<OpenAiProfile> profiles) {
 // next to the member). The lock is the SAME mutex_ ToJsonStringLocked()/
 // SaveToFile() hold while they serialise the block, so the GUI-thread
 // settings-dialog write can no longer interleave with an off-thread save
-// (the round-2 N2 race: direct `config.openai = edited` vs SaveToFile()
+// (the round-2 N2 race: a direct member assignment vs SaveToFile()
 // iteration — the same PR9-12 class fix-A1 closed for openai_profiles, on
 // this older REQ-045/047/051-era member). The fix-E write-surface pin in
 // tests/openai_profile_tests.inc scans this region; the FromJsonString load

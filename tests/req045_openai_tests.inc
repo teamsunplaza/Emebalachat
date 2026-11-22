@@ -1691,15 +1691,30 @@ void TestReq045OpenAiKeyScrub() {
                    "fix-E (round-2 N1): headers.reserve() precedes the first key-bearing "
                    "append (no post-key reallocation can plain-free a key-bearing buffer)");
         // Size-regression check: the reserve must cover the literal prefix
-        // (22), the key itself and the CRLF (2) — the exact final-size bound.
+        // (kAuthPrefixLen, static_assert-pinned to 22), the key itself and
+        // the CRLF (+2) — the exact final-size bound (round-3 hardening:
+        // all three terms pinned, not just two).
         if (reserve_at != std::string::npos) {
             const std::size_t reserve_end = body.find(';', reserve_at);
             const std::string reserve_expr =
                 std::string(body.substr(reserve_at, reserve_end - reserve_at));
-            TEST_CHECK(reserve_expr.find("22") != std::string::npos &&
-                           reserve_expr.find("wide_key.size()") != std::string::npos,
-                       "fix-E (round-2 N1): the reserve covers the 22-char prefix AND the "
-                       "key length (a key-blind reserve is a size regression)");
+            TEST_CHECK(reserve_expr.find("kAuthPrefixLen") != std::string::npos &&
+                           reserve_expr.find("wide_key.size()") != std::string::npos &&
+                           reserve_expr.find("+ 2") != std::string::npos,
+                       "fix-E (round-2 N1): the reserve covers prefix AND key length AND "
+                       "the +2 CRLF (a partial bound re-opens the realloc plain-free)");
+            // No mutation of `headers` may appear after the key append —
+            // a trailing append without extending the reserve would
+            // reintroduce the exact realloc plain-free the guard cannot see.
+            const std::size_t last_append = body.rfind("headers +=", key_append_at);
+            const std::size_t crlf_append = body.find("headers += L\"\\r\\n\";", key_append_at);
+            TEST_CHECK(crlf_append != std::string::npos &&
+                           body.find("headers +=", crlf_append + 10) == std::string::npos &&
+                           body.find("headers.append", crlf_append + 10) == std::string::npos &&
+                           body.find("headers =", crlf_append + 10) == std::string::npos,
+                       "fix-E (round-2 N1): no headers mutation exists after the CRLF append "
+                       "(a future trailing append would re-open the key-bearing realloc)");
+            (void)last_append;
         }
     }
 

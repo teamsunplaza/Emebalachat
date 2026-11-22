@@ -665,15 +665,20 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
     if (!auth_header.empty()) {
         wide_key = ToUtf16(auth_header);
         // 261122_0001 fix-E (round-2 residual N1, security r2): reserve the
-        // FINAL size BEFORE the first key-bearing append (22 = the literal
-        // prefix length, +2 = L"\r\n"). Without this, MSVC's growth sequence
+        // FINAL size BEFORE the first key-bearing append (+2 = L"\r\n").
+        // Without this, MSVC's growth sequence
         // (max(1.5x capacity, needed)) reallocates `headers` on the final
         // append for keys >= ~26 wchar and plain-frees a buffer that already
         // holds "Authorization: Bearer <key>" OUTSIDE the scrub guard — every
         // real provider key exceeds 26, so one freed heap block kept the
         // cleartext key on essentially every request. The guard only ever
-        // zeroes the FINAL buffer.
-        headers.reserve(headers.size() + 22 + wide_key.size() + 2);
+        // zeroes the FINAL buffer. The prefix length is a named constexpr
+        // with a static_assert (round-3 pin hardening) so a future edit to
+        // the literal fails the build instead of under-reserving silently.
+        constexpr std::size_t kAuthPrefixLen =
+            std::char_traits<wchar_t>::length(L"Authorization: Bearer ");
+        static_assert(kAuthPrefixLen == 22);
+        headers.reserve(headers.size() + kAuthPrefixLen + wide_key.size() + 2);
         headers += L"Authorization: Bearer ";
         headers += wide_key;
         headers += L"\r\n";

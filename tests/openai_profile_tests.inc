@@ -667,12 +667,15 @@ void TestOpenAiProfileFixA1() {
             // Zero direct whole-block writers OUTSIDE the region: the load
             // path writes field-by-field through the shared
             // ApplyOpenAiConfigPair choke point (an `out` reference parameter,
-            // never the member), so no `openai = ` may survive past the
-            // region's END marker anywhere in config.cpp.
-            TEST_CHECK(e_cpp_src.find("openai = ", e_end) == std::string::npos,
-                       "fix-E R2-N2: no direct `openai = ` whole-block writer survives "
-                       "outside the locked verb in config.cpp (the load path uses "
-                       "ApplyOpenAiConfigPair field-by-field)");
+            // never the member), so exactly ONE `openai = ` may exist in the
+            // whole file — the verb body's own move-in, inside the region
+            // (round-3 hardening: whole-file count, not a suffix scan, so a
+            // writer placed BEFORE the BEGIN marker cannot evade).
+            TEST_CHECK(count_of(e_cpp_src, "openai = ") == 1 &&
+                           e_cpp_src.find("openai = ") >= e_begin &&
+                           e_cpp_src.find("openai = ") < e_end,
+                       "fix-E R2-N2: exactly one `openai = ` whole-block writer exists in "
+                       "config.cpp and it is the locked verb's move-in inside the region");
         }
         if (e_hpp_read) {
             TEST_CHECK(e_hpp_src.find("void SetOpenAiConfig(OpenAiConfig block);") !=
