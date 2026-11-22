@@ -1155,10 +1155,24 @@ struct AppConfig {
 
     // REQ-045 P4-3 (design §3b, item 3b): the persisted "openai" block —
     // OpenAI Compatible cloud engine (base_url / model / DPAPI-protected key
-    // blob + SHA-256 integrity digest / plaintext-http consent). Written at
-    // startup and by the settings dialog, read by the worker thread through
-    // the engine; like cloud_fallback_enabled it is never mutated after
-    // threads exist, so it needs no mutex or Snapshot entry.
+    // blob + SHA-256 integrity digest / plaintext-http consent). Read by the
+    // worker thread through the engine; like cloud_fallback_enabled it has no
+    // Snapshot entry.
+    //
+    // WRITE RULE (261122_0001 fix-E, round-2 N2 — supersedes the old "never
+    // mutated after threads exist" note, which the runtime settings-dialog
+    // writes factually contradicted since REQ-045/047/051): every runtime
+    // write goes through the locked verb SetOpenAiConfig() below — the same
+    // lock SaveToFile()/ToJsonString() hold while they serialise the block,
+    // so the PR9-12 race fix-A1 closed for openai_profiles (a GUI-thread
+    // block write interleaving with an off-thread save) cannot recur on this
+    // older member. Direct assignment is FORBIDDEN once any thread exists; it
+    // stays legal only before threads exist (startup seeding, unit tests)
+    // and in the FromJsonString load path (field-by-field through the shared
+    // ApplyOpenAiConfigPair choke point, already under mutex_). The member
+    // stays PUBLIC (GUI-thread reads are direct, exactly like
+    // openai_profiles); the fix-E write-surface pin in
+    // tests/openai_profile_tests.inc enforces zero direct runtime writers.
     OpenAiConfig openai;
 
     // 261116_0003 P9c-1a: the optional "이 모델이 지원하는 언어" declaration for
@@ -1193,10 +1207,12 @@ struct AppConfig {
     // thread exists (the R1-02 race: a GUI-thread move-assign interleaving
     // with an off-thread SaveToFile() iteration under mutex_); it stays legal
     // only before threads exist (startup seeding, unit tests) and in the
-    // FromJsonString load path (which already holds mutex_). The member stays
-    // PUBLIC only until fix-round2 unit A2 migrates the remaining main.cpp
-    // direct callers; the config.hpp/cpp write-surface pin below enforces the
-    // rule inside this file.
+    // FromJsonString load path (which already holds mutex_). The member STAYS
+    // PUBLIC by design (261122_0001 fix-E, round-2 glm N-04 — post-migration
+    // rule): fix-round2 unit A2 migrated the remaining main.cpp direct
+    // callers, and reads stay direct on the GUI thread, so no accessor is
+    // planned; the B-U5 write-surface pin in tests/openai_profile_tests.inc
+    // enforces zero direct runtime writers.
     std::vector<OpenAiProfile> openai_profiles;
 
     // 261122_0001 fix-A1 (R1-12): the "fold was touched" record. Set by
@@ -1369,6 +1385,13 @@ struct AppConfig {
     // explicit "openai_profiles": [] and the load-time migration cannot
     // resurrect a deleted profile (R1-12).
     void SetOpenAiProfiles(std::vector<OpenAiProfile> profiles);
+
+    // 261122_0001 fix-E (round-2 N2): locked write of the active "openai"
+    // block (same discipline as SetOpenAiProfiles — takes mutex_, so a save
+    // that is serialising the config cannot observe a half-applied block
+    // torn out of the GUI-thread settings-dialog write that has raced it
+    // since REQ-045/047/051).
+    void SetOpenAiConfig(OpenAiConfig block);
 
     // 261116_0003 P9b-3 (PR9-12): locked write surface for user_languages (the
     // member contract above). Every verb takes mutex_, so a GUI edit can never

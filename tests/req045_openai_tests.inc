@@ -1680,6 +1680,27 @@ void TestReq045OpenAiKeyScrub() {
         TEST_CHECK(!Req045FixCHeadersGuarded(pre_fix_headers),
                    "fix-C (R1-04) negative control: the pre-fix header block (no guard, "
                    "inline ToUtf16, operator+ temporary) FAILS the HttpRequest pin");
+        // 261122_0001 fix-E (round-2 N1): the header build reserves its FINAL
+        // size BEFORE the first key-bearing append, so MSVC's growth sequence
+        // cannot reallocate-and-plain-free a buffer that already holds
+        // "Authorization: Bearer <key>" outside the scrub guard.
+        const std::size_t key_append_at = body.find("headers += wide_key;");
+        const std::size_t reserve_at = body.find("headers.reserve(");
+        TEST_CHECK(key_append_at != std::string::npos && reserve_at != std::string::npos &&
+                       reserve_at < key_append_at,
+                   "fix-E (round-2 N1): headers.reserve() precedes the first key-bearing "
+                   "append (no post-key reallocation can plain-free a key-bearing buffer)");
+        // Size-regression check: the reserve must cover the literal prefix
+        // (22), the key itself and the CRLF (2) — the exact final-size bound.
+        if (reserve_at != std::string::npos) {
+            const std::size_t reserve_end = body.find(';', reserve_at);
+            const std::string reserve_expr =
+                std::string(body.substr(reserve_at, reserve_end - reserve_at));
+            TEST_CHECK(reserve_expr.find("22") != std::string::npos &&
+                           reserve_expr.find("wide_key.size()") != std::string::npos,
+                       "fix-E (round-2 N1): the reserve covers the 22-char prefix AND the "
+                       "key length (a key-blind reserve is a size regression)");
+        }
     }
 
     // ---- (3) the three dialog key-read sites -----------------------------

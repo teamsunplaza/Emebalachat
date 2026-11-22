@@ -116,7 +116,7 @@ public:
     bool cancel_seen() const { return cancel_seen_.load(std::memory_order_acquire); }
     std::uint64_t last_cancel_id() const { return last_cancel_id_; }
     std::string last_cancel_frame() const { return last_cancel_frame_; }
-    int results_sent() const { return results_sent_; }
+    int results_sent() const { return results_sent_.load(std::memory_order_acquire); }
     std::string last_result_status() const { return last_result_status_; }
     // 261122_0001 fix-B: answer the FIRST translate with the frozen
     // transient status=busy (no in-flight window), so the manager starts
@@ -301,7 +301,7 @@ private:
                         // Metadata BEFORE the counter: a waiter that observes the
                         // increment must also observe the status (fix-B).
                         last_result_status_ = "busy";
-                        ++results_sent_;
+                        results_sent_.fetch_add(1, std::memory_order_release);
                         continue;
                     }
                     // In-flight window: the client is blocked awaiting the result.
@@ -336,7 +336,7 @@ private:
                     // Metadata BEFORE the counter: a waiter that observes the
                     // increment must also observe the status (fix-B).
                     last_result_status_ = aborted ? "timeout" : "ok";
-                    ++results_sent_;
+                    results_sent_.fetch_add(1, std::memory_order_release);
                 } else if (op->text == "cancel") {
                     // Cancel while NOTHING is in flight: the frozen contract says
                     // IGNORED (the connection stays open; §4.4 idempotent no-op).
@@ -374,7 +374,9 @@ private:
     std::atomic<bool> cancel_seen_{false};
     std::uint64_t last_cancel_id_ = 0;
     std::string last_cancel_frame_;
-    int results_sent_ = 0;
+    // 261122_0001 fix-E (round-2 P3): release-incremented by the server thread
+    // and acquire-read by seam-test waiters — a plain int was a data race.
+    std::atomic<int> results_sent_{0};
     std::string last_result_status_;
 };
 

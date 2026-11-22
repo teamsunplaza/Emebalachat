@@ -2869,7 +2869,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             refresh_tray();
             return false;
         }
-        config.openai = edited;
+        // 261122_0001 fix-E (round-2 N2): through the locked verb
+        // (SetOpenAiConfig), never a direct member write — an off-thread
+        // SaveToFile serialises this block under mutex_.
+        config.SetOpenAiConfig(edited);
         // 261122_0001 B-U5 (design-pick item 4): adopt the staged profile
         // library on the LIVE config BEFORE the single save below (nullptr on
         // Cancel and never on kDeleted, so the stored library survives both).
@@ -2915,7 +2918,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Capture the identity BEFORE the mirror assignment below: `edited` is
         // already cleared (the dialog ends on kDeleted with an empty block).
         const emebalachat::OpenAiConfig retired = config.openai;
-        config.openai = edited;
+        // 261122_0001 fix-E (round-2 N2): locked verb, never a direct member
+        // write (same PR9-12 race as the g_apply_openai_settings site).
+        config.SetOpenAiConfig(edited);
+        // 261122_0001 fix-E (round-2 seat1 N-01): this direct read is safe by
+        // the member invariant — every WRITER of openai_profiles is GUI-thread-
+        // only through the locked verbs, and off-thread SaveToFile reads under
+        // the same mutex_, so this is a read-read with no writer interleaving.
         std::vector<emebalachat::OpenAiProfile> kept_profiles = config.openai_profiles;
         if (emebalachat::EraseOpenAiProfileMatchingKey(kept_profiles, retired) > 0) {
             config.SetOpenAiProfiles(std::move(kept_profiles));
@@ -3224,6 +3233,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // g_apply_openai_deleted before that branch's save, so the copy
             // seeded here can never carry a retired credential back to the file
             // (the next open seeds the already-pruned library).
+            // 261122_0001 fix-E (round-2 seat1 N-01): the copy is also safe
+            // unlocked — all openai_profiles writers are GUI-thread-only via
+            // the locked verbs (read-read, no concurrent writer exists).
             emebalachat::s_pending_openai_profiles = config.openai_profiles;
             if (::PostMessageW(emebalachat::g_hControllerWnd,
                                emebalachat::kMsgOpenOpenAiSettings, 0, 0) == FALSE) {

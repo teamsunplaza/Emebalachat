@@ -512,7 +512,7 @@ void TestOpenAiProfileFixA1() {
         // R1-07 lesson: a source pin that cannot resolve its file must HARD-FAIL,
         // never print PASS over zero assertions.
         TEST_CHECK(cpp_read && hpp_read,
-                   "fix-A1 R1-02: src/config.cpp + src/config.cpp resolve for the "
+                   "fix-A1 R1-02: src/config.cpp + src/config.hpp resolve for the "
                    "write-surface pin");
         if (cpp_read) {
             const std::size_t begin_marker = cpp_src.find("fix-A1 R1-02 BEGIN");
@@ -625,6 +625,84 @@ void TestOpenAiProfileFixA1() {
             TEST_CHECK(hpp_src.find("void SetOpenAiProfiles(std::vector<OpenAiProfile> "
                                     "profiles);") != std::string::npos,
                        "fix-A1 R1-02: the locked verb is declared on AppConfig");
+        }
+    }
+
+    // ---- fix-E (R2-N2): the ACTIVE openai block's locked write surface -------
+    // Round-2 closure of the same PR9-12 class on the older REQ-045/047/051
+    // member: the GUI-thread settings-dialog write now goes through a locked
+    // verb, so it can no longer interleave with an off-thread SaveToFile()
+    // serialisation of the block under mutex_. config.cpp/config.hpp are read
+    // again here (this block sits outside the R1-02(a) scope that owns
+    // cpp_src/hpp_src).
+    {
+        const std::filesystem::path e_config_cpp = ResolveRepoFile(L"src\\config.cpp");
+        const std::filesystem::path e_config_hpp = ResolveRepoFile(L"src\\config.hpp");
+        std::string e_cpp_src, e_hpp_src;
+        const bool e_cpp_read = !e_config_cpp.empty() &&
+                                read_src(e_config_cpp, e_cpp_src);
+        const bool e_hpp_read = !e_config_hpp.empty() &&
+                                read_src(e_config_hpp, e_hpp_src);
+        TEST_CHECK(e_cpp_read && e_hpp_read,
+                   "fix-E R2-N2: src/config.cpp + src/config.hpp resolve for the "
+                   "openai-block write-surface pin");
+        if (e_cpp_read) {
+            const std::size_t e_begin = e_cpp_src.find("fix-E R2-N2 BEGIN");
+            const std::size_t e_end = e_cpp_src.find("fix-E R2-N2 END");
+            const bool e_markers_ok = e_begin != std::string::npos &&
+                                      e_end != std::string::npos && e_begin < e_end;
+            TEST_CHECK(e_markers_ok,
+                       "fix-E R2-N2: the openai-block write-surface region markers exist "
+                       "and are ordered");
+            const std::string e_region =
+                e_markers_ok ? e_cpp_src.substr(e_begin, e_end - e_begin) : std::string();
+            // Structure pin, anchored so it cannot pass vacuously: the verb is
+            // DEFINED inside the region and takes mutex_ exactly once — the
+            // same guard + move-in shape as SetOpenAiProfiles.
+            TEST_CHECK(e_region.find("void AppConfig::SetOpenAiConfig(") != std::string::npos &&
+                           count_of(e_region, "std::lock_guard<std::mutex> lock(mutex_);") == 1 &&
+                           e_region.find("openai = std::move(block);") != std::string::npos,
+                       "fix-E R2-N2: SetOpenAiConfig is the region's one locked writer "
+                       "(guard + move-in, mirroring SetOpenAiProfiles)");
+            // Zero direct whole-block writers OUTSIDE the region: the load
+            // path writes field-by-field through the shared
+            // ApplyOpenAiConfigPair choke point (an `out` reference parameter,
+            // never the member), so no `openai = ` may survive past the
+            // region's END marker anywhere in config.cpp.
+            TEST_CHECK(e_cpp_src.find("openai = ", e_end) == std::string::npos,
+                       "fix-E R2-N2: no direct `openai = ` whole-block writer survives "
+                       "outside the locked verb in config.cpp (the load path uses "
+                       "ApplyOpenAiConfigPair field-by-field)");
+        }
+        if (e_hpp_read) {
+            TEST_CHECK(e_hpp_src.find("void SetOpenAiConfig(OpenAiConfig block);") !=
+                           std::string::npos,
+                       "fix-E R2-N2: the locked verb is declared on AppConfig");
+            TEST_CHECK(e_hpp_src.find("openai = ") == std::string::npos,
+                       "fix-E R2-N2: config.hpp declares the member without mutating it");
+        }
+    }
+
+    // ---- fix-E (R2-N2): zero direct writers in the runtime callers ----------
+    {
+        const std::filesystem::path main_cpp = ResolveRepoFile(L"src\\main.cpp");
+        std::string main_src;
+        if (!main_cpp.empty()) {
+            std::ifstream in(main_cpp, std::ios::binary);
+            main_src.assign((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+        }
+        // R1-07 lesson: a source pin that cannot resolve its file must
+        // HARD-FAIL, never print PASS over zero assertions.
+        TEST_CHECK(!main_src.empty(),
+                   "fix-E R2-N2: src/main.cpp resolves for the zero-direct-writers pin");
+        if (!main_src.empty()) {
+            TEST_CHECK(main_src.find("config.openai = ") == std::string::npos,
+                       "fix-E R2-N2: no direct `config.openai = ` writer survives in "
+                       "main.cpp (both dialog sites go through the locked verb)");
+            TEST_CHECK(count_of(main_src, "config.SetOpenAiConfig(") == 2,
+                       "fix-E R2-N2: both runtime write sites call the locked verb "
+                       "(g_apply_openai_settings + g_apply_openai_deleted)");
         }
     }
 
@@ -2741,7 +2819,10 @@ void TestOpenAiProfileFixA2() {
                                                     : seam_end - seam_at);
             TEST_CHECK(!seam.empty(), "fix-A2 (C3): the kDeleted seam body is locatable");
             const std::size_t capture = seam.find("const emebalachat::OpenAiConfig retired = config.openai;");
-            const std::size_t mirror = seam.find("config.openai = edited;");
+            // 261122_0001 fix-E (R2-N2): the mirror write is the LOCKED VERB
+            // now (the old `config.openai = edited;` direct assignment is the
+            // exact race this unit migrated).
+            const std::size_t mirror = seam.find("config.SetOpenAiConfig(edited);");
             const std::size_t prune = seam.find("EraseOpenAiProfileMatchingKey(");
             const std::size_t write = seam.find("config.SetOpenAiProfiles(");
             const std::size_t save = seam.find("config.SaveToFile();");

@@ -3780,6 +3780,23 @@ void AppConfig::SetOpenAiProfiles(std::vector<OpenAiProfile> profiles) {
 }
 // ---- 261122_0001 fix-A1 R1-02 END openai_profiles write surface -----------
 
+// ---- 261122_0001 fix-E R2-N2 BEGIN openai block write surface -------------
+// The locked write surface for the active "openai" block (member contract
+// next to the member). The lock is the SAME mutex_ ToJsonStringLocked()/
+// SaveToFile() hold while they serialise the block, so the GUI-thread
+// settings-dialog write can no longer interleave with an off-thread save
+// (the round-2 N2 race: direct `config.openai = edited` vs SaveToFile()
+// iteration — the same PR9-12 class fix-A1 closed for openai_profiles, on
+// this older REQ-045/047/051-era member). The fix-E write-surface pin in
+// tests/openai_profile_tests.inc scans this region; the FromJsonString load
+// path (ParseOpenAiBlock -> ApplyOpenAiConfigPair, already under mutex_)
+// is the one documented writer outside it.
+void AppConfig::SetOpenAiConfig(OpenAiConfig block) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    openai = std::move(block);
+}
+// ---- 261122_0001 fix-E R2-N2 END openai block write surface ---------------
+
 void AppConfig::SetSourceLanguage(std::string value) {
     std::lock_guard<std::mutex> lock(mutex_);
     source_language = std::move(value);

@@ -1456,9 +1456,13 @@ void TestOpenAiLabelFits() {
         // is the runtime width of the pre-fix fixture (the 341-px gemini
         // pair, near-identical composition): its ratio to the worst pair is
         // stable within 0.2% across 96/144/192 DPI (349/341, 527/514,
-        // 706/689 measured), so expected = 349 x ruler/341 inherits exact
-        // DPI scaling while still catching any growth or substitution that
-        // hits the worst pair's own characters.
+        // 706/689 measured — 261122_0001 fix-E re-measured all three rows
+        // with tools_tmp_261122_bu6fix/measure_profile_names_dpi.cpp and
+        // preserved them in measure_profile_names_out.txt under "MULTI-DPI
+        // RATIO ROWS"; the 96-DPI row reproduces the artifact's original
+        // figures, validating the simulation), so expected = 349 x ruler/341
+        // inherits exact DPI scaling while still catching any growth or
+        // substitution that hits the worst pair's own characters.
         constexpr int kPinnedNamePxAt96Dpi = 349;
         constexpr int kReferenceNamePxAt96Dpi = 341;
         constexpr int kPinnedNameTolerancePxAt96Dpi = 4;

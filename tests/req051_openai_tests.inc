@@ -358,11 +358,18 @@ void TestReq051OpenAiDialogStructuralPins() {
             // 261122_0001 fix-A2 (R1-01) grew this branch, so the old
             // fixed 3500-character window silently truncated the pins past
             // persisted.SaveToFile(); bound it by the label instead.
+            // 261122_0001 fix-E (round-2 glm r2 N4): a MISSING bounding label
+            // must HARD-FAIL (the R1-07 pattern), never degrade the window to
+            // the whole file tail — pins matching tokens from later branches
+            // would pass vacuously on a structural change.
             const size_t next_case = osw_src.find("case IDC_PROFILE_SAVE_BTN", del_pos);
+            TEST_CHECK(next_case != std::string::npos,
+                       "REQ-051 D pin: the IDC_PROFILE_SAVE_BTN bounding label exists "
+                       "(the delete-branch window must not degrade to the file tail)");
             const std::string branch =
-                osw_src.substr(del_pos, next_case == std::string::npos
-                                            ? std::string::npos
-                                            : next_case - del_pos);
+                next_case != std::string::npos
+                    ? osw_src.substr(del_pos, next_case - del_pos)
+                    : osw_src.substr(del_pos, 0);
             TEST_CHECK(branch.find("AppConfig persisted;") != std::string::npos,
                        "REQ-051 D pin: the delete persists through an AppConfig instance");
             TEST_CHECK(branch.find("persisted.LoadFromFile()") != std::string::npos,
