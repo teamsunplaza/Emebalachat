@@ -343,8 +343,10 @@ target_link_libraries(run_tests PRIVATE
     Emebalachat_host_v2
     # 261122_0001 B-U3 (design-pick.md item 8b): TestOpenAiLabelFits measures
     # every template label/button under the dialog font with GDI
-    # (CreateFontW/GetTextExtentPoint32W) — gdi32 was never linked before
-    # (the app renders with D2D; this is the first GDI consumer).
+    # (CreateFontW/GetTextExtentPoint32W) — make the run_tests GDI dependency
+    # explicit (fix-D R1-13/h, CR4 F-06: Emebalachat_core already calls
+    # CreateCompatibleDC/SelectObject via the D2D layers, so gdi32 is not a
+    # new subsystem; the named link is the honest declaration).
     gdi32
 )
 
