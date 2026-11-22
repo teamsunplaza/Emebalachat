@@ -78,20 +78,39 @@ constexpr std::size_t kLocalProgressChunkUnits = 1200;
 // fires engine_host::CancelTranslateRequest with the wire id the in-flight
 // TryTranslate published through IdSlot() (the client's out_request_id slot),
 // so the host aborts the job and the blocked call returns promptly with the
-// aborted (timeout) answer instead of waiting out the full budget. Model:
-//   * ONE thread per armed leg, started only when a token exists (no token
-//     -> never constructed -> byte-identical pre-feature behavior).
-//   * One shot: after firing (or on Stop) the thread exits; a cancel that
-//     races the request teardown simply no-ops in the seam.
+// aborted (timeout) answer instead of waiting out the full budget.
+// 261122_0001 fix-B (R1-05/R1-09): the id slot is PER PIPE ATTEMPT. The slot
+// holds an id ONLY while a pipe attempt is actually in flight — the leg
+// retracts it (store 0) the moment each TryTranslate returns (first attempt
+// AND the REQ-051 transient retry), and RearmForAttempt() resets the slot +
+// re-arms this one-shot before the retry's pipe request — so a cancel landing
+// in the retry's reconnect/backoff window or during the retry flight ALWAYS
+// targets the id the CURRENTLY in-flight attempt published, never a stale
+// attempt-1 id (a stale frame would no-op in the seam AND, having consumed
+// the one-shot, would leave the retry unwatched for the full pipe budget).
+// Model:
+//   * ONE thread per armed ATTEMPT, started only when a token exists (no
+//     token -> never constructed -> byte-identical pre-feature behavior).
+//   * One shot per attempt: after firing (or on Stop) the thread exits; the
+//     retry re-arms a FRESH one-shot. A cancel that races the request
+//     teardown simply no-ops in the seam (the client publishes the in-flight
+//     pair only around the blocking read).
 //   * RAII: Stop() signals + joins, so EVERY exit path of the local leg
 //     (success / cancel / failure convergence) leaves no live thread. The
-//     join is bounded by the poll cadence (~10 ms) — the seam's own write is
-//     bounded by the client's overlapped-write deadline, and firing happens
-//     at most once per leg.
+//     join is bounded by the poll cadence (~10 ms): the re-arm runs only when
+//     no attempt is in flight, and the watcher can be inside the seam's
+//     synchronous write only when it already fired — which requires the token
+//     to be set, which routes the leg to Canceled BEFORE the re-arm. (In that
+//     causality-edge case the join waits out the seam write instead, bounded
+//     by the client's 15 s overlapped-write deadline — never a deadlock.)
+//     Firing happens at most once per attempt.
 //   * The forwarder never decides the outcome: the 261121_0002 checks in
 //     the leg (discard-before-success, cancel-before-retry, cancel-before-
 //     cloud-fallback) own the Canceled mapping; this thread only makes a
-//     cancelled request return PROMPTLY.
+//     cancelled request return PROMPTLY. The inter-attempt gap (the REQ-051
+//     backoff sleep) is deliberately UNWATCHED: the leg's own cancel checks
+//     there converge to Canceled without starting a new pipe request, and
+//     the empty slot guarantees no stale frame can be fired in the gap.
 namespace {
 class LocalCancelForwarder {
 public:
@@ -100,8 +119,9 @@ public:
     LocalCancelForwarder& operator=(const LocalCancelForwarder&) = delete;
     ~LocalCancelForwarder() { Stop(); }
 
-    // Single-use: call once, before the pipe request that should be
-    // cancellable. `token` must outlive the forwarder (the caller's
+    // Single-use per attempt: call once, before the pipe request that should
+    // be cancellable; the REQ-051 transient retry re-arms a fresh one-shot
+    // via RearmForAttempt(). `token` must outlive the forwarder (the caller's
     // TranslationTaskContext::cancel does — the task owns both).
     void Start(const std::atomic<bool>* token) {
         token_ = token;
@@ -111,8 +131,30 @@ public:
     }
 
     // The publish slot handed to TryTranslate's out_request_id. Valid from
-    // Start() until the dtor returns.
+    // Start() until the dtor returns. Non-zero ONLY while a pipe attempt is
+    // in flight (fix-B retracts it the moment each attempt returns).
     std::atomic<std::uint64_t>* IdSlot() { return &request_id_; }
+
+    // 261122_0001 fix-B (R1-05/R1-09): per-attempt re-arm for the REQ-051
+    // transient retry. Clears the published id and starts a FRESH one-shot
+    // watcher, so the retry's freshly published id is watched by a live
+    // thread even when the previous attempt's watch raced the teardown.
+    // Call ONLY with no pipe attempt in flight. The join is poll-bounded:
+    // reaching this means every leg-side cancel check passed with the token
+    // unset, so the old watcher cannot have fired (firing requires the token
+    // set, which routes the leg to Canceled before this point) — it is in
+    // its outer poll loop and exits within ~2 poll periods of stop_. (In the
+    // causality-edge case where the watcher observed the token while every
+    // leg check missed it, the watcher is inside the seam's synchronous
+    // write, bounded by the client's 15 s overlapped-write deadline — the
+    // re-arm still completes and the fresh watcher covers the retry.)
+    void RearmForAttempt() {
+        stop_.store(true, std::memory_order_release);
+        if (worker_.joinable()) worker_.join();
+        request_id_.store(0, std::memory_order_release);
+        stop_.store(false, std::memory_order_release);
+        worker_ = std::thread([this] { Run(); });
+    }
 
     void Stop() {
         stop_.store(true, std::memory_order_release);
@@ -124,10 +166,11 @@ private:
         for (;;) {
             if (stop_.load(std::memory_order_acquire)) return;
             if (ChunkLoopCancelRequested(token_)) {
-                // The user aborted. When the request has not reached the
-                // wire yet, the leg's own pre/post checks converge to
-                // Canceled without us; wait (bounded by Stop) for the
-                // published id so a wire-bound request is aborted too.
+                // The user aborted. When no attempt is in flight (the slot
+                // was retracted), the leg's own pre/post checks converge to
+                // Canceled without us — wait (bounded by Stop) for the
+                // CURRENT attempt's published id so a wire-bound request is
+                // aborted too.
                 for (;;) {
                     const std::uint64_t id = request_id_.load(std::memory_order_acquire);
                     if (id != 0) {
@@ -1012,6 +1055,16 @@ std::wstring TranslationManager::Translate(
             DiagnoseServedModelMismatch(preferred, served_model);
             return ToUtf16(host_out);
         }
+        // 261122_0001 fix-B (R1-05/R1-09): attempt-1 has FULLY returned —
+        // retract its published wire id BEFORE the inter-attempt gap. The
+        // slot now publishes an id ONLY while a pipe attempt is in flight,
+        // so the armed forwarder can never fire attempt-1's STALE id while
+        // the leg sits in the REQ-051 backoff (a stale frame would no-op in
+        // the seam — and, having consumed the one-shot, would leave the
+        // retry unwatched for the full pipe budget).
+        if (cancel_id_slot) {
+            cancel_id_slot->store(0, std::memory_order_release);
+        }
         // 261122_0001 A2: a failure observed after the user token flipped
         // (typically the host's aborted answer to our cancel frame) converges
         // to Canceled HERE — BEFORE the repair-signal recorder — so a user-
@@ -1070,6 +1123,14 @@ std::wstring TranslationManager::Translate(
                 set_status(TranslationStatus::Canceled);
                 return {};
             }
+            // 261122_0001 fix-B (R1-05/R1-09): the retry is a NEW pipe
+            // attempt — re-arm the forwarder for it (fresh one-shot watcher,
+            // empty id slot) so a cancel landing anywhere from here to the
+            // retry's return fires the seam with the RETRY's wire id, never
+            // attempt-1's stale id.
+            if (cancel_id_slot) {
+                cancel_forwarder.RearmForAttempt();
+            }
             if (engine_host::TryTranslate(engine_host::kChatEngineHostIdentity, host_cfg,
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
@@ -1087,6 +1148,12 @@ std::wstring TranslationManager::Translate(
                 // REQ-057: served-vs-expected model id (diagnostic log only).
                 DiagnoseServedModelMismatch(preferred, served_model);
                 return ToUtf16(host_out);
+            }
+            // 261122_0001 fix-B (R1-05/R1-09): the retry has fully returned —
+            // retract its published id; the slot publishes an id only while a
+            // pipe attempt is in flight.
+            if (cancel_id_slot) {
+                cancel_id_slot->store(0, std::memory_order_release);
             }
             // REQ-051 integration fix: NO second streak increment here.
             // The streak is the CLIENT-SIDE REPAIR SIGNAL (V2-8.6) — one

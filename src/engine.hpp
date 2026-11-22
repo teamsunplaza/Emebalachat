@@ -486,6 +486,14 @@ public:
     // CancelTranslateRequest with the wire id TryTranslate published), so a
     // cancelled local request returns PROMPTLY with the host's aborted
     // answer instead of waiting out the full pipe budget.
+    // 261122_0001 fix-B (R1-05/R1-09): the seam watch is PER PIPE ATTEMPT —
+    // the published id is retracted the moment each attempt returns and the
+    // one-shot forwarder is re-armed before the REQ-051 transient retry, so
+    // the retry (reconnect/backoff window and flight included) is watched
+    // with its own fresh id and a cancel can never fire a stale attempt-1
+    // frame. The only deliberately unwatched window is the inter-attempt
+    // gap, which the leg's own cancel checks above converge to Canceled
+    // before any new pipe request starts.
     // ctx.on_chunk receives the local plan-known (0, n) tick before the pipe
     // request (the badge's chunk-count label); the cloud legs tick (i+1, n)
     // themselves. The REQ-R16 RequestCancel() shutdown latch below is

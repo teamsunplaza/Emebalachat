@@ -28,13 +28,47 @@
 //       passes the slot to BOTH TryTranslate calls, and the early cancel
 //       check precedes the repair-signal recorder; the engine repo publishes
 //       the in-flight request and defines the seam.
+//   (f) fix-B RETRY WINDOW (R1-05/R1-09): attempt-1 fails with a scripted
+//       transient (status=busy) so the REQ-051 retry starts; the cancel
+//       flips while the retry is blocked in the host's in-flight hold — the
+//       seam fires with the RETRY's fresh wire id (never attempt-1's stale
+//       id), the call returns promptly (<< the hold), the status is
+//       Canceled, and the repair signal keeps exactly attempt-1's one
+//       genuine failure (the user-aborted retry adds no second increment).
+//   (g) fix-B GAP NEGATIVE (R1-05/R1-09): the cancel flips in the
+//       inter-attempt backoff gap — NO cancel frame is ever fired
+//       (attempt-1's id was retracted the moment its attempt ended, so a
+//       stale id1 frame is impossible), the leg's own checks converge to
+//       Canceled, and the streak keeps exactly one genuine failure.
+//   (h) fix-B PRE-PUBLISH NEGATIVE: the cancel flag is set before the leg
+//       starts — no translate frame, no cancel frame, Canceled, streak 0.
+//   (i) fix-B RECONNECT WINDOW (R1-05/R1-09, the discriminating scenario):
+//       attempt-1 dies at the wire (unanswered translate, dropped
+//       connection → the client's transient io + session teardown), so the
+//       REQ-051 retry must reconnect — and the host holds the second accept
+//       ~1.5 s, parking the retry's id publish. The cancel flips inside
+//       that window (after the leg's last gap check, before the retry's id
+//       exists): the seam must fire with the RETRY's fresh id, the call
+//       returns promptly (<< the 6 s hold), the status is Canceled, and
+//       the streak keeps exactly attempt-1's one genuine failure. Pre-fix
+//       the forwarder fired attempt-1's STALE id here (the seam declined),
+//       exited, and the retry rode out the full hold — this scenario fails
+//       on the pre-fix code (verified by mutation run).
 //
-// Mock model (A2CancelFakeHost): after parsing a translate frame the server
-// issues a BOUNDED read (the in-flight window). A cancel frame inside the
-// window with the matching id aborts the job and is answered with the frozen
-// status=timeout — the exact answer the real dispatcher gives an aborted job
-// (engine-contract.md §7); the window expiring with no cancel answers the
-// scripted ok. One server thread, frame-read based, no sleep-and-hope.
+// Mock model (A2CancelFakeHost): a connection-accept loop. After parsing a
+// translate frame the server issues a BOUNDED read (the in-flight window).
+// A cancel frame inside the window with the matching id aborts the job and
+// is answered with the frozen status=timeout — the exact answer the real
+// dispatcher gives an aborted job (engine-contract.md §7); the window
+// expiring with no cancel answers the scripted ok. When a connection ends
+// the server re-accepts the same instance; set_reconnect_delay_ms holds the
+// SECOND accept (the retry's reconnect cannot publish until it completes).
+// With set_fail_first_busy(true) the FIRST translate is answered
+// status=busy immediately (a scripted transient fast failure that starts
+// the manager's REQ-051 retry); with set_kill_first_translate(true) the
+// FIRST translate is left unanswered and the connection dropped (a
+// scripted transient io that forces the retry to reconnect). One server
+// thread, frame-read based, no sleep-and-hope.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -53,7 +87,6 @@ public:
         , translate_delay_ms_(translate_delay_ms)
         , translate_text_(std::move(translate_text)) {
         stop_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        accept_event_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
         // Synchronous ctor-time creation, exactly like FakeHost: the instance
         // must exist before the client's first CreateFileW attempt.
         pipe_ = ::CreateNamedPipeW(pipe_name_.c_str(),
@@ -64,7 +97,6 @@ public:
     }
     ~A2CancelFakeHost() {
         if (stop_event_) ::CloseHandle(stop_event_);
-        if (accept_event_) ::CloseHandle(accept_event_);
         if (pipe_ && pipe_ != INVALID_HANDLE_VALUE) ::CloseHandle(pipe_);
     }
     A2CancelFakeHost(const A2CancelFakeHost&) = delete;
@@ -77,12 +109,27 @@ public:
     // The request is in flight: the translate frame was parsed, the bounded
     // in-flight-window read has been issued.
     bool translate_seen() const { return translate_seen_.load(std::memory_order_acquire); }
+    // 261122_0001 fix-B: how many translate frames the host parsed — the
+    // tests use it to distinguish attempt-1 from the REQ-051 retry.
+    int translate_count() const { return translate_count_.load(std::memory_order_acquire); }
     std::uint64_t last_translate_id() const { return last_translate_id_; }
     bool cancel_seen() const { return cancel_seen_.load(std::memory_order_acquire); }
     std::uint64_t last_cancel_id() const { return last_cancel_id_; }
     std::string last_cancel_frame() const { return last_cancel_frame_; }
     int results_sent() const { return results_sent_; }
     std::string last_result_status() const { return last_result_status_; }
+    // 261122_0001 fix-B: answer the FIRST translate with the frozen
+    // transient status=busy (no in-flight window), so the manager starts
+    // its REQ-051 transient retry; later translates ride the normal window.
+    void set_fail_first_busy(bool v) { fail_first_busy_ = v; }
+    // 261122_0001 fix-B: leave the FIRST translate UNANSWERED and drop the
+    // connection, so the client's in-flight read fails with the transient
+    // io and its REQ-051 retry must reconnect.
+    void set_kill_first_translate(bool v) { kill_first_translate_ = v; }
+    // 261122_0001 fix-B: hold the SECOND connection accept by this many ms —
+    // the retry's wire id cannot publish until the accept + handshake
+    // complete, which parks the retry-window hole under test control.
+    void set_reconnect_delay_ms(int v) { reconnect_delay_ms_ = v; }
 
 private:
     enum class ReadRc { Ok, Timeout, Stopped, IoError };
@@ -157,87 +204,157 @@ private:
     void Serve() {
         if (!served_) return;
 
-        OVERLAPPED ol = {};
-        ol.hEvent = accept_event_;
-        BOOL ok = ::ConnectNamedPipe(pipe_, &ol);
-        if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
-            const HANDLE waits[2] = {accept_event_, stop_event_};
-            if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0) {
-                return; // stopped before any client arrived
-            }
-            DWORD dummy = 0;
-            if (!::GetOverlappedResult(pipe_, &ol, &dummy, TRUE)) return;
-        } else if (!ok && ::GetLastError() != ERROR_PIPE_CONNECTED) {
-            return;
-        }
-
-        // Handshake: hello -> welcome (the client's pin check is part of the
-        // seam under test, so the welcome carries the caller-supplied sha).
-        std::string frame;
-        if (ReadFrameTimed(frame, 30000) != ReadRc::Ok) return;
-        emebalachat::enginehost::WelcomeMsg w;
-        w.protocol = 1;
-        w.model = "Hy-MT2-1.8B-Q8_0";
-        w.model_sha256 = welcome_sha_;
-        w.capabilities = {"translate"};
-        if (!WriteFrame(emebalachat::enginehost::BuildWelcome(w))) return;
-
+        // 261122_0001 fix-B: connection-accept loop. The first connection is
+        // accepted immediately (the ctor created the instance before the
+        // client's first CreateFileW attempt, exactly like FakeHost). When a
+        // connection ends, the server loops back and re-accepts the SAME
+        // instance (DisconnectNamedPipe reset it) — with a scripted delay
+        // before the SECOND accept when the test must hold the client's
+        // retry reconnect: the retry's wire id cannot be published until
+        // this accept + handshake complete, which parks the id-slot window
+        // the R1-05 fix watches under test control.
+        int conn = 0;
         for (;;) {
-            std::string msg;
-            const ReadRc rc = ReadFrameTimed(msg, static_cast<DWORD>(translate_delay_ms_));
-            if (rc != ReadRc::Ok) return; // idle window / stop / IO: session over
-            emebalachat::enginehost::JsonPairs fields;
-            if (!emebalachat::enginehost::JsonParseObject(msg, fields)) return;
-            const auto* op = emebalachat::enginehost::detail::FindField(fields, "op");
-            if (!op) return;
-            if (op->text == "translate") {
-                emebalachat::enginehost::TranslateMsg m;
-                if (!emebalachat::enginehost::ParseTranslate(msg, m)) return;
-                last_translate_id_ = m.id;
-                translate_seen_.store(true, std::memory_order_release);
-                // In-flight window: the client is blocked awaiting the result.
-                // A cancel for THIS id inside the window aborts the job (the
-                // frozen status=timeout answer); the window expiring answers
-                // the scripted ok. This is exactly the real dispatcher's
-                // observable behavior (engine-contract.md §7, C4).
-                std::string next;
-                const ReadRc wc =
-                    ReadFrameTimed(next, static_cast<DWORD>(translate_delay_ms_));
-                if (wc == ReadRc::Stopped || wc == ReadRc::IoError) return;
-                bool aborted = false;
-                if (wc == ReadRc::Ok) {
-                    emebalachat::enginehost::JsonPairs f2;
-                    if (!emebalachat::enginehost::JsonParseObject(next, f2)) return;
-                    const auto* op2 = emebalachat::enginehost::detail::FindField(f2, "op");
-                    if (!op2) return;
-                    if (op2->text != "cancel") return; // drift: only cancel fits the window
-                    emebalachat::enginehost::CancelMsg cm;
-                    if (!emebalachat::enginehost::ParseCancel(next, cm)) return;
-                    last_cancel_frame_ = next;
-                    last_cancel_id_ = cm.id;
-                    cancel_seen_.store(true, std::memory_order_release);
-                    aborted = (cm.id == last_translate_id_);
+            ++conn;
+            if (conn > 1 && reconnect_delay_ms_ > 0) {
+                // Interruptible scripted hold (finish_host's stop wakes it).
+                if (::WaitForSingleObject(stop_event_,
+                                          static_cast<DWORD>(reconnect_delay_ms_)) == WAIT_OBJECT_0) {
+                    return;
                 }
-                emebalachat::enginehost::ResultMsg r;
-                r.id = last_translate_id_;
-                r.status = aborted ? emebalachat::enginehost::HostStatus::Timeout
-                                   : emebalachat::enginehost::HostStatus::Ok;
-                r.text = aborted ? "" : translate_text_;
-                if (!WriteFrame(emebalachat::enginehost::BuildResult(r))) return;
-                ++results_sent_;
-                last_result_status_ = aborted ? "timeout" : "ok";
-            } else if (op->text == "cancel") {
-                // Cancel while NOTHING is in flight: the frozen contract says
-                // IGNORED (the connection stays open; §4.4 idempotent no-op).
-                // Record it and keep serving.
-                emebalachat::enginehost::CancelMsg cm;
-                if (!emebalachat::enginehost::ParseCancel(msg, cm)) return;
-                last_cancel_frame_ = msg;
-                last_cancel_id_ = cm.id;
-                cancel_seen_.store(true, std::memory_order_release);
-            } else {
+            }
+            // Fresh event per accept: a reused manual-reset event would stay
+            // signaled after the first connect-ack and false-trigger the next
+            // wait (the same one-shot discipline as ReadFrameTimed).
+            HANDLE accept_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!accept_ev) return;
+            OVERLAPPED ol = {};
+            ol.hEvent = accept_ev;
+            BOOL ok = ::ConnectNamedPipe(pipe_, &ol);
+            if (!ok && ::GetLastError() == ERROR_IO_PENDING) {
+                const HANDLE waits[2] = {accept_ev, stop_event_};
+                if (::WaitForMultipleObjects(2, waits, FALSE, INFINITE) != WAIT_OBJECT_0) {
+                    ::CloseHandle(accept_ev);
+                    return; // stopped before any client arrived
+                }
+                DWORD dummy = 0;
+                if (!::GetOverlappedResult(pipe_, &ol, &dummy, TRUE)) {
+                    ::CloseHandle(accept_ev);
+                    return;
+                }
+            } else if (!ok && ::GetLastError() != ERROR_PIPE_CONNECTED) {
+                ::CloseHandle(accept_ev);
                 return;
             }
+            ::CloseHandle(accept_ev);
+
+            // Handshake: hello -> welcome (the client's pin check is part of the
+            // seam under test, so the welcome carries the caller-supplied sha).
+            std::string frame;
+            if (ReadFrameTimed(frame, 30000) != ReadRc::Ok) return;
+            emebalachat::enginehost::WelcomeMsg w;
+            w.protocol = 1;
+            w.model = "Hy-MT2-1.8B-Q8_0";
+            w.model_sha256 = welcome_sha_;
+            w.capabilities = {"translate"};
+            if (!WriteFrame(emebalachat::enginehost::BuildWelcome(w))) return;
+
+            for (;;) {
+                std::string msg;
+                const ReadRc rc = ReadFrameTimed(msg, static_cast<DWORD>(translate_delay_ms_));
+                if (rc != ReadRc::Ok) break; // idle window / stop / IO: connection over
+                emebalachat::enginehost::JsonPairs fields;
+                if (!emebalachat::enginehost::JsonParseObject(msg, fields)) return;
+                const auto* op = emebalachat::enginehost::detail::FindField(fields, "op");
+                if (!op) return;
+                if (op->text == "translate") {
+                    emebalachat::enginehost::TranslateMsg m;
+                    if (!emebalachat::enginehost::ParseTranslate(msg, m)) return;
+                    last_translate_id_ = m.id;
+                    translate_seen_.store(true, std::memory_order_release);
+                    translate_count_.fetch_add(1, std::memory_order_release);
+                    // 261122_0001 fix-B (R1-05/R1-09): scripted wire death —
+                    // when enabled, the FIRST translate is left UNANSWERED
+                    // and the connection is dropped: the client's blocked
+                    // read fails with io (a frozen transient code), the
+                    // client tears the session down, and the REQ-051 retry
+                    // must reconnect — held by the scripted re-accept delay
+                    // above, so its wire id publishes LATE (this is the
+                    // retry-window hole the fix closes).
+                    if (kill_first_translate_ &&
+                        translate_count_.load(std::memory_order_acquire) == 1) {
+                        ::DisconnectNamedPipe(pipe_);
+                        break;
+                    }
+                    // 261122_0001 fix-B (R1-05/R1-09): scripted transient fast
+                    // failure — when enabled, the FIRST translate is answered
+                    // status=busy (a frozen transient code) with no in-flight
+                    // window, so the manager starts its REQ-051 transient
+                    // retry; every later translate rides the normal window
+                    // below.
+                    if (fail_first_busy_ &&
+                        translate_count_.load(std::memory_order_acquire) == 1) {
+                        emebalachat::enginehost::ResultMsg r;
+                        r.id = m.id;
+                        r.status = emebalachat::enginehost::HostStatus::Busy;
+                        if (!WriteFrame(emebalachat::enginehost::BuildResult(r))) return;
+                        // Metadata BEFORE the counter: a waiter that observes the
+                        // increment must also observe the status (fix-B).
+                        last_result_status_ = "busy";
+                        ++results_sent_;
+                        continue;
+                    }
+                    // In-flight window: the client is blocked awaiting the result.
+                    // A cancel for THIS id inside the window aborts the job (the
+                    // frozen status=timeout answer); the window expiring answers
+                    // the scripted ok. This is exactly the real dispatcher's
+                    // observable behavior (engine-contract.md §7, C4).
+                    std::string next;
+                    const ReadRc wc =
+                        ReadFrameTimed(next, static_cast<DWORD>(translate_delay_ms_));
+                    if (wc == ReadRc::Stopped || wc == ReadRc::IoError) break;
+                    bool aborted = false;
+                    if (wc == ReadRc::Ok) {
+                        emebalachat::enginehost::JsonPairs f2;
+                        if (!emebalachat::enginehost::JsonParseObject(next, f2)) return;
+                        const auto* op2 = emebalachat::enginehost::detail::FindField(f2, "op");
+                        if (!op2) return;
+                        if (op2->text != "cancel") return; // drift: only cancel fits the window
+                        emebalachat::enginehost::CancelMsg cm;
+                        if (!emebalachat::enginehost::ParseCancel(next, cm)) return;
+                        last_cancel_frame_ = next;
+                        last_cancel_id_ = cm.id;
+                        cancel_seen_.store(true, std::memory_order_release);
+                        aborted = (cm.id == last_translate_id_);
+                    }
+                    emebalachat::enginehost::ResultMsg r;
+                    r.id = last_translate_id_;
+                    r.status = aborted ? emebalachat::enginehost::HostStatus::Timeout
+                                       : emebalachat::enginehost::HostStatus::Ok;
+                    r.text = aborted ? "" : translate_text_;
+                    if (!WriteFrame(emebalachat::enginehost::BuildResult(r))) return;
+                    // Metadata BEFORE the counter: a waiter that observes the
+                    // increment must also observe the status (fix-B).
+                    last_result_status_ = aborted ? "timeout" : "ok";
+                    ++results_sent_;
+                } else if (op->text == "cancel") {
+                    // Cancel while NOTHING is in flight: the frozen contract says
+                    // IGNORED (the connection stays open; §4.4 idempotent no-op).
+                    // Record it and keep serving.
+                    emebalachat::enginehost::CancelMsg cm;
+                    if (!emebalachat::enginehost::ParseCancel(msg, cm)) return;
+                    last_cancel_frame_ = msg;
+                    last_cancel_id_ = cm.id;
+                    cancel_seen_.store(true, std::memory_order_release);
+                } else {
+                    return;
+                }
+            }
+            // Connection over: stop ends the server; otherwise loop back and
+            // re-accept (the scripted delay, when set, holds the retry's
+            // reconnect; a still-connected idle client just cycles the
+            // bounded idle read until the test stops the host).
+            if (::WaitForSingleObject(stop_event_, 0) == WAIT_OBJECT_0) return;
         }
     }
 
@@ -247,10 +364,13 @@ private:
     std::string translate_text_;
     HANDLE pipe_ = nullptr;
     HANDLE stop_event_ = nullptr;
-    HANDLE accept_event_ = nullptr;
     bool served_ = false;
     std::atomic<bool> translate_seen_{false};
+    std::atomic<int> translate_count_{0};
     std::uint64_t last_translate_id_ = 0;
+    bool fail_first_busy_ = false;     // 261122_0001 fix-B scripted transient
+    bool kill_first_translate_ = false; // 261122_0001 fix-B scripted wire death
+    int reconnect_delay_ms_ = 0;        // 261122_0001 fix-B delayed re-accept
     std::atomic<bool> cancel_seen_{false};
     std::uint64_t last_cancel_id_ = 0;
     std::string last_cancel_frame_;
@@ -347,6 +467,23 @@ void TestA2LocalCancelSeam() {
             TEST_CHECK(count_of(engine_cpp, "cancel_id_slot))") == 2,
                        "261122_0001 A2 pin: the id slot reaches BOTH TryTranslate call sites "
                        "(first attempt + transient retry)");
+            // 261122_0001 fix-B (R1-05/R1-09): the slot is PER ATTEMPT —
+            // retracted after each attempt returns, re-armed before the retry.
+            TEST_CHECK(engine_cpp.find("void RearmForAttempt()") != std::string::npos,
+                       "261122_0001 fix-B pin: the forwarder re-arms per pipe attempt");
+            TEST_CHECK(count_of(engine_cpp, "cancel_id_slot->store(0") == 2,
+                       "261122_0001 fix-B pin: the published id is retracted after EACH "
+                       "pipe attempt (first + retry) — the slot is non-zero only in flight");
+            {
+                const size_t rearm = engine_cpp.find("cancel_forwarder.RearmForAttempt()");
+                const size_t first_call = engine_cpp.find("cancel_id_slot))");
+                const size_t retry_call = engine_cpp.find("cancel_id_slot))",
+                                                         first_call + 1);
+                TEST_CHECK(rearm != std::string::npos && retry_call != std::string::npos &&
+                               rearm < retry_call,
+                           "261122_0001 fix-B pin: the re-arm precedes the retry's "
+                           "TryTranslate (the retry is watched with its own fresh id)");
+            }
             // The aborted answer must not arm the repair signal: the early cancel
             // check converges to Canceled BEFORE the NoteHostFailure recorder.
             const size_t early = engine_cpp.find(
@@ -622,6 +759,307 @@ void TestA2LocalCancelSeam() {
                    "A2 (d): the accepted cancel aborts the in-flight request");
         TEST_CHECK(host.cancel_seen() && host.last_cancel_id() == in_flight_id,
                    "A2 (d): only the matching cancel frame reached the host");
+        finish_host(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // ---- (f) fix-B: cancel during the retry -> seam fires the RETRY's id ---
+    {
+        CloudBlockGuard cloud_guard;
+        const int n = 85;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        A2CancelFakeHost host(TestPipeName(n), kGoodPin, kHoldMs, "a2-retry-discarded");
+        host.set_fail_first_busy(true); // attempt-1 -> busy (transient) -> REQ-051 retry
+        std::thread host_thread = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, "");
+        mgr.SetEngineHostConfig(cfg);
+
+        std::atomic<bool> user_cancel{false};
+        TranslationTaskContext ctx;
+        ctx.cancel = &user_cancel;
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::thread req([&] { res = mgr.Translate(L"hello", "KO", "EN", &st, ctx); });
+
+        // Attempt-1 must fail FAST with the scripted transient busy (the
+        // warrant's 15 s first-attempt ceiling is nowhere near).
+        const bool saw_busy = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (host.results_sent() < 1 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return host.results_sent() >= 1;
+        }();
+        TEST_CHECK(saw_busy && host.last_result_status() == "busy",
+                   "A2 (f): attempt-1 failed fast with the scripted transient (busy)");
+        const std::uint64_t id1 = host.last_translate_id();
+
+        // The REQ-051 retry starts after the ~400 ms backoff and rides the
+        // full in-flight hold — this is the window the fix must watch.
+        const bool saw_retry = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (host.translate_count() < 2 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return host.translate_count() >= 2;
+        }();
+        TEST_CHECK(saw_retry,
+                   "A2 (f): the transient failure started the REQ-051 retry");
+        const std::uint64_t id2 = host.last_translate_id();
+        TEST_CHECK(id1 != 0 && id2 != 0 && id2 != id1,
+                   "A2 (f): the retry published a FRESH wire id (not attempt-1's)");
+
+        user_cancel.store(true, std::memory_order_release); // the abort lands mid-retry
+        req.join();
+        const uint64_t elapsed = elapsed_ms(t0);
+
+        TEST_CHECK(res.empty() && st == TranslationStatus::Canceled,
+                   "A2 (f): the retry-window cancel converges to "
+                   "TranslationStatus::Canceled");
+        TEST_CHECK(host.cancel_seen(),
+                   "A2 (f): the seam fired during the retry window");
+        TEST_CHECK(host.last_cancel_id() == id2,
+                   "A2 (f): the seam fired with the RETRY's id (not attempt-1's "
+                   "stale id)");
+        TEST_CHECK(host.last_cancel_id() != id1,
+                   "A2 (f): the fired id is NOT attempt-1's");
+        TEST_CHECK(host.last_cancel_frame() ==
+                       emebalachat::enginehost::BuildCancel(id2),
+                   "A2 (f): the fired frame is the exact frozen cancel shape");
+        // The host records the result metadata right after the write —
+        // settle-wait for it instead of racing the server thread.
+        const bool settled = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (host.results_sent() < 2 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return host.results_sent() >= 2;
+        }();
+        TEST_CHECK(settled && host.last_result_status() == "timeout",
+                   "A2 (f): the retry was aborted by the seam (the frozen timeout "
+                   "answer), not left to ride out the hold");
+        TEST_CHECK(elapsed < kPromptBoundMs,
+                   "A2 (f): the cancelled retry returned promptly (not the 6 s hold)");
+        TEST_CHECK(mgr.HostFailureStreak() == 1,
+                   "A2 (f): attempt-1's genuine transient failure armed the repair "
+                   "signal exactly once; the user-aborted retry added NO second "
+                   "increment (the REQ-051 integration rule)");
+        TEST_CHECK(host.results_sent() == 2,
+                   "A2 (f): exactly two results (busy + aborted)");
+        finish_host(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // ---- (g) fix-B: cancel in the inter-attempt gap -> NO stale id1 frame --
+    {
+        CloudBlockGuard cloud_guard;
+        const int n = 86;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        A2CancelFakeHost host(TestPipeName(n), kGoodPin, kHoldMs, "a2-gap-discarded");
+        host.set_fail_first_busy(true);
+        std::thread host_thread = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, "");
+        mgr.SetEngineHostConfig(cfg);
+
+        std::atomic<bool> user_cancel{false};
+        TranslationTaskContext ctx;
+        ctx.cancel = &user_cancel;
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::thread req([&] { res = mgr.Translate(L"hello", "KO", "EN", &st, ctx); });
+
+        // Wait for attempt-1's busy result, then let the leg reach the
+        // ~400 ms backoff sleep before flipping the flag — the flag lands
+        // firmly inside the inter-attempt gap (100 ms in, ~300 ms of gap
+        // margin before the retry would start).
+        const bool saw_busy = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (host.results_sent() < 1 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return host.results_sent() >= 1;
+        }();
+        TEST_CHECK(saw_busy && host.last_result_status() == "busy",
+                   "A2 (g): attempt-1 failed fast with the scripted transient (busy)");
+        const std::uint64_t id1 = host.last_translate_id();
+        TEST_CHECK(id1 != 0, "A2 (g): attempt-1 published its wire id");
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(100)); // the gap
+        user_cancel.store(true, std::memory_order_release);
+        req.join();
+        const uint64_t elapsed = elapsed_ms(t0);
+
+        TEST_CHECK(res.empty() && st == TranslationStatus::Canceled,
+                   "A2 (g): the gap cancel converges to Canceled via the leg's own "
+                   "checks (no retry pipe request starts)");
+        TEST_CHECK(!host.cancel_seen(),
+                   "A2 (g): NO cancel frame at all — attempt-1's id was retracted the "
+                   "moment its attempt ended, so a stale id1 frame was never fired");
+        TEST_CHECK(host.translate_count() == 1,
+                   "A2 (g): the retry never started (the gap check owns the cancel)");
+        TEST_CHECK(mgr.HostFailureStreak() == 1,
+                   "A2 (g): the genuine transient failure kept its single repair signal");
+        TEST_CHECK(elapsed < kPromptBoundMs,
+                   "A2 (g): the gap cancel returned promptly");
+        finish_host(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // ---- (h) fix-B: cancel before ANY attempt publishes an id -> no frame --
+    {
+        CloudBlockGuard cloud_guard;
+        const int n = 87;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        A2CancelFakeHost host(TestPipeName(n), kGoodPin, kHoldMs, "a2-pre-discarded");
+        std::thread host_thread = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, "");
+        mgr.SetEngineHostConfig(cfg);
+
+        std::atomic<bool> user_cancel{true}; // pre-set: the abort precedes everything
+        TranslationTaskContext ctx;
+        ctx.cancel = &user_cancel;
+        TranslationStatus st = TranslationStatus::Ok;
+        const std::wstring res = mgr.Translate(L"hello", "KO", "EN", &st, ctx);
+
+        TEST_CHECK(res.empty() && st == TranslationStatus::Canceled,
+                   "A2 (h): the pre-set cancel short-circuits before the pipe request");
+        TEST_CHECK(!host.translate_seen(),
+                   "A2 (h): no translate frame ever reached the host");
+        TEST_CHECK(!host.cancel_seen(),
+                   "A2 (h): no cancel frame — no attempt ever published an id");
+        TEST_CHECK(mgr.HostFailureStreak() == 0,
+                   "A2 (h): the pre-flight cancel never touched the host or the "
+                   "repair signal");
+        finish_host(host, host_thread);
+        std::error_code rm_ec;
+        std::filesystem::remove(TestTokenPath(n), rm_ec);
+    }
+
+    // ---- (i) fix-B: cancel in the retry's RECONNECT window -> RETRY id ----
+    // The R1-05 hole lives between the leg's last gap check and the retry's
+    // id publish — a window that only opens wide when the retry must
+    // reconnect (its session died with attempt-1), because the publish then
+    // waits for the accept + handshake. The host scripts exactly that: the
+    // first translate is left unanswered and the connection dropped (the
+    // client's read fails with the transient io), and the SECOND accept is
+    // held ~1.5 s. The flag flips inside the held window: pre-fix the
+    // forwarder fired attempt-1's stale id (the seam declined — nothing in
+    // flight for it — and the one-shot exited), leaving the retry unwatched
+    // to ride out the full 6 s hold; post-fix the retracted slot + re-armed
+    // watcher fire the retry's fresh id as soon as it publishes.
+    {
+        CloudBlockGuard cloud_guard;
+        const int n = 88;
+        ehc::SetPathsForTesting(TestPipeName(n).c_str(),
+                                TestTokenPath(n).wstring().c_str(), self_exe);
+        WriteTestToken(TestTokenPath(n));
+        A2CancelFakeHost host(TestPipeName(n), kGoodPin, kHoldMs, "a2-reconnect-discarded");
+        host.set_kill_first_translate(true);
+        host.set_reconnect_delay_ms(1500);
+        std::thread host_thread = host.Start();
+
+        EngineHostConfig cfg;
+        cfg.spawn = false;
+        TranslationManager mgr(EngineType::LocalLlama, "");
+        mgr.SetEngineHostConfig(cfg);
+
+        std::atomic<bool> user_cancel{false};
+        TranslationTaskContext ctx;
+        ctx.cancel = &user_cancel;
+        TranslationStatus st = TranslationStatus::Ok;
+        std::wstring res;
+        const auto t0 = std::chrono::steady_clock::now();
+        std::thread req([&] { res = mgr.Translate(L"hello", "KO", "EN", &st, ctx); });
+
+        // Attempt-1 publishes id1, then dies at the wire (no result ever).
+        const bool saw_first = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+            while (host.translate_count() < 1 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return host.translate_count() >= 1;
+        }();
+        TEST_CHECK(saw_first,
+                   "A2 (i): attempt-1 reached the host and published its wire id");
+        const std::uint64_t id1 = host.last_translate_id();
+        TEST_CHECK(id1 != 0, "A2 (i): attempt-1's wire id is observable");
+
+        // The leg now records the io failure, sleeps the ~400 ms backoff,
+        // passes its gap checks, and starts the retry's reconnect — which
+        // the held second accept parks for ~1.5 s. Flipping the flag at
+        // +900 ms lands inside [backoff end, retry publish]: after the leg's
+        // last gap check, BEFORE the retry's id exists. (Pre-fix the slot
+        // still held id1 here and the one-shot forwarder was live.)
+        std::this_thread::sleep_for(std::chrono::milliseconds(900));
+        user_cancel.store(true, std::memory_order_release);
+        req.join();
+        const uint64_t elapsed = elapsed_ms(t0);
+
+        TEST_CHECK(res.empty() && st == TranslationStatus::Canceled,
+                   "A2 (i): the reconnect-window cancel converges to "
+                   "TranslationStatus::Canceled");
+        const bool retry_seen = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (host.translate_count() < 2 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return host.translate_count() >= 2;
+        }();
+        TEST_CHECK(retry_seen,
+                   "A2 (i): the retry reconnected and re-sent the request");
+        const std::uint64_t id2 = host.last_translate_id();
+        TEST_CHECK(id2 != 0 && id2 != id1,
+                   "A2 (i): the retry published a FRESH wire id on the new connection");
+        TEST_CHECK(host.cancel_seen(),
+                   "A2 (i): the seam fired during the retry's reconnect window");
+        TEST_CHECK(host.last_cancel_id() == id2,
+                   "A2 (i): the seam fired with the RETRY's id (not attempt-1's "
+                   "stale id)");
+        TEST_CHECK(host.last_cancel_frame() ==
+                       emebalachat::enginehost::BuildCancel(id2),
+                   "A2 (i): the fired frame is the exact frozen cancel shape");
+        // The host records the result metadata right after the write —
+        // settle-wait for it instead of racing the server thread.
+        const bool settled = [&] {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+            while (host.results_sent() < 1 && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return host.results_sent() >= 1;
+        }();
+        TEST_CHECK(settled && host.last_result_status() == "timeout",
+                   "A2 (i): the retry was aborted by the seam (the frozen timeout "
+                   "answer), not left to ride out the hold");
+        TEST_CHECK(elapsed < kPromptBoundMs,
+                   "A2 (i): the cancelled retry returned promptly (reconnect hold + "
+                   "abort, not the 6 s in-flight hold)");
+        TEST_CHECK(mgr.HostFailureStreak() == 1,
+                   "A2 (i): attempt-1's genuine transient failure armed the repair "
+                   "signal exactly once; the user-aborted retry added NO second "
+                   "increment");
+        TEST_CHECK(host.results_sent() == 1,
+                   "A2 (i): exactly one result (attempt-1 died unanswered; only the "
+                   "aborted retry was answered)");
         finish_host(host, host_thread);
         std::error_code rm_ec;
         std::filesystem::remove(TestTokenPath(n), rm_ec);
