@@ -435,12 +435,11 @@ user32.EmptyClipboard.restype = wintypes.BOOL
 user32.SetClipboardData.argtypes = [UINT, ctypes.c_void_p]
 user32.SetClipboardData.restype = ctypes.c_void_p
 # 261122_0001 A4 (F11.3): the harness now SNAPSHOTS the user's clipboard before
-# seeding it, so the read half (GetClipboardData + the sequence counter) needs
-# the same declared-signature discipline as the write half above.
+# seeding it, so the read half (GetClipboardData) needs the same
+# declared-signature discipline as the write half above. 261122_0001 fix-D
+# (R1-11): the sequence counter is gone — restore is content-aware now.
 user32.GetClipboardData.argtypes = [UINT]
 user32.GetClipboardData.restype = ctypes.c_void_p
-user32.GetClipboardSequenceNumber.argtypes = []
-user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
 
 PENUMCHILD = ctypes.WINFUNCTYPE(wintypes.BOOL, HWND, LPARAM)
 PENUMPTR = ctypes.WINFUNCTYPE(wintypes.BOOL, HWND, LPARAM)
@@ -605,15 +604,6 @@ def read_clipboard_text():
         user32.CloseClipboard()
 
 
-def _clipboard_sequence():
-    """GetClipboardSequenceNumber with a None fallback (weakens only the
-    'someone else replaced the clipboard' check, never the restore itself)."""
-    try:
-        return int(user32.GetClipboardSequenceNumber())
-    except Exception:
-        return None
-
-
 class ClipboardBackup:
     """Snapshot/restore of the USER's clipboard around a harness seed.
 
@@ -624,18 +614,33 @@ class ClipboardBackup:
     discipline (src/win32_input.cpp ClipboardManager: snapshot -> use ->
     restore), reduced to the one format the harness writes.
 
+    261122_0001 fix-D (R1-11 / SR2-02, CR5 F-01): the restore guard is
+    CONTENT-AWARE, not sequence-aware. The old guard keyed "foreign write"
+    solely on GetClipboardSequenceNumber, and the app-under-test's own
+    write+restore always bumps the sequence - so the user's pre-run clipboard
+    was NEVER restored in the primary success path. Now restore() puts the
+    snapshot back UNLESS the clipboard currently holds a readable text that is
+    NEITHER the seeded harness text NOR the snapshot itself (a genuinely new,
+    foreign content appeared after the app finished, and ITS content wins).
+    The restore also makes ONE unconditional retry (SR2-02) before reporting
+    failure.
+
     Honest limits, printed rather than papered over:
       * only CF_UNICODETEXT is captured; an image / file-list clipboard cannot
         be re-created from a text read, so it is restored to NOTHING and the
         loss is reported (never silently replaced by an empty clipboard);
       * a hard kill (taskkill / power loss) cannot run the finally - only a
-        clean exception, Ctrl+C, or a normal exit restores the snapshot.
+        clean exception, Ctrl+C, or a normal exit restores the snapshot;
+      * an EMPTY or momentarily unreadable clipboard at restore time is not
+        proof of a foreign writer (the app may hold it open mid-cleanup), so
+        the snapshot is restored there too - only readable FOREIGN TEXT is
+        left in place.
     """
 
     def __init__(self):
         self.had_text = False
         self.text = None
-        self.seeded_seq = None
+        self.seeded_text = None
         self.lost_nontext = False
         self.restored = False
 
@@ -644,16 +649,16 @@ class ClipboardBackup:
         self.lost_nontext = not self.had_text
         return self
 
-    def seeded(self):
-        """Call right AFTER the harness writes its own text: records the
-        clipboard sequence the seed produced, so restore() can tell whether
-        someone ELSE replaced the clipboard in the meantime (in which case the
-        newer content wins and the snapshot is NOT written back)."""
-        self.seeded_seq = _clipboard_sequence()
+    def seeded(self, text=None):
+        """Call right AFTER the harness writes its own text: records WHAT the
+        harness seeded, so restore() can tell the seed (and the app-under-
+        test's own write+restore of it) from a genuinely foreign content."""
+        self.seeded_text = text
 
     def restore(self):
         """Put the snapshot back (best effort, never raises - it runs in a
-        finally and must not mask the scenario's own outcome)."""
+        finally and must not mask the scenario's own outcome). One
+        unconditional retry per SR2-02."""
         if not self.had_text:
             if self.lost_nontext:
                 print("   clipboard: the pre-run clipboard held no TEXT (empty, "
@@ -661,23 +666,27 @@ class ClipboardBackup:
                       "CF_UNICODETEXT, so any non-text content must be re-copied "
                       "by the operator")
             return False
-        try:
-            now_seq = _clipboard_sequence()
-        except Exception:
-            now_seq = None
-        if (self.seeded_seq is not None and now_seq is not None
-                and now_seq != self.seeded_seq):
-            print("   clipboard: another process replaced the clipboard during the "
-                  "run; leaving ITS content in place (the pre-run text is not "
-                  "written back)")
+        has_text, current_text = read_clipboard_text()
+        if has_text and current_text != self.seeded_text and current_text != self.text:
+            print("   clipboard: a different process left NEW text on the "
+                  "clipboard during the run; leaving ITS content in place (the "
+                  "pre-run text is not written back)")
             return False
-        try:
-            set_clipboard_text(self.text)
-            self.restored = True
-            print("   clipboard: pre-run text restored")
-        except Exception as e:  # noqa: BLE001 - a finally must never raise
-            print(f"   clipboard: RESTORE FAILED ({type(e).__name__}: {e}); the "
-                  "seeded harness text is still on the clipboard")
+        last_err = None
+        for attempt in (1, 2):
+            try:
+                set_clipboard_text(self.text)
+                self.restored = True
+                print("   clipboard: pre-run text restored")
+                break
+            except Exception as e:  # noqa: BLE001 - a finally must never raise
+                last_err = e
+                if attempt == 1:
+                    time.sleep(0.25)  # SR2-02: one unconditional retry
+        if not self.restored:
+            print(f"   clipboard: RESTORE FAILED ({type(last_err).__name__}: "
+                  f"{last_err}); the seeded harness text is still on the "
+                  "clipboard")
         return self.restored
 
 
@@ -1172,7 +1181,7 @@ class AppSession:
                 raise EnvBlock(
                     f"app exited right after launch (exit {self.proc.returncode}); "
                     "possible stray single-instance dialog or crash - inspect "
-                    f"{LOG_DIR}")
+                    f"{redact_user_path(LOG_DIR)}")
             if os.path.isdir(LOG_DIR):
                 new_logs = [f for f in os.listdir(LOG_DIR)
                             if LOG_RE.match(f) and f not in logs_before]
@@ -3108,7 +3117,7 @@ def scenario_paste_then_enter(app, base):
     clipboard_backup = ClipboardBackup().capture()
     try:
         set_clipboard_text(text)
-        clipboard_backup.seeded()
+        clipboard_backup.seeded(text)
         notepad.start()
         rep.note(f"notepad pid={notepad.pid} edit_class={notepad.edit_class}")
         notepad.assert_empty()
@@ -4500,7 +4509,7 @@ def main(argv=None):
               "environment-bounded INCONCLUSIVE when run explicitly; never "
               "converted to PASS)")
     print(f"   app exe  : {redact_user_path(args.app_exe)}")
-    print(f"   log dir  : {LOG_DIR}")
+    print(f"   log dir  : {redact_user_path(LOG_DIR)}")
     print(f"   run dir  : {redact_user_path(run_dir)}")
     print("   NOTE     : do NOT touch keyboard/mouse until the verdict.")
 

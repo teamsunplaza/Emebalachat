@@ -771,8 +771,12 @@ void TestReq050OpenAiEndpointJoin() {
     const std::filesystem::path settings_cpp =
         ResolveRepoFile(L"src\\ui\\openai_settings_window.cpp");
     if (settings_cpp.empty()) {
-        std::cout << "[SKIP] src/ui/openai_settings_window.cpp not resolvable; "
-                     "REQ-050 consent/geometry pins skipped." << std::endl;
+        // 261122_0001 fix-D (R1-07 adjacent scan): a source pin NEVER passes
+        // over zero assertions — the old [SKIP] degraded this gate to a green
+        // PASS on a mis-set CWD, the same defect the B-U4/B-U5 blocks fixed.
+        TEST_CHECK(false, "REQ-050: src/ui/openai_settings_window.cpp must be "
+                          "resolvable for the consent/geometry pins (R1-07: no "
+                          "source pin passes over zero assertions)");
     } else {
         std::ifstream in(settings_cpp, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),

@@ -34,7 +34,11 @@
 // are declared as PLAIN functions with out-parameters, not with structs, so no
 // type definition has to be duplicated across TUs.
 namespace emebalachat {
-bool IsMaskedPlaceholder(std::string_view keyUtf8);
+// 261122_0001 fix-D (R1-14): 2-arg exact compare — the predicate now takes the
+// rendered mask string the dialog produced for its current pair (see
+// RenderedOpenAiKeyPlaceholder in the dialog TU).
+bool IsMaskedPlaceholder(std::string_view keyUtf8, std::string_view rendered_mask);
+std::string RenderedOpenAiKeyPlaceholder(const OpenAiConfig& pair);
 void PlanOpenAiReasoningReseed(std::string_view saved_value, std::string& out_value,
                                bool& out_pending);
 std::string SanitizeOpenAiProfileDisplayText(std::string_view text);
@@ -1420,14 +1424,18 @@ void TestOpenAiProfileDialogBehavior() {
     // ---- (A7) the key-pair matrix (real DPAPI, real digest) --------------
     {
         // The masked-placeholder predicate itself (shared by IDOK, the fetch
-        // probe and the profile save).
-        TEST_CHECK(eb::IsMaskedPlaceholder("abcdef***"),
-                   "B-U4 key: the masked read-back text is recognized");
-        TEST_CHECK(!eb::IsMaskedPlaceholder("***") &&
-                       !eb::IsMaskedPlaceholder("sk-abcdef") &&
-                       !eb::IsMaskedPlaceholder(""),
-                   "B-U4 key: a short mask, a plain key and an empty edit are NOT "
-                   "placeholders");
+        // probe and the profile save). 261122_0001 fix-D (R1-14): EXACT
+        // compare against the RENDERED mask — the old suffix heuristic kept
+        // the old pair for ANY typed key ending in "***".
+        TEST_CHECK(eb::IsMaskedPlaceholder("abcdef***", "abcdef***"),
+                   "B-U4 key: the exact rendered mask text is recognized");
+        TEST_CHECK(!eb::IsMaskedPlaceholder("abcdef***", "sk-oth***") &&
+                       !eb::IsMaskedPlaceholder("abcdef***", "") &&
+                       !eb::IsMaskedPlaceholder("sk-live-abc***", "abcdef***") &&
+                       !eb::IsMaskedPlaceholder("", "abcdef***"),
+                   "B-U4 key: any other text — a different mask, an empty rendered "
+                   "mask, a typed key that merely ends in ***, an empty edit — is "
+                   "NOT the placeholder");
 
         const std::string kPlaintext = "sk-live-0123456789abcdef";
         std::string expected_digest;
@@ -1441,6 +1449,10 @@ void TestOpenAiProfileDialogBehavior() {
         OpenAiSha256Hex(kPlaintext, existing.api_key_sha256);
         TEST_CHECK(eb::OpenAiKeyPairIntegrityOk(existing),
                    "B-U4 key: the reference pair passes the REQ-050 integrity check");
+        TEST_CHECK(eb::RenderedOpenAiKeyPlaceholder(existing) ==
+                       MaskOpenAiApiKey(kPlaintext),
+                   "B-U4 key: the rendered placeholder reproduces the dialog's seeded "
+                   "mask text exactly (the exact-compare ruler)");
 
         // (i) masked placeholder -> the pair is KEPT verbatim.
         {
@@ -1496,13 +1508,17 @@ void TestOpenAiProfileDialogBehavior() {
                        "resurrects the previous profile's key)");
         }
 
-        // (iv) a placeholder with no pair behind it -> still no pair.
+        // (iv) mask-shaped text with NO pair behind it -> typed input
+        // (fix-D R1-14): with an empty `existing` the dialog rendered no
+        // placeholder, so nothing can compare equal to one — the edit is
+        // digested as a key either way.
         {
             OpenAiConfig none;
             OpenAiConfig out;
             std::string edit = "***";
-            TEST_CHECK(!eb::IsMaskedPlaceholder(edit),
-                       "B-U4 key[iv]: the 3-character mask is not a placeholder");
+            TEST_CHECK(!eb::IsMaskedPlaceholder(
+                           edit, eb::RenderedOpenAiKeyPlaceholder(none)),
+                       "B-U4 key[iv]: with no pair there is no rendered mask to equal");
             TEST_CHECK(eb::ResolveOpenAiProfileKeyPair(edit, none, out),
                        "B-U4 key[iv]: a 3-character mask is digested as typed input");
             TEST_CHECK(!out.api_key_dpapi.empty(),
@@ -1512,10 +1528,15 @@ void TestOpenAiProfileDialogBehavior() {
             OpenAiConfig none;
             OpenAiConfig out;
             std::string edit = "abcdef***";
+            std::string literal_digest;
+            OpenAiSha256Hex(edit, literal_digest);
             TEST_CHECK(eb::ResolveOpenAiProfileKeyPair(edit, none, out),
-                       "B-U4 key[iv]: a placeholder with an EMPTY existing pair resolves");
-            TEST_CHECK(out.api_key_dpapi.empty() && out.api_key_sha256.empty(),
-                       "B-U4 key[iv]: ... and adopts nothing (no pair to keep)");
+                       "B-U4 key[iv]: mask-shaped text with an EMPTY existing pair "
+                       "resolves as typed input");
+            TEST_CHECK(!out.api_key_dpapi.empty() &&
+                           out.api_key_sha256 == literal_digest,
+                       "B-U4 key[iv]: ... and stores the LITERAL text's pair (nothing "
+                       "to keep — there is no rendered mask without a pair)");
         }
 
         // No plaintext anywhere in the library the dialog would stage.
@@ -1774,8 +1795,13 @@ void TestOpenAiProfileDialogBehavior() {
         }
     }
     if (osw_src.empty()) {
-        std::cout << "[SKIP] src/ui/openai_settings_window.cpp not resolvable from the "
-                     "test CWD; the B-U4 proc-wiring pins are skipped." << std::endl;
+        // 261122_0001 fix-D (R1-07): a source pin NEVER passes over zero
+        // assertions — the A10 block below and the fix-A2 (C) block already
+        // hard-fail this way; a mis-set CWD must turn the gate red, not print
+        // a vacuous PASS (the old [SKIP] did exactly that).
+        TEST_CHECK(false, "B-U4: src/ui/openai_settings_window.cpp must be resolvable "
+                          "from the test CWD (R1-07: the proc-wiring pins never pass "
+                          "over zero assertions)");
     } else {
         const std::size_t init_at = osw_src.find("case WM_INITDIALOG");
         const std::size_t command_at = osw_src.find("case WM_COMMAND");
@@ -1850,6 +1876,18 @@ void TestOpenAiProfileDialogBehavior() {
             TEST_CHECK(save_src.find("ResolveOpenAiProfileKeyPair(keyUtf8, *st->cfg, "
                                      "candidate)") != std::string::npos,
                        "B-U4 save: the key matrix runs through the shared helper");
+            // 261122_0001 fix-D (R1-13/c): the SAME ClassifyOpenAiBaseUrl guard
+            // IDOK runs refuses junk endpoints on [저장] before any key work.
+            TEST_CHECK(save_src.find("ClassifyOpenAiBaseUrl(candidate.base_url)") !=
+                           std::string::npos &&
+                       save_src.find("StringId::OpenAiInvalidBaseUrl") != std::string::npos,
+                       "B-U4 save: a junk endpoint is refused with the IDOK failure "
+                       "message before any key work (R1-13/c)");
+            // 261122_0001 fix-D (R1-13/d): the DPAPI-protect failure caption is
+            // the generic failure notice, never the model-fetch string.
+            TEST_CHECK(save_src.find("StringId::OpenAiFetchFailed") == std::string::npos,
+                       "B-U4 save: the DPAPI-protect failure does NOT reuse the fetch "
+                       "failure caption (R1-13/d)");
             TEST_CHECK(save_src.find("PlanOpenAiProfileSave(") != std::string::npos &&
                            save_src.find("kMaxOpenAiProfiles") != std::string::npos &&
                            save_src.find("FormatOpenAiProfileLimitNotice(") != std::string::npos &&
@@ -2050,13 +2088,13 @@ void TestOpenAiProfileCallerWiring() {
     };
 
     if (main_src.empty()) {
-        std::cout << "[SKIP] src/main.cpp not resolvable from the test CWD; the B-U5 "
-                     "caller-wiring pins are skipped."
-                  << std::endl;
-        if (g_failed_count == failures_before) {
-            std::cout << "[PASS] 261122_0001 B-U5 OpenAI profile caller wiring pins completed."
-                      << std::endl;
-        }
+        // 261122_0001 fix-D (R1-07): main.cpp is deliberately NOT linked into
+        // run_tests.exe, so these source pins are its ONLY coverage — an
+        // unresolvable source must FAIL, never degrade to a green PASS with
+        // zero assertions (the old [SKIP]+[PASS] did exactly that).
+        TEST_CHECK(false, "B-U5: src/main.cpp must be resolvable from the test CWD "
+                          "(R1-07: the caller-wiring pins never pass over zero "
+                          "assertions — they are the only main.cpp coverage)");
         return;
     }
 

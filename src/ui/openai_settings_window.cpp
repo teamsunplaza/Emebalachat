@@ -222,8 +222,30 @@ void PlanOpenAiReasoningComboPopulate(const std::vector<std::string>& items,
 // above the anonymous namespace by B-U4 so the namespace-scope save-path helper
 // below shares this ONE definition with the IDOK / fetch-probe call sites (no
 // second mask test can drift).
-bool IsMaskedPlaceholder(std::string_view keyUtf8) {
-    return keyUtf8.size() > 3 && keyUtf8.compare(keyUtf8.size() - 3, 3, "***") == 0;
+// 261122_0001 fix-D (R1-14 / SR2-03 / SR4-01 / SR5-F6): EXACT compare against
+// the mask string the dialog actually rendered for its current pair — the old
+// suffix heuristic (>3 chars ending "***") kept the old pair for ANY typed key
+// ending in "***" (e.g. "sk-live-abc***"), silently discarding the typed key.
+// The placeholder is display text, never a secret, so comparing it verbatim is
+// safe.
+bool IsMaskedPlaceholder(std::string_view keyUtf8, std::string_view rendered_mask) {
+    return !rendered_mask.empty() && keyUtf8 == rendered_mask;
+}
+
+// The exact placeholder text the dialog rendered into the key edit for `pair`
+// (what WM_INITDIALOG / the profile-pick seeding wrote): MaskOpenAiApiKey of
+// the unprotected saved key. Empty when there is no usable pair — then the
+// edit cannot hold rendered display text, so nothing compares as a placeholder.
+// The cleartext is scrubbed before return; the DPAPI round trip mirrors the
+// dialog's own seeding path (button-click frequency, never a hot path).
+std::string RenderedOpenAiKeyPlaceholder(const OpenAiConfig& pair) {
+    std::string key;
+    std::string mask;
+    if (!pair.api_key_dpapi.empty() && UnprotectOpenAiApiKey(pair.api_key_dpapi, key)) {
+        mask = MaskOpenAiApiKey(key);
+    }
+    SecureZeroMemory(key.data(), key.size());
+    return mask;
 }
 
 // The reasoning-effort re-seed rule (design item 9, risk R3). Selecting a
@@ -489,7 +511,7 @@ std::wstring FormatOpenAiProfileLimitNotice(std::wstring_view message, std::size
 // `out` is the opaque DPAPI blob + its digest.
 bool ResolveOpenAiProfileKeyPair(std::string& key_edit, const OpenAiConfig& existing,
                                  OpenAiConfig& out) {
-    if (IsMaskedPlaceholder(key_edit)) {
+    if (IsMaskedPlaceholder(key_edit, RenderedOpenAiKeyPlaceholder(existing))) {
         out.api_key_dpapi = existing.api_key_dpapi;
         out.api_key_sha256 = existing.api_key_sha256;
         return true;
@@ -1075,7 +1097,7 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     std::string keyUtf8 = ToUtf8(keyWide);
     key_wide_scrub.ScrubNow();
     ScopedSecretScrub key_utf8_scrub{keyUtf8};
-    if (IsMaskedPlaceholder(keyUtf8)) {
+    if (IsMaskedPlaceholder(keyUtf8, RenderedOpenAiKeyPlaceholder(*st->cfg))) {
         probe.api_key_dpapi = st->cfg->api_key_dpapi;
         probe.api_key_sha256 = st->cfg->api_key_sha256;
     } else if (!keyUtf8.empty()) {
@@ -1401,7 +1423,7 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 out.http_consent_given = st->cfg->http_consent_given;
             }
 
-            if (IsMaskedPlaceholder(keyUtf8)) {
+            if (IsMaskedPlaceholder(keyUtf8, RenderedOpenAiKeyPlaceholder(*st->cfg))) {
                 out.api_key_dpapi = st->cfg->api_key_dpapi;
                 out.api_key_sha256 = st->cfg->api_key_sha256;
             } else if (!keyUtf8.empty()) {
@@ -1414,7 +1436,13 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 // the already-computed digest is discarded with `out`.
                 OpenAiSha256Hex(keyUtf8, out.api_key_sha256);
                 if (!ProtectOpenAiApiKey(keyUtf8, out.api_key_dpapi)) {
-                    ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
+                    // 261122_0001 fix-D (R1-13/d): a DPAPI-protect failure is NOT
+                    // a model-fetch failure — OpenAiFetchFailed would tell the
+                    // user a false story. TooltipTranslateFailed is the nearest
+                    // existing generic "the operation failed, retry" notice (no
+                    // new StringIds in this batch; a dedicated protect-failed
+                    // string is the follow-up if this recurs in user QA).
+                    ::MessageBoxW(dlg, I18n::Get(StringId::TooltipTranslateFailed).c_str(),
                                   I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                                   MB_OK | MB_ICONWARNING);
                     return TRUE;
@@ -1534,6 +1562,17 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // on-screen fields (REQ-051 semantics unchanged).
             OpenAiConfig candidate;
             candidate.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
+            // 261122_0001 fix-D (R1-13/c): the SAME ClassifyOpenAiBaseUrl guard
+            // IDOK runs — [저장] used to stage whatever the edit held, so a junk
+            // endpoint entered a stored profile silently. Refuse junk with the
+            // existing failure message before any key work; IDOK behavior is
+            // unchanged.
+            if (ClassifyOpenAiBaseUrl(candidate.base_url) == OpenAiUrlSecurity::Invalid) {
+                ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiInvalidBaseUrl).c_str(),
+                              I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
+                              MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
             candidate.model = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
             // The same read IDOK performs: the reasoning combo's selected item
             // IS the persisted value, and the F-4 pending value wins while no
@@ -1561,7 +1600,11 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             if (!key_ok) {
                 // ProtectOpenAiApiKey failed: nothing is staged (the plan below
                 // never runs), so the working library is exactly as it was.
-                ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
+                // 261122_0001 fix-D (R1-13/d): the caption is the nearest
+                // existing generic "the operation failed, retry" notice, NOT
+                // OpenAiFetchFailed (a DPAPI-protect failure is not a fetch
+                // failure); no new StringIds in this batch.
+                ::MessageBoxW(dlg, I18n::Get(StringId::TooltipTranslateFailed).c_str(),
                               I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                               MB_OK | MB_ICONWARNING);
                 return TRUE;
@@ -1874,9 +1917,10 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 //     cy=18).
 // 261122_0001 B-U6fix (design items 1 + 4c; the U6 89-locale hidden-window
 // probe's single defect — 89 clip rows, all the closed profile picker): the
-// profile picker's closed box was 108 DLU = 189 px, far below the 341 px the
+// profile picker's closed box was 108 DLU = 189 px, far below the 349 px the
 // REALISTIC worst derived profile name measures at (a host at the 24-byte
-// OpenAiHostAbbrev cap + " / " + a model id at 32 bytes). The row's buttons
+// OpenAiHostAbbrev cap + " / " + the longest measured model id, 33 bytes —
+// the measurement artifact's REALISTIC_WORST, re-measured in fix-D R1-10). The row's buttons
 // were ALREADY at their measured minimum (74/68 = the widest locale + 8), so
 // the only axis left is the shell: 396 -> 492 DLU, of which the profile combo
 // takes 204 DLU. Measurement forced the growth (design item 1's escape hatch);
@@ -1887,8 +1931,16 @@ void TemplateBuilder::EmitStr(std::wstring_view s) {
 // tmAveCharWidth base (6 px) the label pin uses, because the legacy base is
 // 14% pessimistic and would cost 28 DLU of dialog width for no visual gain.
 // The per-build GDI pin lives in tests/req048_template_tests.inc
-// (TestOpenAiLabelFits), and the 89-locale hidden-window probe (U6)
-// re-verifies the same numbers against a live dialog.
+// (TestOpenAiLabelFits), and the 89-locale hidden-window probe (U6) VERIFIED
+// the same numbers against a live dialog in session 261122_0001 — PAST TENSE
+// on purpose (fix-D, R1-06): the probe is untracked session scratch
+// (tools_tmp_261122_bu6fix/, gitignored), not a repeatable control. The
+// post-fix re-run measured a 3,560-row matrix (2 passes x 89 locales x 20
+// controls) with 0 clips / 0 defects (u6fix_probe_run.log; methodology and
+// the pre-fix finding in docs/261122_0001_session_openai-profiles-v01010/
+// qa-report-bu6-render-probe.md). The REPEATABLE controls are the per-build
+// GDI suite above plus the req048 byte/fit pins — the probe evidence is a
+// session citation, never a standing gate.
 void BuildOpenAiTemplate(TemplateBuilder& tb) {
     const DWORD LBL = WS_CHILD | WS_VISIBLE;
     const DWORD EDT = WS_CHILD | WS_VISIBLE | WS_BORDER | WS_TABSTOP;
@@ -1929,16 +1981,18 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
     // 261122_0001 B-U6fix (design item 3): the CLOSED-box display contract.
     // A CBS_DROPDOWNLIST renders the SELECTED item in its closed box and the
     // OS truncates whatever does not fit — that truncation is by design, never
-    // a clip of content the user cannot reach. This box is sized (w=204 DLU =
-    // 357 px at 96 DPI) to the REALISTIC worst DERIVED name: a host at the
-    // 24-byte OpenAiHostAbbrev cap + " / " + a model id at 32 bytes, measured
-    // at 341 px / 195 DLU in this template's 9 pt Segoe UI (TestOpenAiLabelFits
-    // re-measures and pins it on every build), so every name the [저장] path
-    // can derive fits WITHOUT truncation. A LONGER name — the profile-name cap
-    // allows 96 bytes, 480 px — truncates in the closed box and is shown in
-    // full by the OPENED list: RefillOpenAiProfileCombo always sizes that list
-    // to its longest entry (CB_SETDROPPEDWIDTH), the same contract the model
-    // combo relies on. Nothing is lost or mis-selected either way.
+    // a clip of content the user cannot reach. 261122_0001 fix-D (R1-06(b)):
+    // the envelope contract, stated as IMPLEMENTED — the closed box (w=204 DLU
+    // = 357 px at 96 DPI) fits every derived name UP TO THE MEASURED REALISTIC
+    // WORST (a host at the 24-byte OpenAiHostAbbrev cap + " / " + the longest
+    // measured model id, 349 px in this template's 9 pt Segoe UI per the
+    // project's own measurement artifact; TestOpenAiLabelFits re-measures and
+    // pins it on every build). LONGER names — the profile-name cap allows 96
+    // bytes (480 px), and the localized ko name TEMPLATE measures 430 px —
+    // truncate in the closed state BY DESIGN and are shown in full by the
+    // OPENED list: RefillOpenAiProfileCombo always sizes that list to its
+    // longest entry (CB_SETDROPPEDWIDTH), the same contract the model combo
+    // relies on. Nothing is lost or mis-selected either way.
     tb.AddItem(LBL, 8, 6, 114, 9, IDC_PROFILE_LABEL, STATIC_CLS,
                I18n::Get(StringId::OpenAiProfileLabel));
     // h=64 is the dropdown extent (the closed box is ~12 DLU), the same
@@ -2044,11 +2098,12 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // margin) grows the shell to 396x208 DLU — see BuildOpenAiTemplate.
     // 261122_0001 B-U6fix (design items 1 + 4c): the U6 hidden-window probe
     // found the one remaining defect — the closed profile picker (108 DLU) could
-    // not show a realistic derived profile name (341 px = 195 DLU) in ANY of the
-    // 89 locales. The row's buttons were already at their measured minimum, so
-    // the shell grows 396 -> 492 DLU and the profile combo takes 204 DLU; every
-    // other row re-anchors to the new content right edge (484). See
-    // BuildOpenAiTemplate for the full measurement trail.
+    // not show a realistic derived profile name (349 px = the measured worst
+    // pair) in ANY of the 89 locales. The row's buttons were already at their
+    // measured minimum, so the shell grows 396 -> 492 DLU and the profile
+    // combo takes 204 DLU; every other row re-anchors to the new content
+    // right edge (484). See BuildOpenAiTemplate for the full measurement
+    // trail.
     tb.Begin(title, 492, 208, /*itemCount=*/20);
     BuildOpenAiTemplate(tb);
 
@@ -2094,6 +2149,10 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // edits the local working copy), but with no library to hand out the edits
     // are discarded on return — a caller that needs them persisted must use the
     // library-aware overload above.
+    // 261122_0001 fix-D (R1-13/e): DEPRECATED FOR PROFILES — this overload has
+    // no live caller (main.cpp uses the library-aware entry) and it can never
+    // carry staged profile edits out; kept only so the outcome-only contract
+    // survives. No behavior change.
     OpenAiProfilesFold profiles;
     return ShowOpenAiSettingsDialogEx(parent, cfg, declaration, profiles);
 }

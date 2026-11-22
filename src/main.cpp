@@ -1542,8 +1542,11 @@ void ShowSecondInstanceNotice(HINSTANCE hInstance) {
             // (kTimerMessageAutohide -> Dismiss -> MarkHidden), bounded so a
             // stuck timer can never hold this process past ~6 s.
             bool quit = false;
-            const DWORD deadline = ::GetTickCount() + 6000;
-            while (notice.IsVisible() && !quit && ::GetTickCount() < deadline) {
+            // 261122_0001 fix-D (R1-13/f, CR4 F-05): GetTickCount64 — the
+            // wrapping 32-bit GetTickCount could roll inside the ~6 s pump
+            // (~1-in-2.4 M launches) and cut the notice down to a silent loss.
+            const ULONGLONG deadline = ::GetTickCount64() + 6000;
+            while (notice.IsVisible() && !quit && ::GetTickCount64() < deadline) {
                 MSG msg = {};
                 if (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
                     if (msg.message == WM_QUIT) {

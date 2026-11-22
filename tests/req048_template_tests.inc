@@ -56,7 +56,8 @@ constexpr WORD kListboxCls = 0x0083;
 //
 // 261122_0001 B-U6fix (design items 1 + 4a/4c): the U6 89-locale hidden-window
 // probe found the closed profile picker (108 DLU = 189 px) could not show a
-// realistic derived profile name (341 px) in ANY locale. The row's buttons were
+// realistic derived profile name (349 px, the measurement artifact's
+// realistic max) in ANY locale. The row's buttons were
 // already at their measured minimum (74/68), so the shell grew 396 -> 492 and
 // the profile combo took 204 DLU; every other row re-anchored to the new
 // content right edge (484): the edit column grew 258 -> 354, the full-width
@@ -72,11 +73,12 @@ constexpr short kOpenAiFullW  = 476;
 constexpr short kOpenAiRight  = 484; // shell - 8 (content right edge)
 
 // 261122_0001 B-U6fix (design item 1): the profile row's control geometry. The
-// combo is sized to the REALISTIC worst derived name (a host at the 24-byte
-// OpenAiHostAbbrev cap + " / " + a model id at 32 bytes = 341 px = 195 DLU in
-// the DS_SETFONT-faithful base), the two buttons keep their measured minima
-// (OpenAiProfileSave @ ml 66 + 8, OpenAiProfileDelete @ ml 60 + 8), and the
-// three controls plus two 4-DLU gutters exactly fill the content width:
+// combo is sized to the measured-worst REALISTIC derived name (a host at the
+// 24-byte OpenAiHostAbbrev cap + " / " + the 33-byte measured-worst model id =
+// 349 px = the artifact's REALISTIC_WORST, ~200 DLU in the DS_SETFONT-faithful
+// base), the two buttons keep their measured minima (OpenAiProfileSave @ ml 66
+// + 8, OpenAiProfileDelete @ ml 60 + 8), and the three controls plus two
+// 4-DLU gutters exactly fill the content width:
 // 130 + 204 + 4 + 74 + 4 + 68 == 484 == kOpenAiRight.
 constexpr short kOpenAiProfileComboW = 204;
 constexpr short kOpenAiProfileSaveW = 74;
@@ -302,11 +304,11 @@ void TestReq048OpenAiTemplateSerialization() {
             const ItemExpectation& exp = kExpected[i];
             TEST_CHECK(id == exp.id, "REQ-048 P2 (b): item id matches production constant");
             // REQ-050-era geometry pin (coordinates refreshed by 261122_0001
-            // B-U3): x/y/cx/cy must match the production AddItem coordinates
-            // exactly — label column x=8 w=114, edits x=130 w=258, fetch
-            // right-aligned w=126, profile save/del right-aligned w=74/68,
-            // REQ-051 delete x=8 y=186 w=142, checklist spans x=8 w=380,
-            // OK x=250 w=64, Cancel x=318 w=70.
+            // B-U3 + B-U6fix): x/y/cx/cy must match the production AddItem
+            // coordinates exactly — label column x=8 w=114, edits x=130 w=354,
+            // fetch right-aligned w=126, profile save/del right-aligned w=74/68,
+            // REQ-051 delete x=8 y=186 w=142, checklist spans x=8 w=476,
+            // OK x=346 w=64, Cancel x=414 w=70 (the 492-DLU shell).
             // Fixed part: style(4) exstyle(4) x(2) y(2) cx(2) cy(2) id(2) = 18,
             // so x/y/cx/cy live at off+8..off+15 (id is off+16).
             TEST_CHECK(ReadWord(base, off + 8) == static_cast<WORD>(exp.x) &&
@@ -1240,8 +1242,8 @@ void TestReq048OpenAiTemplateSerialization() {
 // buttons: width - 8 DLU), the reasoning combo's widest ITEM (the localized
 // server-default label) must fit the combo, the declaration hint must
 // greedily wrap to at most the two lines cy=18 holds, and every control
-// rect must lie inside the 396x208 shell. Headless: a memory DC + font are
-// created and released; no window ever exists (AGENTS.md §10).
+// rect must lie inside the 492x208 shell (B-U6fix). Headless: a memory DC +
+// font are created and released; no window ever exists (AGENTS.md §10).
 //
 // This is the RUNTIME side of the offline measurement that fixed the
 // geometry (tools_tmp_261122_bu3/measure_labels.cpp): the control widths
@@ -1376,9 +1378,10 @@ void TestOpenAiLabelFits() {
             TEST_CHECK(!s.empty() && need <= f.control_w - f.margin, what.c_str());
             ++fit_checked;
         }
-        // The hint wraps into the 380-DLU static: greedy word-wrap at the pin
-        // margin must need at most 2 lines (cy=18 holds two 8-DLU-vertical
-        // lines) and no single word may exceed the usable width.
+        // The hint wraps into the 476-DLU static (B-U6fix full width): greedy
+        // word-wrap at the pin margin must need at most 2 lines (cy=18 holds
+        // two 8-DLU-vertical lines) and no single word may exceed the usable
+        // width.
         {
             const std::wstring hint = I18n::Get(StringId::OpenAiDeclaredHint);
             const int usable = req048_detail::kOpenAiFullW - 4;
@@ -1418,62 +1421,112 @@ void TestOpenAiLabelFits() {
                "GetSupportedUiLocales, not hardcoded)");
 
     // ---- 261122_0001 B-U6fix (design items 1 + 4c): the closed profile picker
-    // is pinned against the REALISTIC worst DERIVED profile name — the name the
-    // [저장] path can produce for a real endpoint: a host at the 24-byte
-    // OpenAiHostAbbrev cap + the ASCII " / " separator + a model id at 32 bytes.
-    // The 96-byte PATHOLOGICAL name (kMaxOpenAiProfileNameBytes) is deliberately
-    // NOT a closed-box target: a closed CBS_DROPDOWNLIST truncates by OS design
-    // and the opened list carries the full name (CB_SETDROPPEDWIDTH, pinned in
-    // the profile suite). The pin is locale-independent on purpose — a stored
-    // name is user data shown verbatim; the ko/ja name TEMPLATES would add CJK
-    // volume (measured: 430 px for the ko form, still inside the opened list).
+    // is pinned against the measured-worst REALISTIC DERIVED profile name —
+    // the name the [저장] path can produce for a real endpoint, per the
+    // project's own measurement artifact (tools_tmp_261122_bu6fix/
+    // measure_profile_names_out.txt MAXIMA: REALISTIC_WORST px=349; the
+    // fixture is re-derived and re-measured by the fix-D run). The fixture: a
+    // host at the 24-byte OpenAiHostAbbrev cap + the ASCII " / " separator +
+    // the longest measured model id ("o3-mini-2025-01-31-high-reasoning",
+    // 33 bytes). The 96-byte PATHOLOGICAL name (kMaxOpenAiProfileNameBytes)
+    // is deliberately NOT a closed-box target: a closed CBS_DROPDOWNLIST
+    // truncates by OS design and the opened list carries the full name
+    // (CB_SETDROPPEDWIDTH, pinned in the profile suite). The pin is
+    // locale-independent on purpose — a stored name is user data shown
+    // verbatim; the localized ko/ja name TEMPLATES add CJK volume (measured:
+    // 430 px for the ko form) and are OPENED-LIST DOMAIN BY DESIGN
+    // (fix-D R1-10: the closed box only promises the measured realistic
+    // envelope).
     {
-        const std::string host24 = "wonderworks-ml-platform1";        // 24 bytes
-        const std::string model32 = "gemini-2.5-pro-exp-03-25-preview"; // 32 bytes
-        TEST_CHECK(host24.size() == 24 && model32.size() == 32,
-                   "B-U6fix: the pinned name is the 24-byte host cap + a 32-byte "
-                   "model id (the adjudicated realistic worst)");
+        const std::string host24 = "wonderworks-ml-platform1";           // 24 bytes
+        const std::string model33 = "o3-mini-2025-01-31-high-reasoning"; // 33 bytes
+        TEST_CHECK(host24.size() == 24 && model33.size() == 33,
+                   "B-U6fix: the pinned name is the 24-byte host cap + the 33-byte "
+                   "measured-worst model id (the measurement artifact's realistic max)");
         const std::string derived =
-            MakeOpenAiProfileName(host24, model32, "{h} / {m}");
+            MakeOpenAiProfileName(host24, model33, "{h} / {m}");
         const int name_px = width_px(ToUtf16(derived));
-        // The measured number, pinned: the U6fix offline measurement
-        // (tools_tmp_261122_bu6fix/measure_profile_names.cpp) recorded 341 px for
-        // this exact pair in the template's 9 pt Segoe UI; the 4-px tolerance
-        // absorbs font-hinting drift while still failing a name that grew into a
-        // truncated frame of reference.
-        constexpr int kPinnedNamePx = 341;
-        constexpr int kPinnedNameTolerancePx = 4;
+        // The measured number, pinned: the bu6fix offline measurement recorded
+        // 349 px for this exact pair in the template's 9 pt Segoe UI. The
+        // threshold is DERIVED FROM RUNTIME METRICS (fix-D R1-13/g, CR4 F-01)
+        // so a high-DPI box cannot false-fail: a hardcoded 349 fails at
+        // 144 DPI (this pair really measures ~527 px there), and scaling by
+        // the faithful DLU base drifts ~5% (the ABC average rounds down while
+        // extents round up — measured with the bu6fix GDI tooling). The ruler
+        // is the runtime width of the pre-fix fixture (the 341-px gemini
+        // pair, near-identical composition): its ratio to the worst pair is
+        // stable within 0.2% across 96/144/192 DPI (349/341, 527/514,
+        // 706/689 measured), so expected = 349 x ruler/341 inherits exact
+        // DPI scaling while still catching any growth or substitution that
+        // hits the worst pair's own characters.
+        constexpr int kPinnedNamePxAt96Dpi = 349;
+        constexpr int kReferenceNamePxAt96Dpi = 341;
+        constexpr int kPinnedNameTolerancePxAt96Dpi = 4;
+        const std::string reference =
+            MakeOpenAiProfileName(host24, "gemini-2.5-pro-exp-03-25-preview", "{h} / {m}");
+        const int reference_px = width_px(ToUtf16(reference));
+        const int pinned_name_px =
+            kPinnedNamePxAt96Dpi * reference_px / kReferenceNamePxAt96Dpi;
+        const int pin_tolerance_px = (kPinnedNameTolerancePxAt96Dpi * reference_px +
+                                      kReferenceNamePxAt96Dpi - 1) /
+                                     kReferenceNamePxAt96Dpi;
         const int base_for_combo = faithful_base_x > 0 ? faithful_base_x : base_x;
         const int need_dlu = (name_px * 4 + base_for_combo - 1) / base_for_combo;
         const int combo_px = req048_detail::kOpenAiProfileComboW * base_for_combo / 4;
         const std::string what =
-            "B-U6fix profile fit: the realistic worst derived name (" +
+            "B-U6fix profile fit: the measured worst realistic derived name (" +
             std::to_string(name_px) + " px = " + std::to_string(need_dlu) +
             " DLU at base " + std::to_string(base_for_combo) + ", legacy base " +
             std::to_string(width_dlu(ToUtf16(derived))) + " DLU) fits the " +
             std::to_string(req048_detail::kOpenAiProfileComboW) + "-DLU closed combo (" +
             std::to_string(combo_px) + " px) minus its 4-DLU margin";
-        TEST_CHECK(name_px <= kPinnedNamePx + kPinnedNameTolerancePx,
-                   "B-U6fix: the realistic worst derived name stays at the pinned 341 px");
+        TEST_CHECK(name_px <= pinned_name_px + pin_tolerance_px,
+                   "B-U6fix: the measured worst realistic derived name stays at the "
+                   "pinned 349 px (96-DPI anchor, metric-derived threshold)");
         TEST_CHECK(name_px <= combo_px - (4 * base_for_combo) / 4, what.c_str());
 
         // The pathological name does NOT fit the closed box — by design (OS
         // truncation) — and this pin fails if someone "fixes" the dialog by
         // widening the shell until 96 arbitrary bytes fit in the closed box
-        // (that would cost ~120 DLU of shell for a name no derivation produces).
+        // (that would cost ~120 DLU of shell for a name only the 96-byte CAP
+        // produces — fix-D R1-10 corrects the old wording: derivation CAN
+        // produce 96-byte names; they are the opened list's domain by design,
+        // like the 430-px localized ko template form).
         const std::wstring pathological(static_cast<std::size_t>(kMaxOpenAiProfileNameBytes),
                                         L'x');
         const int pathological_px = width_px(pathological);
         TEST_CHECK(pathological_px > combo_px - (4 * base_for_combo) / 4,
                    "B-U6fix: the 96-byte name cap is NOT a closed-box target (it is "
                    "carried by the opened list; the closed box truncates by design)");
-        TEST_CHECK(pathological_px + 8 <= 640,
-                   "B-U6fix: the 96-byte name fits the opened-list cap (640 px)");
+        // 261122_0001 fix-D (R1-13/g): the opened-list cap leg is also
+        // metric-derived — the shipped opened-list backstop (640 px at 96 DPI,
+        // kProfileDroppedWidthMaxPx in openai_settings_window.cpp — not
+        // header-visible, so the anchor lives here) is scaled by the same
+        // runtime ruler, so the "the cap carries the pathological name +
+        // margin" promise is checked at any DPI instead of false-failing
+        // past 96 DPI.
+        constexpr int kOpenedListCapPxAt96Dpi = 640; // == kProfileDroppedWidthMaxPx
+        constexpr int kDroppedWidthMarginPxAt96Dpi = 8; // == kProfileDroppedWidthMarginPx
+        const int opened_cap_px =
+            kOpenedListCapPxAt96Dpi * reference_px / kReferenceNamePxAt96Dpi;
+        const int opened_margin_px =
+            (kDroppedWidthMarginPxAt96Dpi * reference_px + kReferenceNamePxAt96Dpi - 1) /
+            kReferenceNamePxAt96Dpi;
+        TEST_CHECK(pathological_px + opened_margin_px <= opened_cap_px,
+                   "B-U6fix: the 96-byte name fits the opened-list cap (the "
+                   "kProfileDroppedWidthMaxPx backstop, metric-derived)");
     }
 
     // Every production control rect lies inside the shell (mirrors kExpected;
-    // the U6 hidden-window probe re-runs the same sweep against a live
-    // dialog).
+    // 261122_0001 fix-D R1-06(a): the U6 hidden-window probe VERIFIED the
+    // same sweep against a live dialog in session 261122_0001 — past tense on
+    // purpose: the probe is untracked scratch (tools_tmp_261122_bu6fix/,
+    // gitignored), not a repeatable control. Its post-fix re-run measured a
+    // 3,560-row matrix, 0 clips / 0 defects (u6fix_probe_run.log; methodology
+    // in docs/261122_0001_session_openai-profiles-v01010/qa-report-bu6-
+    // render-probe.md). The repeatable controls are this per-build suite plus
+    // the req048 byte pins — the probe evidence is a session citation, never
+    // a standing gate).
     for (const req048_detail::ItemExpectation& exp : req048_detail::kExpected) {
         TEST_CHECK(exp.x >= 0 && exp.y >= 0 &&
                        static_cast<int>(exp.x) + exp.cx <=

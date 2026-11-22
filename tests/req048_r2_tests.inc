@@ -192,7 +192,7 @@ void TestReq048R2GgufManager() {
         sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 213
     static_assert(kR2dFieldCount == 213,
                   "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count is 213 "
-                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings - 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + 5 261121_0002 progress/cancel strings) - update the i18n.cpp X-macro, "
+                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings - 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + 5 261121_0002 progress/cancel strings + 6 261122_0001-BU2 OpenAI profile strings) - update the i18n.cpp X-macro, "
                   "all 89 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.

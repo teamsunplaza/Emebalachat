@@ -97,6 +97,9 @@ struct OpenAiDeclaredLanguagesFold {
 // is what emits the array, and an empty set emits no key at all). The
 // two-argument overload above stays for callers that only need the outcome
 // (they fold the checklist but cannot persist it).
+// 261122_0001 fix-D (R1-13/e): DEPRECATED FOR PROFILES - no live caller, and
+// staged profile edits ([저장]/[삭제] on the working copy) die on return; the
+// library-aware overload below is the only profile-carrying entry.
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(
     HWND parent, OpenAiConfig& cfg, OpenAiDeclaredLanguagesFold& declaration);
 

@@ -333,11 +333,15 @@ bool TryTranslate(const EngineHostClientIdentity& identity,
 // {"op":"cancel","id":N} frame for an in-flight request of THIS process so a
 // blocked TryTranslate returns promptly with the host's aborted result
 // (status=timeout), closing the 261121_0002 limitation "local cancel is
-// honored when the pipe request returns". Declared HERE (not in the engine
-// repo's published client header — same REQ-060 precedent as the pinned
-// overload above): the definition lives in the shared engine repo's
-// src/engine_host_client.cpp, so consumers resolve the seam with ZERO new
-// link edges and the Chat exe stays llama-free.
+// honored when the pipe request returns". 261122_0001 fix-D (R1-13/a): the
+// declaration is PUBLISHED in the engine repo's client header too
+// (engine_host_client.hpp, already included above — the pre-A2 "not in the
+// engine repo's published client header" claim was A2-session state and is
+// stale); this mirrored declaration + contract doc stays so Chat-side
+// consumers resolve the seam through engine.hpp alone. The definition lives
+// in the shared engine repo's src/engine_host_client.cpp either way, so
+// consumers resolve the seam with ZERO new link edges and the Chat exe stays
+// llama-free.
 // WIRE FACT (frozen, engine-contract.md §7 / C4): the host aborts an
 // in-flight job ONLY when the cancel arrives on the OWNING connection — a
 // second connection's cancel is a defined NO-OP. The seam therefore writes
