@@ -647,9 +647,26 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
 
     // Bearer auth + JSON content type. The header carries the key; it is built
     // here and never logged (shape-only DIAG below).
+    // 261122_0001 fix-C (R1-04 / SR5 F1): both app-owned copies of the key are
+    // guarded, so EVERY exit arm below (send fail, receive fail, non-200,
+    // overflow, success) leaves zeroed bytes instead of a freed cleartext key
+    // in the heap:
+    //   * `headers` embeds "Authorization: Bearer <key>" — its ordinary
+    //     destructor freed the key unscrubbed on the hottest path (every chat
+    //     request and every model-list fetch);
+    //   * `wide_key` is the named ToUtf16 copy. Naming it matters: the old
+    //     inline concatenation left a second unscrubbed temporary, and
+    //     operator+ would still materialize one, so the header is appended
+    //     with operator+= (it copies straight into `headers`).
     std::wstring headers = L"Content-Type: application/json\r\n";
+    ScopedSecretScrub headers_scrub{headers};
+    std::wstring wide_key;
+    ScopedSecretScrub wide_key_scrub{wide_key};
     if (!auth_header.empty()) {
-        headers += L"Authorization: Bearer " + ToUtf16(auth_header) + L"\r\n";
+        wide_key = ToUtf16(auth_header);
+        headers += L"Authorization: Bearer ";
+        headers += wide_key;
+        headers += L"\r\n";
     }
 
     BOOL send_ok = ::WinHttpSendRequest(
@@ -745,6 +762,25 @@ bool WithUnprotectedKey(const OpenAiConfig& cfg, std::string& out_key) {
 }
 
 } // namespace
+
+// ---- 261122_0001 fix-C (R1-04 / SR5 F1): ScopedSecretScrub ----
+// Out-of-line so the header stays Win32-free; both members live in this TU's
+// link unit (Emebalachat_core), which the dialog TU already links.
+ScopedSecretScrub::~ScopedSecretScrub() { ScrubNow(); }
+
+void ScopedSecretScrub::ScrubNow() noexcept {
+    // data()..data()+capacity() is the WHOLE owned block: size() is the live
+    // cleartext, the tail is what a shorter assignment left behind (same range
+    // UnprotectOpenAiApiKey zeroes on the caller's buffer, :1064-1070).
+    // capacity() >= size() always, so this covers the live bytes too, and the
+    // null terminator sits inside the wiped range either way.
+    if (utf8_ != nullptr) {
+        SecureZeroMemory(utf8_->data(), utf8_->capacity());
+    }
+    if (utf16_ != nullptr) {
+        SecureZeroMemory(utf16_->data(), utf16_->capacity() * sizeof(wchar_t));
+    }
+}
 
 // ---- Pure policy / security helpers ----
 
@@ -1437,10 +1473,10 @@ bool OpenAiCompatibleClient::FetchModelsAndCapabilities(
 
     std::string key;
     if (!WithUnprotectedKey(cfg, key)) return false;
-    struct KeyZeroer {
-        std::string& k;
-        ~KeyZeroer() { SecureZeroMemory(k.data(), k.size()); }
-    } zeroer{key};
+    // 261122_0001 fix-C (R1-04): the local KeyZeroer struct became the shared
+    // ScopedSecretScrub guard (one implementation for every key-bearing copy;
+    // it wipes the capacity tail too, not just size()).
+    ScopedSecretScrub zeroer{key};
 
     std::wstring host, prefix;
     INTERNET_PORT port = 0;
@@ -1491,17 +1527,15 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
 
     std::string key;
     if (!WithUnprotectedKey(cfg, key)) return {};
-    struct KeyZeroer {
-        std::string& k;
-        ~KeyZeroer() { SecureZeroMemory(k.data(), k.size()); }
-    } zeroer{key};
+    // 261122_0001 fix-C (R1-04): shared ScopedSecretScrub guard (see ListModels).
+    ScopedSecretScrub zeroer{key};
 
     // Failure recorder shared by every exit-without-translation path. R2-P
     // (261111_0001): the sanitize + key-mask + bound passes happen HERE, at
     // the single write site, so EVERY recorded detail is guaranteed masked
     // and bounded no matter which caller supplied the raw text (the old code
     // asserted the guarantee in this comment but only the HTTP arm masked,
-    // at the caller). The `key` is captured by reference; the KeyZeroer
+    // at the caller). The `key` is captured by reference; the scrubber
     // above still zeroes it at scope exit, after every fail() use.
     auto fail = [&](std::string raw_detail) {
         const std::string detail = SanitizeOpenAiErrorDetail(raw_detail, key);

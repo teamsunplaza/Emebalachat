@@ -24876,6 +24876,15 @@ int main() {
     // consent, widened dialog + i18n'd OK/Cancel — registered after the
     // P4-3 OpenAI suites, per the end-of-file pattern.
     TestReq050OpenAiEndpointJoin();
+    // 261122_0001 fix-C (builder draw 14; fix-list round 1 row R1-04 / SR5 F1):
+    // the cleartext-key transient scrub — the ScopedSecretScrub RAII guard
+    // (behavioural, both string widths + capacity tail), the HttpRequest
+    // Authorization-header/wide-key structure pin with all-exit coverage, the
+    // three dialog key-read sites (conversion -> ScrubNow -> guard), the
+    // adjacent KeyAvailableForFetch length probe, and the negative controls
+    // that make the pins non-vacuous. Registered right after the REQ-050
+    // OpenAI dialog suite (same TUs), per the end-of-file pattern.
+    TestReq045OpenAiKeyScrub();
     // REQ-045 P4-4 (item 3a-1): third-party .gguf serving core — registered
     // after the P4-3 OpenAI suites, per the end-of-file pattern.
     TestReq045GgufRegistryResolution();

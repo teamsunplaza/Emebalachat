@@ -785,7 +785,15 @@ void OpenAiFetchWorker(std::shared_ptr<std::atomic<bool>> alive, HWND dlg,
 // integrity check (a mismatch clears both fields, so a non-empty blob here
 // is a verified pair).
 bool KeyAvailableForFetch(HWND dlg, const OpenAiConfig* cfg) {
-    if (!GetCtrlText(dlg, IDC_API_KEY).empty()) return true;
+    // 261122_0001 fix-C (R1-04, adjacent-scan arm): the presence test used to
+    // copy the whole edit into an unscrubbed wstring temporary
+    // (`!GetCtrlText(...).empty()`), i.e. a full cleartext key copy per
+    // EN_CHANGE keystroke. A length query answers the same question with no key
+    // bytes in app memory; a missing control reads 0, exactly like the old
+    // empty-string arm.
+    if (const HWND key_edit = ::GetDlgItem(dlg, IDC_API_KEY)) {
+        if (::GetWindowTextLengthW(key_edit) > 0) return true;
+    }
     return !cfg->api_key_dpapi.empty();
 }
 
@@ -1054,7 +1062,19 @@ void ApplyOpenAiProfileSelection(HWND dlg, OpenAiDialogState* st) {
 bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     OpenAiConfig probe;
     probe.base_url = ToUtf8(GetCtrlText(dlg, IDC_BASE_URL));
-    std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
+    // 261122_0001 fix-C (R1-04 / SR5 F1): the typed key used to pass through an
+    // unscrubbed `ToUtf8(GetCtrlText(...))` temporary — the control text lived
+    // in a UTF-16 wstring that died uncleaned at the end of the full
+    // expression. Both copies are NAMED here and guarded:
+    //   * `keyWide` is wiped the instant the conversion is done (ScrubNow), and
+    //     the guard covers any exit before that point;
+    //   * `keyUtf8` is wiped at its last use below and, at the latest, by the
+    //     guard on every return arm.
+    std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);
+    ScopedSecretScrub key_wide_scrub{keyWide};
+    std::string keyUtf8 = ToUtf8(keyWide);
+    key_wide_scrub.ScrubNow();
+    ScopedSecretScrub key_utf8_scrub{keyUtf8};
     if (IsMaskedPlaceholder(keyUtf8)) {
         probe.api_key_dpapi = st->cfg->api_key_dpapi;
         probe.api_key_sha256 = st->cfg->api_key_sha256;
@@ -1066,7 +1086,7 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
         OpenAiSha256Hex(keyUtf8, probe.api_key_sha256);
         ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
     }
-    SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+    key_utf8_scrub.ScrubNow();
     // REQ-050: the pre-save fetch hit the same http consent gate as
     // IDOK, but the probe never set http_consent_given, so an http://
     // base URL was always rejected before any network I/O. Mirror the
@@ -1348,14 +1368,24 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 // value the user never touched.
                 out.reasoning_effort = st->reasoning_effort;
             }
-            std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
+            // 261122_0001 fix-C (R1-04 / SR5 F1): same named-pair scrub as
+            // DoFetchModels — the wide control copy is wiped right after the
+            // conversion, and the guard wipes the UTF-8 copy on EVERY return
+            // arm below (invalid URL / consent declined / protect failure /
+            // normal OK), so the three per-arm SecureZeroMemory calls it used
+            // to need are gone. The last-use ScrubNow keeps the live window as
+            // short as before.
+            std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);
+            ScopedSecretScrub key_wide_scrub{keyWide};
+            std::string keyUtf8 = ToUtf8(keyWide);
+            key_wide_scrub.ScrubNow();
+            ScopedSecretScrub key_utf8_scrub{keyUtf8};
 
             const OpenAiUrlSecurity sec = ClassifyOpenAiBaseUrl(out.base_url);
             if (sec == OpenAiUrlSecurity::Invalid) {
                 ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiInvalidBaseUrl).c_str(),
                               I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                               MB_OK | MB_ICONWARNING);
-                SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
                 return TRUE;
             }
             if (sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
@@ -1364,7 +1394,6 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                     I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
                     MB_YESNO | MB_ICONWARNING);
                 if (rc != IDYES) {
-                    SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
                     return TRUE;
                 }
                 out.http_consent_given = true;
@@ -1385,14 +1414,13 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 // the already-computed digest is discarded with `out`.
                 OpenAiSha256Hex(keyUtf8, out.api_key_sha256);
                 if (!ProtectOpenAiApiKey(keyUtf8, out.api_key_dpapi)) {
-                    SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
                     ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiFetchFailed).c_str(),
                                   I18n::Get(StringId::OpenAiSettingsTitle).c_str(),
                                   MB_OK | MB_ICONWARNING);
                     return TRUE;
                 }
             }
-            SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+            key_utf8_scrub.ScrubNow();
 
             // 261116_0003 P9c-1b: fold the declaration checklist selection
             // back through the SAME unfiltered row list (listbox index ==
@@ -1519,9 +1547,17 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // the dialog carries, a typed key is digested BEFORE protect and
             // scrubbed in place, an empty edit stores no pair. No cleartext
             // leaves this block.
-            std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));
+            // 261122_0001 fix-C (R1-04 / SR5 F1): the same named-pair scrub —
+            // wide control text wiped right after the conversion, UTF-8 copy at
+            // last use and (at the latest) on every return arm through the
+            // guard. The matrix helper scrubs its in-place argument too.
+            std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);
+            ScopedSecretScrub key_wide_scrub{keyWide};
+            std::string keyUtf8 = ToUtf8(keyWide);
+            key_wide_scrub.ScrubNow();
+            ScopedSecretScrub key_utf8_scrub{keyUtf8};
             const bool key_ok = ResolveOpenAiProfileKeyPair(keyUtf8, *st->cfg, candidate);
-            SecureZeroMemory(keyUtf8.data(), keyUtf8.size());
+            key_utf8_scrub.ScrubNow();
             if (!key_ok) {
                 // ProtectOpenAiApiKey failed: nothing is staged (the plan below
                 // never runs), so the working library is exactly as it was.

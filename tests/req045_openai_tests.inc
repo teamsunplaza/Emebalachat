@@ -1466,3 +1466,299 @@ void TestReq050OpenAiEndpointJoin() {
                   << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
     }
 }
+
+// ===========================================================================
+// 261122_0001 fix-C (fix-list round 1, R1-04 / security-review SR5 F1): the
+// cleartext-key TRANSIENT scrub contract.
+//
+// Three key copies in the app died unscrubbed before this fix:
+//   (1) src/openai_compatible_client.cpp HttpRequest — the
+//       "Authorization: Bearer <key>" std::wstring plus the inline
+//       ToUtf16(auth_header) temporary, freed by their ordinary destructors on
+//       EVERY exit arm (send fail, receive fail, non-200, overflow, success);
+//   (2) the three dialog key reads (DoFetchModels / IDOK / [저장]) —
+//       ToUtf8(GetCtrlText(dlg, IDC_API_KEY)) left the UTF-16 control text in
+//       an unnamed wstring temporary that died at the end of the expression;
+//   (3) src/ui/openai_settings_window.cpp KeyAvailableForFetch — a whole
+//       cleartext copy of the edit, taken only to test emptiness.
+//
+// Pins: the shared RAII type BEHAVES (both char widths, size() bytes AND the
+// capacity tail, ScrubNow vs destructor), each of the three dialog sites is
+// wrapped conversion -> ScrubNow -> guard, HttpRequest's header/key buffers are
+// guarded in the function body (so every return below them is covered), and
+// the pre-fix shapes trip the same predicates (negative controls).
+// ===========================================================================
+namespace {
+
+// The exact dialog site shape: the wide control copy is NAMED, the guard is
+// declared before the conversion, the wide copy is wiped right after it, and
+// the UTF-8 copy gets its own guard. Reused for the real source and the stubs.
+bool Req045FixCKeyReadSiteGuarded(std::string_view text, std::size_t at) {
+    const std::string_view window = text.substr(at, text.size() - at);
+    const std::size_t wide_pos =
+        window.find("std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);");
+    const std::size_t wide_guard = window.find("ScopedSecretScrub key_wide_scrub{keyWide};");
+    const std::size_t conv_pos = window.find("std::string keyUtf8 = ToUtf8(keyWide);");
+    const std::size_t wide_wipe = window.find("key_wide_scrub.ScrubNow();");
+    const std::size_t utf8_guard = window.find("ScopedSecretScrub key_utf8_scrub{keyUtf8};");
+    if (wide_pos == std::string_view::npos || wide_guard == std::string_view::npos ||
+        conv_pos == std::string_view::npos || wide_wipe == std::string_view::npos ||
+        utf8_guard == std::string_view::npos) {
+        return false;
+    }
+    // Order: read -> guard -> conversion -> wipe (the wide copy cannot outlive
+    // the conversion), and the UTF-8 guard is in place before any use.
+    return wide_pos < wide_guard && wide_guard < conv_pos && conv_pos < wide_wipe &&
+           wide_wipe < utf8_guard;
+}
+
+// The HttpRequest shape: both key-bearing buffers are guarded where they are
+// built, the key never rides through an operator+ temporary, and the append
+// goes straight into the guarded header string.
+bool Req045FixCHeadersGuarded(std::string_view body) {
+    const std::size_t headers_guard =
+        body.find("ScopedSecretScrub headers_scrub{headers};");
+    const std::size_t key_guard = body.find("ScopedSecretScrub wide_key_scrub{wide_key};");
+    const std::size_t conv = body.find("wide_key = ToUtf16(auth_header);");
+    const std::size_t append = body.find("headers += wide_key;");
+    const std::size_t send = body.find("WinHttpSendRequest(");
+    if (headers_guard == std::string_view::npos || key_guard == std::string_view::npos ||
+        conv == std::string_view::npos || append == std::string_view::npos ||
+        send == std::string_view::npos) {
+        return false;
+    }
+    // Both guards are declared before the send (and therefore before every
+    // return arm below them); the "Bearer <key>" operator+ temporary and the
+    // inline ToUtf16 conversion are gone.
+    return headers_guard < send && key_guard < send && conv < append &&
+           body.find("L\"Authorization: Bearer \" +") == std::string_view::npos &&
+           body.find("+ ToUtf16(auth_header)") == std::string_view::npos;
+}
+
+} // namespace
+
+void TestReq045OpenAiKeyScrub() {
+    std::cout << "[RUN] Testing 261122_0001 fix-C (R1-04): cleartext-key transient "
+                 "scrub (RAII guard + three dialog sites + HttpRequest)..."
+              << std::endl;
+    const int failures_before = g_failed_count;
+
+    // ---- (1) the shared RAII type BEHAVES ------------------------------
+    // Both widths, on the destructor: 24 of 64 bytes live, so the capacity tail
+    // is exactly the range the old `SecureZeroMemory(k.data(), k.size())`
+    // discipline left behind.
+    {
+        std::string narrow(64, 'k');
+        narrow.resize(24);
+        std::wstring wide(48, L'k');
+        wide.resize(16);
+        const std::size_t narrow_capacity = narrow.capacity();
+        const std::size_t wide_capacity = wide.capacity();
+        {
+            ScopedSecretScrub narrow_scrub{narrow};
+            ScopedSecretScrub wide_scrub{wide};
+        }
+        bool narrow_live_clean = true;
+        for (std::size_t i = 0; i < narrow.size(); ++i) {
+            if (narrow[i] != '\0') narrow_live_clean = false;
+        }
+        bool narrow_tail_clean = true;
+        const char* narrow_bytes = narrow.data();
+        for (std::size_t i = narrow.size(); i < narrow_capacity; ++i) {
+            if (narrow_bytes[i] != '\0') narrow_tail_clean = false;
+        }
+        bool wide_live_clean = true;
+        for (std::size_t i = 0; i < wide.size(); ++i) {
+            if (wide[i] != L'\0') wide_live_clean = false;
+        }
+        bool wide_tail_clean = true;
+        const wchar_t* wide_bytes = wide.data();
+        for (std::size_t i = wide.size(); i < wide_capacity; ++i) {
+            if (wide_bytes[i] != L'\0') wide_tail_clean = false;
+        }
+        TEST_CHECK(narrow_live_clean && wide_live_clean,
+                   "fix-C (R1-04): the guard wipes the live UTF-8 AND UTF-16 bytes at "
+                   "scope exit (both string widths)");
+        TEST_CHECK(narrow_tail_clean && wide_tail_clean,
+                   "fix-C (R1-04): the guard wipes the capacity TAIL too (the range the "
+                   "old size()-only discipline left behind)");
+    }
+    // ScrubNow(): the earliest-safe-point wipe, idempotent under the destructor.
+    {
+        std::string early = "sk-fixc-early-wipe";
+        {
+            ScopedSecretScrub early_scrub{early};
+            early_scrub.ScrubNow();
+            bool clean_now = true;
+            for (const char c : early) {
+                if (c != '\0') clean_now = false;
+            }
+            TEST_CHECK(clean_now,
+                       "fix-C (R1-04): ScrubNow() wipes immediately (earliest safe point, "
+                       "not only at scope exit)");
+        }
+        bool clean_after = true;
+        for (const char c : early) {
+            if (c != '\0') clean_after = false;
+        }
+        TEST_CHECK(clean_after,
+                   "fix-C (R1-04): the destructor's repeat wipe is harmless (idempotent)");
+    }
+    // Negative control: an unguarded copy keeps its cleartext (the predicate is
+    // not vacuous — a guard is what changes the bytes).
+    {
+        std::string unguarded = "sk-fixc-unguarded";
+        bool kept = true;
+        for (const char c : unguarded) {
+            if (c != '\0') kept = false;
+        }
+        TEST_CHECK(!kept,
+                   "fix-C (R1-04) negative control: WITHOUT the guard the cleartext is "
+                   "still readable in memory");
+    }
+    // The type lives in the shared client header (the dialog TU reaches it
+    // through openai_settings_window.hpp), not in one TU only.
+    {
+        const std::filesystem::path hpp_path =
+            ResolveRepoFile(L"src\\openai_compatible_client.hpp");
+        std::string hpp_src;
+        if (!hpp_path.empty()) {
+            std::ifstream in(hpp_path, std::ios::binary);
+            hpp_src.assign((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+        }
+        TEST_CHECK(!hpp_src.empty() &&
+                       hpp_src.find("class ScopedSecretScrub") != std::string::npos &&
+                       hpp_src.find("~ScopedSecretScrub();") != std::string::npos,
+                   "fix-C (R1-04): ScopedSecretScrub is declared in the shared "
+                   "openai_compatible_client.hpp (one implementation, no per-TU copy)");
+    }
+
+    // ---- (2) HttpRequest: the header + wide-key guards -------------------
+    const std::filesystem::path client_path =
+        ResolveRepoFile(L"src\\openai_compatible_client.cpp");
+    std::string client_src;
+    if (!client_path.empty()) {
+        std::ifstream in(client_path, std::ios::binary);
+        client_src.assign((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    }
+    TEST_CHECK(!client_src.empty(),
+               "fix-C (R1-04): src/openai_compatible_client.cpp resolves for the "
+               "HttpRequest structure pin");
+    if (!client_src.empty()) {
+        const std::size_t fn_at = client_src.find("DWORD HttpRequest(bool https");
+        TEST_CHECK(fn_at != std::string::npos,
+                   "fix-C (R1-04): the HttpRequest definition is the pinned anchor");
+        std::string_view body;
+        if (fn_at != std::string::npos) {
+            const std::size_t body_end = client_src.find("\n}", fn_at);
+            body = std::string_view(client_src).substr(
+                fn_at, body_end == std::string::npos ? std::string::npos : body_end - fn_at);
+        }
+        TEST_CHECK(!body.empty() && Req045FixCHeadersGuarded(body),
+                   "fix-C (R1-04): HttpRequest guards the Authorization-header wstring AND "
+                   "the named UTF-16 key copy before the send (every return arm covered), "
+                   "with no unguarded operator+/ToUtf16 temporary");
+        // The old local KeyZeroer duplicate is gone: one shared guard.
+        TEST_CHECK(client_src.find("struct KeyZeroer") == std::string::npos &&
+                       client_src.find("ScopedSecretScrub zeroer{key};") != std::string::npos,
+                   "fix-C (R1-04): both ListModels/ChatCompletion key guards reuse "
+                   "ScopedSecretScrub (the per-TU KeyZeroer structs are gone)");
+        // Negative control: the pre-fix HttpRequest header block trips the pin.
+        const std::string pre_fix_headers =
+            "    std::wstring headers = L\"Content-Type: application/json\\r\\n\";\n"
+            "    if (!auth_header.empty()) {\n"
+            "        headers += L\"Authorization: Bearer \" + ToUtf16(auth_header) + "
+            "L\"\\r\\n\";\n"
+            "    }\n"
+            "    BOOL send_ok = ::WinHttpSendRequest(\n";
+        TEST_CHECK(!Req045FixCHeadersGuarded(pre_fix_headers),
+                   "fix-C (R1-04) negative control: the pre-fix header block (no guard, "
+                   "inline ToUtf16, operator+ temporary) FAILS the HttpRequest pin");
+    }
+
+    // ---- (3) the three dialog key-read sites -----------------------------
+    const std::filesystem::path dialog_path =
+        ResolveRepoFile(L"src\\ui\\openai_settings_window.cpp");
+    std::string dialog_src;
+    if (!dialog_path.empty()) {
+        std::ifstream in(dialog_path, std::ios::binary);
+        dialog_src.assign((std::istreambuf_iterator<char>(in)),
+                          std::istreambuf_iterator<char>());
+    }
+    TEST_CHECK(!dialog_src.empty(),
+               "fix-C (R1-04): src/ui/openai_settings_window.cpp resolves for the dialog "
+               "structure pins");
+    if (!dialog_src.empty()) {
+        // The unnamed conversion is gone everywhere in the TU.
+        TEST_CHECK(dialog_src.find("ToUtf8(GetCtrlText(dlg, IDC_API_KEY))") ==
+                       std::string::npos,
+                   "fix-C (R1-04): no dialog site converts the key control through an "
+                   "unnamed GetCtrlText temporary any more");
+        // Exactly three key reads, each carried by the wrapped block. (The
+        // presence probe no longer copies the text at all — see the next pin.)
+        std::vector<std::size_t> reads;
+        const std::string read_marker = "std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);";
+        for (std::size_t at = dialog_src.find(read_marker); at != std::string::npos;
+             at = dialog_src.find(read_marker, at + 1)) {
+            reads.push_back(at);
+        }
+        TEST_CHECK(reads.size() == 3,
+                   "fix-C (R1-04): the three key-consumer sites (DoFetchModels / IDOK / "
+                   "[저장]) each read the control into a named wide buffer");
+        int wrapped_sites = 0;
+        for (const std::size_t at : reads) {
+            if (Req045FixCKeyReadSiteGuarded(dialog_src, at)) ++wrapped_sites;
+        }
+        TEST_CHECK(reads.size() == 3 && wrapped_sites == 3,
+                   "fix-C (R1-04): every one of the three sites is wrapped "
+                   "read -> guard -> conversion -> ScrubNow(+UTF-8 guard)");
+        std::size_t key_read_count = 0;
+        for (std::size_t at = dialog_src.find("GetCtrlText(dlg, IDC_API_KEY)");
+             at != std::string::npos;
+             at = dialog_src.find("GetCtrlText(dlg, IDC_API_KEY)", at + 1)) {
+            ++key_read_count;
+        }
+        TEST_CHECK(key_read_count == reads.size() && key_read_count == 3,
+                   "fix-C (R1-04): every GetCtrlText(IDC_API_KEY) call in the dialog TU is "
+                   "one of the three wrapped reads (no un-named read survives)");
+        // The presence probe answers by length instead of copying the key.
+        TEST_CHECK(dialog_src.find("bool KeyAvailableForFetch(HWND dlg, const OpenAiConfig* cfg)") !=
+                           std::string::npos &&
+                       dialog_src.find("::GetWindowTextLengthW(key_edit) > 0") !=
+                           std::string::npos,
+                   "fix-C (R1-04, adjacent scan): KeyAvailableForFetch tests the edit "
+                   "LENGTH instead of copying the cleartext key into a temporary");
+        // Negative controls: the two pre-fix shapes must FAIL the site pin.
+        const std::string pre_fix_site =
+            "            std::string keyUtf8 = ToUtf8(GetCtrlText(dlg, IDC_API_KEY));\n"
+            "            SecureZeroMemory(keyUtf8.data(), keyUtf8.size());\n";
+        TEST_CHECK(!Req045FixCKeyReadSiteGuarded(pre_fix_site, 0),
+                   "fix-C (R1-04) negative control: the pre-fix unnamed read + explicit "
+                   "scrub FAILS the site pin (the wide copy died unscrubbed)");
+        const std::string named_but_unguarded =
+            "            std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);\n"
+            "            std::string keyUtf8 = ToUtf8(keyWide);\n";
+        TEST_CHECK(!Req045FixCKeyReadSiteGuarded(named_but_unguarded, 0),
+                   "fix-C (R1-04) negative control: naming the wide buffer WITHOUT the "
+                   "guard/ScrubNow FAILS the site pin");
+        const std::string scrub_before_conversion =
+            "            std::wstring keyWide = GetCtrlText(dlg, IDC_API_KEY);\n"
+            "            ScopedSecretScrub key_wide_scrub{keyWide};\n"
+            "            key_wide_scrub.ScrubNow();\n"
+            "            std::string keyUtf8 = ToUtf8(keyWide);\n"
+            "            ScopedSecretScrub key_utf8_scrub{keyUtf8};\n";
+        TEST_CHECK(!Req045FixCKeyReadSiteGuarded(scrub_before_conversion, 0),
+                   "fix-C (R1-04) negative control: wiping the wide buffer BEFORE the "
+                   "conversion FAILS the order pin (the conversion must read live bytes)");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261122_0001 fix-C cleartext-key scrub checks passed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261122_0001 fix-C cleartext-key scrub checks: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}

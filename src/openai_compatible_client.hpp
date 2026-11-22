@@ -24,7 +24,10 @@
 // Privacy: https-only unless the user explicitly consented to plaintext http
 // (http_consent_given). The API key is persisted DPAPI-protected, never in
 // cleartext; it is unprotected only transiently in memory and zeroed after
-// use (SecureZeroMemory).
+// use — the caller's buffer by the documented scrub contracts, every other
+// key-bearing copy (the Authorization header string, the UTF-16 conversions,
+// the dialog's GetCtrlText reads) through ScopedSecretScrub (261122_0001
+// fix-C, R1-04).
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
@@ -119,6 +122,50 @@ bool OpenAiSha256Hex(std::string_view data, std::string& out_hex);
 // key longer than 6 chars; keys of 6 or fewer chars are FULLY masked ("***")
 // so no usable prefix of a short secret leaks. Pure.
 std::string MaskOpenAiApiKey(std::string_view cleartext);
+
+// ---- 261122_0001 fix-C (fix-list round 1, R1-04 / SR5 F1): the ONE
+// scrub-on-exit guard for cleartext key material ----
+//
+// Every app-owned copy of the API key that is NOT byte-zeroed before its
+// ordinary destructor has to be wrapped in this guard: the destructor
+// SecureZeroMemory's the buffer, so every return arm of the enclosing scope is
+// covered without relying on a per-arm SecureZeroMemory call (the discipline
+// the raw call sites kept getting wrong — the Authorization header string and
+// the UTF-16 GetCtrlText copies were freed unscrubbed).
+//
+// What it wipes: data() .. data()+capacity(). The size() bytes are the live
+// cleartext; the capacity tail is what a SHORTER assignment leaves behind, and
+// it is the same range UnprotectOpenAiApiKey zeroes on the caller's buffer.
+// The string keeps its size() — the guard zeroes bytes, it never reallocates,
+// so it can wipe a buffer that is still referenced (the wipe is idempotent).
+//
+// Usage: one guard per secret-bearing string, declared IMMEDIATELY after the
+// string is filled. When a copy is only needed for one conversion, call
+// ScrubNow() at the earliest safe point and let the guard cover the rest; the
+// destructor repeats the wipe harmlessly.
+//
+// Non-copyable and non-movable on purpose: a copied/moved guard would leave
+// the original buffer unguarded. The destructor is out-of-line in the .cpp so
+// this header stays Win32-free (windows.h stays in the TU that already has it).
+class ScopedSecretScrub {
+public:
+    explicit ScopedSecretScrub(std::string& utf8) noexcept : utf8_(&utf8), utf16_(nullptr) {}
+    explicit ScopedSecretScrub(std::wstring& utf16) noexcept : utf8_(nullptr), utf16_(&utf16) {}
+    ~ScopedSecretScrub();
+
+    ScopedSecretScrub(const ScopedSecretScrub&) = delete;
+    ScopedSecretScrub& operator=(const ScopedSecretScrub&) = delete;
+    ScopedSecretScrub(ScopedSecretScrub&&) = delete;
+    ScopedSecretScrub& operator=(ScopedSecretScrub&&) = delete;
+
+    // Wipes now instead of at scope exit (earliest-safe-point scrubbing). The
+    // destructor calls this again; zeroing an already-zero buffer is a no-op.
+    void ScrubNow() noexcept;
+
+private:
+    std::string* utf8_;
+    std::wstring* utf16_;
+};
 
 // ---- 261111_0001 U6 (v0.10.7, R1 P1-3) + R2-L/R2-M (261111_0001)
 // + G-02/G-11 (261111_0001 round 2) --------
