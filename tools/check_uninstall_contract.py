@@ -474,6 +474,22 @@ def check_contract(text: str) -> list[str]:
                 failures.append(
                     f"CHECK 12: missing CustomMessage {lang}.{key}")
 
+    # -- CHECK 13: [Code] lexer quirk guard ---------------------------------
+    # Inno's top-level parser treats any [Code] line whose first non-blank
+    # character is '[' as a SECTION TAG, not a Pascal array literal (the
+    # 261123_0001 FmtMessage array argument tripped "Invalid section tag" at
+    # compile time). No [Code] line may start with '['.
+    in_code = False
+    for lineno, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.lower() == "[code]":
+            in_code = True
+            continue
+        if in_code and stripped.startswith("["):
+            failures.append(
+                f"CHECK 13: line {lineno} starts with '[' inside [Code] "
+                "(Inno parses it as a section tag, not an array literal)")
+
     return failures
 
 

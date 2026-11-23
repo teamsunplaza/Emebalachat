@@ -5345,8 +5345,7 @@ begin
   SharedEngineChoiceVerdict();
   SharedEngineChoicePage := CreateInputOptionPage(SharedEnginePage.ID,
     CustomMessage('SharedEngineChoiceTitle'), '',
-    FmtMessage(CustomMessage('SharedEngineChoiceDesc'),
-               [EngineChoiceRecorded, ENGINE_BUNDLED_VERSION]),
+    FmtMessage(CustomMessage('SharedEngineChoiceDesc'), [EngineChoiceRecorded, ENGINE_BUNDLED_VERSION]),
     True, False);
   SharedEngineChoicePage.Add(CustomMessage('SharedEngineChoiceReplace'));  // index 0
   SharedEngineChoicePage.Add(CustomMessage('SharedEngineChoiceKeep'));     // index 1
