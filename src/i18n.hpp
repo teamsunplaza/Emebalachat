@@ -413,7 +413,7 @@ enum class StringId {
     LoadModeWarmupDesc,        // "번역이 바로 시작돼요. 모델이 메모리에 계속 올라가 있어요." / "Translation starts right away. The model stays in memory."
     GgufPolicySticky,          // "(상주 유지)" / "(Keep resident)"
     GgufPolicyEvict,           // "(사용 시 로드)" / "(Load on use)"
-    GgufManagerTogglePolicy,   // "정책 전환" / "Toggle policy"
+    GgufManagerTogglePolicy,   // "로드 방식 전환" / "Load mode"
     GgufDuplicateWarning,      // "중복 파일: {n} {s} × {c}" / "Duplicate files: {n} {s} × {c}"
     GgufManagerDedupe,         // "중복 정리" / "Clean up duplicates"
     GgufManagerDedupeDone,     // "중복 파일을 휴지통으로 옮겼습니다." / "The duplicate files were moved to the Recycle Bin."
@@ -632,6 +632,115 @@ enum class StringId {
     LanguageSearchCue,      // "언어 검색…" / "Search languages…"
     LanguageSearchNoMatch,  // "일치하는 언어가 없습니다" / "No matching language"
 
+    // 261122_0002 (v0.10.10 phased fixes, Phase-2 i18n worker): the
+    // translation-card editor + pin surface's eight strings: the tooltip
+    // card's pin/unpin actions, "open in window", the edit/retranslate
+    // action, the editor dialog's title, the apply-to-original-window
+    // action, the cancelling progress line, and the keep-translated-part
+    // action. Inserted at the ENUM TAIL, immediately before EnumCount, so
+    // every pre-existing id keeps its numeric value and EnumCount absorbs
+    // +8 (213 -> 221); the P5 "EnumCount - 1 == LanguageSearchNoMatch"
+    // sentinel therefore becomes EnumCount - 9 (the pin-site list for the
+    // Phase-2 test update lives in
+    // docs/261122_0002_session_v01010-phased-fixes/i18n-report-p2.md).
+    // The STRUCT slots take the eight positions right AFTER
+    // openai_declared_hint and right BEFORE language_search_auto_chip (the
+    // AUTO chip closes the struct tail per the P9b-3 U5 pin, the same move
+    // P9c-1b made), so the enum order and the struct order differ on
+    // purpose; the Get() switch is the mapping. Per-locale fill: Korean is
+    // authored; every other designated table carries the English draft
+    // verbatim (the deliberate machine-draft baseline of the 261119 policy).
+    PinTooltipCard,          // "고정" / "Pin"
+    UnpinTooltipCard,        // "고정 해제" / "Unpin"
+    OpenInWindow,            // "창으로 열기" / "Open in window"
+    EditRetranslate,         // "수정 · 재번역" / "Edit / retranslate"
+    ApplyToOriginalWindow,   // "원래 창에 적용" / "Apply to original window"
+    TranslationEditorTitle,  // "번역 편집기" / "Translation editor"
+    CancellingProgress,      // "취소 중…" / "Cancelling..."
+    KeepTranslatedPart,      // "번역된 부분만 반영" / "Keep translated part"
+
+    // 261122_0002 (v0.10.10 phased fixes, Phase-3 i18n worker): the settings
+    // window redesign's seven strings: the four tab captions (General /
+    // Translation engines / Languages / Advanced), the open-config-folder
+    // action, the reset-declared-languages action, and the recent-languages
+    // section header. Inserted at the ENUM TAIL, immediately before EnumCount,
+    // so every pre-existing id keeps its numeric value and EnumCount absorbs
+    // +7 (221 -> 228); the P5 "EnumCount - 9 == LanguageSearchNoMatch"
+    // sentinel therefore becomes EnumCount - 16 (the pin-site list for the
+    // Phase-3 test update lives in
+    // docs/261122_0002_session_v01010-phased-fixes/i18n-report-p3.md).
+    // The STRUCT slots take the seven positions right AFTER
+    // keep_translated_part and right BEFORE language_search_auto_chip (the
+    // AUTO chip closes the struct tail per the P9b-3 U5 pin, the same move
+    // P9c-1b and Phase-2 made), so the enum order and the struct order differ
+    // on purpose; the Get() switch is the mapping. Per-locale fill: Korean is
+    // authored; every other designated table carries the English draft
+    // verbatim (the deliberate machine-draft baseline of the 261119 policy).
+    SettingsTabGeneral,       // "일반" / "General"
+    SettingsTabEngines,       // "번역 엔진" / "Translation engines"
+    SettingsTabLanguages,     // "언어" / "Languages"
+    SettingsTabAdvanced,      // "고급" / "Advanced"
+    OpenConfigFolder,         // "config.json 폴더 열기" / "Open config folder"
+    ResetDeclaredLanguages,   // "선택 초기화(전체 지원)" / "Reset selection (support all)"
+    RecentLanguagesHeader,    // "최근 사용 언어" / "Recent languages"
+
+
+    // 261122_0002 (v0.10.10 phased fixes, Phase-3 i18n micro-pass): the
+    // remaining user-visible English literals the Phase-3 units flagged for
+    // this pass: the generic settings-menu label (MenuSettings, the
+    // P3-C1 request), the settings hub's own caption + General/Advanced copy
+    // (the P3-C3 request, 14 strings), and the cheat sheet's appended-gestures
+    // appendix (the P3-C5 request, 4 strings). Inserted at the ENUM TAIL,
+    // immediately before EnumCount, so every pre-existing id keeps its numeric
+    // value and EnumCount absorbs +19 (228 -> 247); the P5 "EnumCount - 16 ==
+    // LanguageSearchNoMatch" sentinel therefore becomes EnumCount - 35 (the
+    // pin-site list for the Phase-3 test update lives in
+    // docs/261122_0002_session_v01010-phased-fixes/i18n-report-p3-micropass.md).
+    // The STRUCT slots take the nineteen positions right AFTER
+    // recent_languages_header and right BEFORE language_search_auto_chip (the
+    // AUTO chip closes the struct tail per the P9b-3 U5 pin, the same move
+    // P9c-1b/Phase-2/Phase-3 made), so the enum order and the struct order
+    // differ on purpose; the Get() switch is the mapping. Per-locale fill:
+    // Korean is authored; every other designated table carries the English
+    // draft verbatim (the deliberate machine-draft baseline of the 261119
+    // policy).
+    MenuSettings,                 // "환경설정" / "Settings"
+    SettingsHubTitle,             // "설정" / "Settings"
+    SettingsDragToTranslate,      // "드래그로 번역" / "Drag to translate"
+    SettingsCloudFallback,        // "클라우드 대체 번역 허용" / "Allow cloud fallback"
+    SettingsHotkeyToggle,         // "켜기/끄기 전환" / "Toggle on/off"
+    SettingsHotkeyLang,           // "언어 순환" / "Cycle language"
+    SettingsHotkeyMode,           // "자동 전송 켜기/끄기" / "Toggle auto-send"
+    SettingsHotkeySelection,      // "선택한 텍스트 번역" / "Translate selection"
+    SettingsDiagLogEnabled,       // "진단 로그" / "Diagnostic log"
+    SettingsDiagLogContent,       // "사용자 콘텐츠 기록 (입력한 텍스트, 창 제목)" / "Log user content (typed text, window titles)"
+    SettingsDiagContentWarning,   // "문제 해결 시에만 사용하세요. 이때 로그에는 입력한 내용과 창 제목이 포함될 수 있습니다." / "Only for troubleshooting: the log can then contain what you type and the titles of your windows."
+    SettingsTemperature,          // "Temperature" / "Temperature"
+    SettingsTopP,                 // "Top-p" / "Top-p"
+    SettingsTopK,                 // "Top-k" / "Top-k"
+    SettingsRepetitionPenalty,    // "반복 패널티" / "Repetition penalty"
+    CheatSheetMoreGestures,       // "추가 제스처:" / "More gestures:"
+    CheatSheetSelectionTranslate, // "선택한 텍스트 번역" / "Translate the selected text"
+    CheatSheetDoubleCtrlC,        // "선택한 텍스트를 복사(Ctrl+C)하면 즉시 번역 툴팁" / "Copy selected text (Ctrl+C) to see its translation"
+    CheatSheetEscCancel,          // "번역 취소 / 카드 닫기" / "Cancel the translation / close the card"
+
+    // 261123_0001 (v0.10.10 rebuild-2 follow-ups, Bug A): the user-model
+    // load-failure tooltip hint, shown instead of reopening the GGUF manager
+    // when a repeated user-model load fails (session one-shot per the
+    // load-failure class). Inserted at the ENUM TAIL, immediately before
+    // EnumCount, so every pre-existing id keeps its numeric value and
+    // EnumCount absorbs +1 (247 -> 248); the P5 "EnumCount - 35 ==
+    // LanguageSearchNoMatch" sentinel therefore becomes EnumCount - 36 (the
+    // pin-site list for the test update lives in
+    // docs/261123_0001_session_gguf-missing-defaults-followup/). The STRUCT
+    // slot takes the position right AFTER cheat_sheet_esc_cancel and right
+    // BEFORE language_search_auto_chip (the AUTO chip closes the struct tail
+    // per the P9b-3 U5 pin, the same move every tail pass made), so the enum
+    // order and the struct order differ on purpose; the Get() switch is the
+    // mapping. Per-locale fill: Korean is authored; every other designated
+    // table carries the English draft verbatim (the deliberate machine-draft
+    // baseline of the 261119 policy).
+    UserModelLoadFailedHint,      // "사용자 모델을 불러오지 못했습니다. 모델 관리에서 파일과 호환성을 확인하세요." / "Could not load the user model. Check the file and compatibility in Model Manager."
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 89 since UI-language-89 phase 3,

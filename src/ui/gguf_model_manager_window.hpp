@@ -27,7 +27,7 @@
 //   * Resident-policy display + toggle — every user row's label carries the
 //     entry's eviction-policy suffix ("(상주 유지)" sticky / "(사용 시 로드)"
 //     otherwise; an empty/unknown policy normalizes to the on-use leg, the
-//     registry parser's evict default). The [정책 전환] button flips the
+//     registry parser's evict default). The [로드 방식 전환] button flips the
 //     selected user entry's resource.eviction sticky <-> evict and persists
 //     through the SAME atomic registry write as rename/delete. Bundled
 //     entries are never listed, so the button is inherently inert for them
@@ -134,6 +134,16 @@ std::string ManagerDuplicateStem(const std::string& filename);
 bool IsRegisteredModelFile(const engine_host_registry::Registry& registry,
                            const std::wstring& file_name);
 
+// V10F (261122_0002 P3-C4, G3-1): the REUSE compare for a store filename. The
+// pre-fix HF pre-flight / post-download checks compared files[0] to the
+// resolved filename with operator!=, so "Model.gguf" registered on disk was
+// re-downloaded when the URL named "model.gguf" — the same Windows-volume case
+// blindness IsRegisteredModelFile (above) already folds away. This is the
+// std::string twin of that helper's ASCII A-Z-only fold (the store is a Windows
+// volume; non-ASCII bytes are compared EXACTLY, so two different non-ASCII
+// names can never collapse). Pure, no I/O, no GUI.
+bool ManagerFileNameMatches(const std::string& a, const std::string& b);
+
 // ---- REQ-050: Hugging Face resolve-URL gate (fail-closed, headless-testable)
 //
 // IsHfResolveUrl is the CANONICAL-shape gate: it accepts only model FILE URLs
@@ -176,6 +186,43 @@ inline int HfDecodeProgressPercent(WPARAM wp) {
     const WORD raw = static_cast<WORD>(wp);
     return raw == static_cast<WORD>(-1) ? -1 : static_cast<int>(raw);
 }
+
+// V10F (261122_0002 P3-C4, G3-4): the WinHTTP request-TARGET encoder. The
+// normalizer keeps a decoded show_file_info value verbatim (that is what the
+// user pasted), so a legal resolve URL can carry a raw space or a multi-byte
+// UTF-8 filename ("Model Q4_K_M.gguf", "모델.gguf"). WinHttpOpenRequestW takes
+// the path as a wide request target and a raw space / non-ASCII byte in it is
+// a malformed request line (the server answers 400, a proxy mangles it). The
+// dialog therefore hands the worker the DECODED url and percent-encodes it
+// HERE, at the request-open site only, so NormalizeHfUrl / IsHfResolveUrl and
+// their acceptance matrices keep the human-readable form.
+//   * "%HH" (two hex digits) is an existing triplet and passes through;
+//     a lone '%' encodes to "%25" so it can never start a bogus triplet.
+//   * space, every control byte (0x00-0x20, 0x7F) and every byte >= 0x80
+//     (each byte of a UTF-8 sequence) -> "%XX" (uppercase hex).
+//   * every other printable ASCII byte (0x21-0x7E) passes through.
+// Pure; the input is the narrow resolve-URL suffix (<repo>/resolve/<rev>/<file>).
+std::string HfPercentEncodeRequestPath(std::string_view path);
+
+// ---- V10F-R1 F-15: the HF download's explicit redirect follower -------------
+// The download worker pins WINHTTP_OPTION_REDIRECT_POLICY to NEVER (fail-closed
+// on the SetOption result) and answers 301/302/303/307/308 ONLY through this
+// gate — the update_checker SplitHttpsUrl / IsAllowedUpdateHost pattern.
+//   * IsAllowedHfDownloadHost: the redirect-target host allowlist. A resolve
+//     URL redirects to Hugging Face's OWN CDN only: the exact huggingface.co
+//     host, or a subdomain of .huggingface.co (cdn-lfs*.huggingface.co) or of
+//     .hf.co (cas-bridge.xethub.hf.co, cdn-lfs*.hf.co). Anything else fails
+//     closed. Pure.
+//   * SplitHfRedirectLocation: splits a redirect Location into host + request
+//     path, https only, no userinfo, no port. The path (INCLUDING the signed
+//     query string) is kept VERBATIM — the CDN Location is already wire-encoded,
+//     unlike the initial request path, so this helper must NOT re-encode.
+bool IsAllowedHfDownloadHost(std::string_view host);
+// Returns false unless the URL is exactly https://<host>/<path...>.
+// `out_path` may be null (plain predicate form); on success it holds
+// "/<path...>" (or "/" for a bare host) exactly as it appeared in the URL.
+bool SplitHfRedirectLocation(std::string_view url, std::string* out_host,
+                             std::string* out_path);
 
 // ---- Template emission (unit-suite byte-walk, same split precedent as
 // BuildOpenAiTemplate: Begin() must already have been called with the matching

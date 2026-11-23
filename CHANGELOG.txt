@@ -1,3 +1,151 @@
+v0.10.10 - 2026-11-23 (rebuild 3)
+====================
+
+Follow-up fix build. Same version, rebuilt: a user GGUF model that
+fails to load no longer keeps reopening the model manager on every
+translation attempt, a fresh install now seeds the drag-translation
+target from the real OS language instead of English, and the GGUF
+manager's policy button is renamed to say what it actually toggles.
+
+What's fixed
+------------
+* User GGUF models: when an added model cannot be loaded at all (an
+  incompatible architecture straight from Hugging Face, a broken
+  download), the model manager window now opens only once per session;
+  later failures show a tooltip hint telling the user to check the file
+  and compatibility in the manager, instead of reopening the window on
+  every attempt. If the model file itself is actually missing from the
+  store, the manager still opens immediately.
+* First install: the drag-translation target language is now seeded
+  from the actual OS language (previously it always persisted English,
+  because the default was resolved before the UI locale existed; the
+  value stays sticky once set, so existing installs are untouched).
+* GGUF manager: the action-row button previously labelled "정책 전환"
+  (policy toggle) is renamed to "로드 방식 전환" (Korean) / "Load mode"
+  (other locales, English draft), making clear it switches the load
+  policy (keep resident vs load on use) and does not select a model.
+
+Unit tests: 15,146 checks in the app suite (new routing decision-table,
+fresh-install seeding and two-latch wiring pins).
+
+v0.10.10 - 2026-11-22 (rebuild 2)
+====================
+
+Reliability, long-form and interface completion build. Same version,
+rebuilt: pressing Enter in any terminal no longer injects Ctrl+C,
+cancelling works on every translation path with stalled-network aborts,
+long translations stream into the card chunk by chunk, a pinned wider
+card and the new translation editor make long texts readable and
+re-writable, and the tray, badge and settings windows were reorganised
+without removing a single feature.
+
+What's new in this build
+------------------------
+* Universal cancel: Esc, the badge click and app exit now cancel typing,
+  drag, double-Ctrl+C, re-translate and back-translation jobs alike, and
+  a stalled request is aborted by closing its socket (previously a
+  stalled connection could block a cancel for up to 85 s).
+* Progressive long-form translation: multi-chunk translations append
+  each finished chunk into the card in real time (OpenAI endpoints gain
+  true SSE streaming) instead of showing a bare counter, and a network
+  blip resumes from the failed chunk with partial results kept.
+* Reading surface: the translation card widens automatically for long
+  text (360/480/620 DIP), a pin button keeps the card open over other
+  windows, the back-translation card scrolls its two panels
+  independently and renders RTL languages right-to-left, and long-form
+  scrolling reuses its text layout (smooth scrolling, fixed mixed-DPI
+  blur).
+* Translation editor: the card's edit button opens the last translation
+  in a resizable editor (original, translation, back-translation) with
+  re-translate and apply-back-to-the-original-window. History lives in
+  memory only (10 entries) and is never written to disk.
+* Text-to-speech for all 89 languages: voice lookup now resolves through
+  Windows locale names, so installed voices work for every language
+  including the 52 added in v0.10.x (Tamil, Bulgarian, Cantonese, ...).
+* Selection translate: a new hotkey (default Ctrl+Alt+T) translates the
+  current selection and replaces it in place, bypassing the line-block
+  heuristics; it refuses to fire while the app is paused.
+* Three-zone badge: the medallion toggles/pauses (and shows a cancel
+  affordance while translating), the language pair opens the picker or
+  swaps instantly, and a small tag shows the active engine plus the
+  auto-send marker.
+* Settings hub: one window with General / Engines / Languages / Advanced
+  tabs exposes every previously JSON-only option (drag-to-translate,
+  cloud fallback consent, all four hotkeys, diagnostic logging,
+  sampling parameters) alongside the existing OpenAI, GGUF, model
+  download and user-language dialogs.
+* Tray menu slimmed from 18+ rows to 10 with recent-languages submenus;
+  every existing command and language is still reachable.
+* My Languages manager gains [Add] and [Delete] buttons, so custom
+  languages no longer require editing config.json.
+
+What's fixed
+------------
+* Terminals: pressing Enter in Windows Terminal, cmd, PowerShell or any
+  common terminal emulator is never swallowed and can no longer send up
+  to three synthetic Ctrl+C (SIGINT) into a running command.
+* Drag icon: clicking the floating drag icon no longer resurrects a
+  ghost icon, drag is suppressed over terminals with misleading
+  "no selection" notices, and double-click tolerance respects per-
+  monitor DPI.
+* Badge and tray double-clicks no longer trigger the single-click action
+  first (language swap and badge visibility are clean again).
+* Language search palette: choosing a language from the tooltip's
+  "Search..." no longer wipes the card, and Esc closes the palette
+  instead of the card behind it; switching the source back to
+  "Auto Detect" re-detects the text language.
+* OpenAI settings: the reasoning-effort list follows the selected model
+  immediately, switching profiles no longer keeps the previous model
+  list, plaintext-HTTP consent is remembered per origin (and cleared
+  for https or a different host), superseded model fetches can no longer
+  re-enable the fetch button, and bracketed IPv6 endpoints such as
+  http://[::1]/v1 parse correctly.
+* Shutdown: exiting during a probe or a translation cancels it, saves
+  the config and removes the tray icon before the final safety kill, so
+  no settings are lost and no ghost icon remains; the strict-local path
+  can no longer leak text to Google while exiting.
+* Typing-mode failures on OpenAI now show the real error (HTTP 401/429/
+  404, ...) in a transient card instead of only beeping.
+* Model download: Esc cancels, and cancelling a stalled download closes
+  the socket instead of freezing the app for up to 30 s; a release
+  whose notes lack a SHA-256 line is refused before downloading.
+* Engine guidance: a missing model file now opens the model download /
+  repair offer instead of the endless "try again later" message.
+* Very large documents: the 262,144-character guard no longer risks
+  wiping a whole document on a trailing blank line, and local chunks
+  stay under the 1 MiB engine pipe frame limit with terminology carried
+  between chunks.
+* GGUF manager: deleting the in-use user model no longer forces the
+  engine back to Auto, duplicate cleanup state updates after every
+  add/delete, the Hugging Face progress bar fills correctly, filenames
+  differing only by case are deduplicated, and download URLs with spaces
+  are encoded.
+* About window: dismissing the "up to date" banner no longer strands the
+  window, Tab+Enter respects the focused button, the reset button is
+  blocked while the update consent is up, and the download progress text
+  no longer overlaps.
+* Security: the OpenAI HTTP-consent origin is persisted and re-checked
+  at request time (a hand-edited URL cannot ride an old consent),
+  Hugging Face downloads follow an allowlisted redirect policy, the
+  installer is re-hashed immediately before launching, and cancelling
+  one request can never close another request's connection.
+
+Unit tests: 14,971 checks, 0 failures (was 13,666 in the first
+v0.10.10 build).
+
+Known limitations (documented)
+------------------------------
+* Downgrading to a pre-profile build keeps the active profile (the
+  regular openai block) but drops the stored profile library on the next
+  save; back up profiles before downgrading.
+* A profile name longer than the profile picker is truncated in the
+  closed picker by design; opening the list always shows the full name.
+* Display names are fixed in the UI language that was active when the
+  profile was saved; they do not re-translate on language switch.
+* New UI strings (pin/edit/hub labels, cheat-sheet gestures) ship with
+  English text in the 88 non-Korean locales for now; translations land
+  in a follow-up pass.
+
 v0.10.10 - 2026-11-22
 ====================
 

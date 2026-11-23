@@ -663,6 +663,11 @@ void ParseEngineHostBlock(const std::string& raw, EngineHostConfig& out) {
 constexpr std::size_t kMaxOpenAiBaseUrlConfigBytes = 2048;
 constexpr std::size_t kMaxOpenAiModelConfigBytes = 512;
 constexpr std::size_t kMaxOpenAiApiKeyDpapiConfigBytes = 16384;
+// V10F-R1 F-17: the http_consent_origin scope ("host:port") is bounded like
+// the other openai strings, so a hand-edited config cannot smuggle a
+// multi-MB value that rides verbatim into every consent check + rewrite.
+// 256 is far above any real host:port (DNS <= 253 + ":65535") yet bounded.
+constexpr std::size_t kMaxOpenAiHttpConsentOriginConfigBytes = 256;
 
 // Byte cap that never splits a UTF-8 code point (CapUserLanguageField's rule
 // restated beside this choke point so this anonymous namespace stays
@@ -777,6 +782,28 @@ void ParseOpenAiBlock(const std::string& raw, OpenAiConfig& out) {
     for (const auto& [k, v] : pairs) {
         ApplyOpenAiConfigPair(k, v, out);
     }
+}
+
+// V10F-R1 F-17: reads the "http_consent_origin" key out of the raw nested
+// "openai" block text. Kept OUT of ApplyOpenAiConfigPair on purpose: that
+// choke point feeds BOTH the active block and the openai_profiles entry
+// parser, and the consent scope is a property of the ACTIVE block only (a
+// profile-library entry is a passive record; its boolean http_consent_given
+// stays the legacy shape). Absent key or malformed block -> "" (the
+// compile-time default). The value is capped at the shared UTF-8-safe
+// boundary like the other openai strings.
+std::string ParseOpenAiHttpConsentOrigin(const std::string& raw) {
+    SimpleJsonReader reader(raw);
+    std::vector<std::pair<std::string, std::string>> pairs;
+    if (!reader.ParseObject(pairs)) {
+        return {};
+    }
+    for (const auto& [k, v] : pairs) {
+        if (k == "http_consent_origin") {
+            return CapOpenAiConfigField(v, kMaxOpenAiHttpConsentOriginConfigBytes);
+        }
+    }
+    return {};
 }
 
 // ---- 261116_0003 P9c-1a: the OpenAI declared-language VIEW FILTER ----------
@@ -1172,18 +1199,28 @@ std::string ResolveBackTranslationTarget(std::string_view type_source_language,
 }
 
 // Phase 3 (REQ-007, plan §1.4/§2.6): drag-context default target. Queries the
-// OS system language through the same read-only I18n seam as
-// ResolveEffectiveTarget, canonicalizes it, and maps:
+// OS system language, canonicalizes it, and maps:
 //   * unsupported/unknown OS language (NormalizeLanguageCode -> "AUTO") =>
 //     "English" (plan §2.6: reasonable default when "system language" is
 //     impossible);
-//   * OS language == English => "Korean" (EN->EN drag translation is
-//     meaningless: EN<->KO pivot, matching the ResolveEffectiveTarget policy);
-//   * any other supported language => its canonical name_en.
+//   * any supported OS language => its canonical name_en, 1:1 with NO
+//     EN->KO pivot (the 2026-09-08 decisions.md APPROVED OVERRIDE superseded
+//     the REQ-007 §2.6 pivot; translation-time src==tgt handling is the
+//     ADR-A1-7 / ResolveEffectiveTarget layer, NOT this default).
 // Pure: no config mutation, no Win32 message traffic, safe from any thread.
+// 261123_0001 (Bug B): the OS language comes from I18n::DetectSystemLocale()
+// + I18n::LocaleToString(), which query Win32 directly and do NOT depend on
+// I18n::Initialize state. The former source I18n::GetSystemLanguageCode() ==
+// GetLocaleCode() reads the APP UI LOCALE, whose static default is English
+// (i18n.cpp s_current_locale); and wWinMain calls config.LoadFromFile()
+// BEFORE I18n::Initialize, so every fresh-create seeding read the English
+// placeholder and persisted "English" on every OS. DetectSystemLocale never
+// returns UiLocale::Auto (its own explicit fallback is English), so
+// LocaleToString's output domain equals GetLocaleCode's and the downstream
+// mapping is byte-identical.
 std::string ResolveDragDefaultTarget() {
     const std::string sys_code =
-        NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+        NormalizeLanguageCode(I18n::LocaleToString(I18n::DetectSystemLocale()));
     const LanguageInfo* info = FindLanguageByCode(sys_code);
     if (!info || info->code == "AUTO") {
         return "English"; // unsupported/unknown OS language
@@ -3703,6 +3740,7 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
     s.sound_enabled = sound_enabled.load(std::memory_order_relaxed);
     s.back_translation_enabled = back_translation_enabled.load(std::memory_order_relaxed);
     s.drag_to_translate = drag_to_translate;
+    s.user_model_id = user_model_id; // 261123_0001: Bug A worker-thread routing
     return s;
 }
 
@@ -3796,6 +3834,102 @@ void AppConfig::SetOpenAiConfig(OpenAiConfig block) {
     openai = std::move(block);
 }
 // ---- 261122_0001 fix-E R2-N2 END openai block write surface ---------------
+
+// ---- V10F-R1 F-17 BEGIN http consent origin write surface ------------------
+// The locked write/read surface for the persisted openai-block
+// "http_consent_origin" scope (member contract next to the member). Same
+// mutex_ ToJsonStringLocked()/SaveToFile() hold while they serialise the
+// openai block, so a GUI-thread consent write can never interleave with an
+// off-thread save iteration (the fix-E R2-N2 / BUG-08 class). The
+// FromJsonString load path is the one documented writer outside this verb
+// (under mutex_).
+void AppConfig::SetHttpConsentOrigin(std::string origin) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    openai_http_consent_origin = std::move(origin);
+}
+
+std::string AppConfig::GetHttpConsentOrigin() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return openai_http_consent_origin;
+}
+// ---- V10F-R1 F-17 END http consent origin write surface --------------------
+
+// ---- V10F (BUG-08, 261122_0002 P1-U4) engine_host block write surface -----
+// The locked write surface for the persisted "engine_host" block (member
+// contract next to the member). Same mutex_ the whole-config serialiser
+// holds, so the GUI-thread settings write can no longer interleave with an
+// off-thread SaveToFile() iteration (the fix-E R2-N2 class on this older
+// REQ-043-era member). The FromJsonString load path is the one documented
+// writer outside this verb (field-by-field under mutex_).
+void AppConfig::SetEngineHostConfig(EngineHostConfig block) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    engine_host = std::move(block);
+}
+
+EngineHostConfig AppConfig::GetEngineHostConfig() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return engine_host;
+}
+// ---- V10F BUG-08 END engine_host block write surface ----------------------
+
+// ---- V10F-R1 F-02 BEGIN hub-applied field write surface -------------------
+// The locked write surface for the settings-hub-applied hotkey_*/sampling/
+// diag_log_* fields. Same mutex_ ToJsonStringLocked()/SaveToFile() hold while
+// they serialise these fields, so the GUI-thread hub writes can never
+// interleave with an off-thread save iteration (the BUG-08 / fix-E class the
+// R4 call sites now route through). The FromJsonString load path remains the
+// documented writer outside these verbs.
+void AppConfig::SetHotkeyToggle(std::string value) {
+    // Verbatim storage, exactly like the load branch: the pure ParseHotkey
+    // seam in hook Start() owns validation and falls back to the default
+    // spec, so a junk stored value can never disable the flow.
+    std::lock_guard<std::mutex> lock(mutex_);
+    hotkey_toggle = std::move(value);
+}
+
+void AppConfig::SetHotkeyLang(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hotkey_lang = std::move(value);
+}
+
+void AppConfig::SetHotkeyMode(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hotkey_mode = std::move(value);
+}
+
+void AppConfig::SetHotkeySelectionTranslate(std::string value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    hotkey_selection_translate = std::move(value);
+}
+
+void AppConfig::SetSamplingParams(float temperature, float top_p, int top_k,
+                                  float repetition_penalty) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // The load-branch clamps verbatim (the FromJsonString sampling choke
+    // point): applying them here keeps a verb-written value identical after
+    // the save/load round trip.
+    this->temperature = (std::isfinite(temperature) && temperature >= 0.0f)
+                            ? (temperature > 2.0f ? 2.0f : temperature)
+                            : 0.0f;
+    this->top_p = (std::isfinite(top_p) && top_p > 0.0f && top_p <= 1.0f) ? top_p : 0.6f;
+    this->top_k = (top_k >= 0 && top_k <= 1000) ? top_k : 20;
+    this->repetition_penalty =
+        (std::isfinite(repetition_penalty) && repetition_penalty >= 1.0f &&
+         repetition_penalty <= 2.0f)
+            ? repetition_penalty
+            : 1.0f;
+}
+
+void AppConfig::SetDiagLogEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    diag_log_enabled = enabled;
+}
+
+void AppConfig::SetDiagLogContent(bool content) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    diag_log_content = content;
+}
+// ---- V10F-R1 F-02 END hub-applied field write surface ---------------------
 
 void AppConfig::SetSourceLanguage(std::string value) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -4102,7 +4236,12 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "    \"reasoning_effort\": \"" << EscapeJsonString(openai.reasoning_effort) << "\",\n";
     ss << "    \"api_key_dpapi\": \"" << EscapeJsonString(openai.api_key_dpapi) << "\",\n";
     ss << "    \"api_key_sha256\": \"" << EscapeJsonString(openai.api_key_sha256) << "\",\n";
-    ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << "\n";
+    ss << "    \"http_consent_given\": " << (openai.http_consent_given ? "true" : "false") << ",\n";
+    // V10F-R1 F-17: ALWAYS serialized (the sticky-key policy of this block),
+    // so a round trip preserves the consented origin next to the consent
+    // itself; "" is the default (no origin ever consented). The value is
+    // JSON-escaped on the write side, so it can never break the file.
+    ss << "    \"http_consent_origin\": \"" << EscapeJsonString(openai_http_consent_origin) << "\"\n";
     ss << "  },\n";
     // 261122_0001 B-U1 + fix-A1 (R1-12): the library is emitted while
     // non-empty; an EMPTY library emits an explicit [] once the fold has been
@@ -4139,6 +4278,12 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"hotkey_toggle\": \"" << EscapeJsonString(hotkey_toggle) << "\",\n";
     ss << "  \"hotkey_lang\": \"" << EscapeJsonString(hotkey_lang) << "\",\n";
     ss << "  \"hotkey_mode\": \"" << EscapeJsonString(hotkey_mode) << "\",\n";
+    // V10F (L4-C, session 261122_0002 P2-D): the explicit selection-translate
+    // combo. Emitted next to the other hotkeys so a reader sees the whole
+    // hotkey surface in one block; a pre-V10F config.json has no such key and
+    // keeps the compile-time default (the FromJsonString branch below leaves
+    // the member untouched on absence, the REQ-201/diag-key precedent).
+    ss << "  \"hotkey_selection_translate\": \"" << EscapeJsonString(hotkey_selection_translate) << "\",\n";
     ss << "  \"temperature\": " << temperature << ",\n";
     ss << "  \"top_p\": " << top_p << ",\n";
     ss << "  \"top_k\": " << top_k << ",\n";
@@ -4228,6 +4373,9 @@ bool AppConfig::FromJsonString(std::string_view json) {
             // REQ-045 P4-3: nested block captured verbatim by the reader;
             // absent on every pre-REQ-045 config.json => the defaults survive.
             ParseOpenAiBlock(v, openai);
+            // V10F-R1 F-17: the consent origin rides the same raw block (the
+            // active block only; profile entries carry no scope).
+            openai_http_consent_origin = ParseOpenAiHttpConsentOrigin(v);
         } else if (k == "openai_declared_languages") {
             // 261116_0003 P9c-1a: an ARRAY value is captured RAW by the reader
             // (the same path engine_host takes for its object), so the text is
@@ -4278,6 +4426,13 @@ bool AppConfig::FromJsonString(std::string_view json) {
             hotkey_lang = v;
         } else if (k == "hotkey_mode") {
             hotkey_mode = v;
+        } else if (k == "hotkey_selection_translate") {
+            // V10F (L4-C, 261122_0002 P2-D): stored verbatim, exactly like the
+            // other hotkey_* fields - the pure ParseHotkey seam in hook
+            // Start() owns validation and falls back to the default spec, so a
+            // junk value here can never disable the flow or be re-saved as a
+            // non-parseable combo by itself.
+            hotkey_selection_translate = v;
         } else if (k == "temperature") {
             // SEC Batch B (Medium 3 hardening, accepted per 235914 §5): clamp at
             // the single JSON choke point. std::stof accepts quoted "nan"/"inf"

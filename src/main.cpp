@@ -12,6 +12,7 @@
 #include "mouse_hook.hpp"
 #include "single_slot_worker.hpp" // D2 (session 260910_0007): shared single-slot worker loops
 #include "smart_bypass.hpp"
+#include "translation_history.hpp" // V10F L2 (261122_0002 P2-G): 10-entry in-memory translation ring
 #include "tray_toggle_debounce.hpp" // 260922_0001 A1: pure tray single-click debounce
 #include "sound.hpp"
 #include "unicode_utils.hpp"
@@ -19,6 +20,7 @@
 #include "win32_input.hpp"
 #include "ui/about_window.hpp"
 #include "ui/openai_settings_window.hpp" // REQ-045 P4-3: OpenAI settings dialog
+#include "ui/settings_hub_window.hpp" // V10F UX-2 (261122_0002 P3-C3): the 4-tab settings hub (SetHubActions/OpenSettingsHub)
 #include "ui/gguf_model_manager_window.hpp" // REQ-048 R2-D: user .gguf model manager
 #include "ui/engine_host_settings_window.hpp" // REQ-060: translation-model load-mode settings dialog
 #include "ui/model_download_dialog.hpp" // REQ-MD (260930_0004 D9): on-demand model download
@@ -32,6 +34,7 @@
 #include "ui/language_search_palette.hpp" // 261116_0003 P6c: kMsgOpenLanguagePalette consumer + picker open
 #include "ui/theme.hpp"
 #include "ui/tooltip.hpp"
+#include "ui/translation_editor_window.hpp" // V10F L2 (261122_0002 P2-G): translation editor window contract
 #include "ui/tray.hpp"
 #include "worker.hpp"
 #include "engine_host_registry.hpp" // REQ-045 P4-5: registry writer for user .gguf registration
@@ -477,6 +480,20 @@ std::function<bool(const OpenAiConfig&, bool saved,
                    const std::vector<std::string>* declared,
                    OpenAiProfilesFold* profiles)>
     g_apply_openai_settings;
+// V10F-R1 F-17: the http-consent ORIGIN seam — invoked on the GUI thread with
+// the exact "host:port" scope the dialog's consent record was granted for,
+// non-null ONLY on the kSaved path. The body applies it on the LIVE config
+// through the locked verb AppConfig::SetHttpConsentOrigin BEFORE its save (the
+// save g_apply_openai_settings performs right after), so the file carries the
+// scope next to http_consent_given and the request-time origin gate sees the
+// current value. A sibling seam (not a fifth g_apply_openai_settings argument)
+// so the REQ-051-era call text the openai_profile_tests.inc B-U5 pin fixes
+// stays byte-identical; the kDeleted seam clears the origin itself, and Cancel
+// never fires this. Set once at startup to a wWinMain lambda (the
+// g_apply_openai_settings sibling pattern). Cleared at shutdown with
+// g_apply_openai_settings so a late posted kMsgOpenOpenAiSettings can never
+// call into destroyed state.
+std::function<void(const std::string&)> g_apply_openai_consent_origin;
 // REQ-051 (Symptom D): the [삭제] kDeleted seam — invoked on the GUI thread
 // with the dialog-cleared openai block when the user deleted the settings
 // (ShowOpenAiSettingsDialogEx -> OpenAiSettingsOutcome::kDeleted). The body
@@ -820,6 +837,296 @@ MouseHook* g_pMouseHook = nullptr; // REQ-R14 resume/unlock re-registration
 // tooltip.Create and cleared at shutdown, mirroring g_pBadge).
 TooltipWindow* g_pTooltip = nullptr;
 
+// ---- V10F E2 (261122_0002 P3-C4 wave-B routing): LocalModelMissing offers ---
+// engine.cpp now reports TranslationStatus::LocalModelMissing truthfully from
+// the strict-local convergence (P3-C4 E2, the header-inline
+// StrictLocalFailureStatus), so the four strict-failure display sites can no
+// longer dead-end on "files missing, reinstall" (or the transient retry text)
+// when ONLY a model file is absent. Routing policy (the one-click offer):
+//   * engine_type == "user_gguf"  -> the missing file is the USER-registered
+//     .gguf, so the built-in download is the wrong target. 261123_0001
+//     (handoff §1.2, Bug A) splits the host's lumped model_missing by the
+//     pinned file's ACTUAL presence (the probe below + the header-inline
+//     RouteUserGgufModelMissing decision table in engine.hpp): file MISSING
+//     -> open the GGUF model manager EVERY time (a real state change, never
+//     latched); file PRESENT (a load failure: an HF-incompatible model the
+//     host cannot serve) -> open the manager ONCE per session
+//     (g_gguf_manager_load_failure_shown), then degrade to a tooltip hint
+//     (StringId::UserModelLoadFailedHint) so a repeated failure never
+//     re-opens the modal on every translation.
+//   * any other engine_type       -> re-check the component set; a models/-
+//     ONLY miss posts the existing download OFFER (REQ-MD D9 flow, the same
+//     offer the explicit tray Local pick uses), a binaries-involved miss
+//     keeps the honest repair modal with NO offer.
+// Callable from ANY thread (worker / reading workers / GUI): CheckComponents
+// is filesystem probes, PostMessageW never blocks, and
+// RequestEngineUnavailableModal is the established thread-safe seam.
+//
+// The user_gguf manager open is coalesced through g_gguf_manager_offer_posted:
+// unlike the tray producer (GUI thread, self-blocking under its own modal),
+// this helper's producers are WORKER threads that can post many offers while
+// the manager modal runs; without the latch every queued wake-up would reopen
+// the dialog after each close. The kMsgOpenGgufManager drain handler clears
+// THAT latch AFTER the modal returns, so offers raised during the dialog
+// coalesce into the one open. The drain handler does NOT clear
+// g_gguf_manager_load_failure_shown: that second latch is the session-scoped
+// load-failure one-shot and must survive manager closes (it resets only with
+// the process).
+std::atomic<bool> g_gguf_manager_offer_posted{false};
+// 261123_0001 (handoff §1.2, Bug A): the sticky per-session latch for the
+// LOAD-FAILURE class of the user_gguf model_missing (the pinned file EXISTS
+// on disk but the host could not serve it: the HF-incompatible-model class;
+// a spawn failure lands here too, indistinguishably on the client side).
+// Set ONLY when the manager was opened for such a load failure; a file-missing
+// open never arms it, so a real state change always re-opens the manager.
+// SESSION-SCOPED: the flag dies with the process, which resets the one-shot on
+// the next app start (the handoff's "한 세션에 한 번만, 이후 동일 상태면 툴팁
+// 안내로 전환". Never cleared by the kMsgOpenGgufManager drain handler.
+std::atomic<bool> g_gguf_manager_load_failure_shown{false};
+
+// 261123_0001 (handoff §1.2, Bug A): is the pinned user-model FILE actually on
+// disk? The probe re-derives the file-missing-vs-load-failure split the frozen
+// host wire cannot send: LoadDefaultRegistry + FindModel(id) -> the binding's
+// files[0] under DefaultModelsDir(), existence-checked (both std::filesystem).
+// An empty id / an unreadable registry / an unbound id all answer FALSE: the
+// manager is the right fix for every one of those, matching the decision
+// table's never-latched arm. 261123_0001 R3: a non-bare files[0] (the engine
+// repo's IsBareFilename contract re-checked at this consumption point) also
+// answers FALSE, so the exists() probe can never stat outside
+// DefaultModelsDir() whatever a future registry parser admits.
+// Runs on worker threads; the registry read and
+// the exists() probe are cheap filesystem calls, so nothing is cached across
+// calls and the verdict can never go stale after a manager-side fix.
+bool IsPinnedUserModelFilePresent(std::string_view user_model_id) {
+    if (user_model_id.empty()) {
+        return false; // no binding: opening the manager IS the fix
+    }
+    auto reg = engine_host_registry::LoadDefaultRegistry();
+    if (reg.status != engine_host_registry::LoadStatus::Ok) {
+        return false; // unreadable/damaged registry: treat like file-missing
+    }
+    const auto* model = reg.registry.FindModel(std::string(user_model_id));
+    if (model == nullptr || model->files.empty()) {
+        return false; // unbound id: the manager is the right fix
+    }
+    const std::filesystem::path models_dir = engine_host_registry::DefaultModelsDir();
+    if (models_dir.empty()) {
+        return false;
+    }
+    // 261123_0001 R3 (security-reviewer LOW-1, two seats): re-check the bare
+    // filename contract at the CONSUMPTION point. The engine repo's parser
+    // (engine_host_registry.cpp) and its writer both reject a non-bare files[]
+    // entry today, so this path cannot escape DefaultModelsDir(); the guard
+    // keeps that property if a future parser ever drifts. A non-bare entry
+    // (separator, drive colon, control char, "."/"..") answers FALSE, the same
+    // conservative arm as a missing file: the manager is the right fix.
+    if (!engine_host_json::IsBareFilename(model->files[0])) {
+        return false;
+    }
+    std::error_code ec;
+    const bool present = std::filesystem::exists(models_dir / model->files[0], ec);
+    return present && !ec;
+}
+
+void RequestModelMissingOfferOrModal(std::string_view engine_type,
+                                     std::string_view user_model_id) {
+    if (engine_type == "user_gguf") {
+        // 261123_0001 (handoff §1.2, Bug A): classify the miss BEFORE routing.
+        // The host lumps file-missing / spawn failure / worker load failure
+        // into one model_missing code; the file probe splits "the file is
+        // gone" (manager every time) from "the file exists but will not
+        // load" (manager once per session, tooltip hint afterwards).
+        const bool file_present = IsPinnedUserModelFilePresent(user_model_id);
+        const bool load_failure_shown =
+            g_gguf_manager_load_failure_shown.load(std::memory_order_acquire);
+        const UserGgufMissingRoute route =
+            RouteUserGgufModelMissing(file_present, load_failure_shown);
+        // 043 is the client-side discriminator for the three host causes: a
+        // future session reads file_present (the file-missing fast-path vs the
+        // spawn/load-failure pair) plus load_failure_shown (first vs repeated)
+        // straight off this line; the host's own diag separates spawn failure
+        // from worker load failure.
+        DIAG_F("MAIN/EngineModal/043: user-gguf model-missing classified "
+               "file_present=%d load_failure_shown=%d route=%s\n",
+               file_present ? 1 : 0, load_failure_shown ? 1 : 0,
+               route == UserGgufMissingRoute::kOpenManager ? "manager"
+                                                           : "tooltip_hint");
+        if (route == UserGgufMissingRoute::kShowTooltipHint) {
+            // The same load-failure state recurred: quiet hint at the cursor,
+            // NO manager reopen (g_pTooltip is the REQ-R10 thread-safe seam;
+            // null only before tooltip creation / after shutdown, where the
+            // DIAG line below still records the degradation).
+            if (g_pTooltip != nullptr) {
+                POINT cur;
+                if (!::GetCursorPos(&cur)) {
+                    cur = {0, 0};
+                }
+                g_pTooltip->ShowMessageThreadSafe(
+                    cur.x, cur.y,
+                    emebalachat::I18n::Get(emebalachat::StringId::UserGgufRegisteredTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::UserModelLoadFailedHint));
+            }
+            DIAG_F("MAIN/EngineModal/044: user-gguf load-failure hint shown (manager already opened this session)\n");
+            return;
+        }
+        bool expected = false;
+        if (!g_gguf_manager_offer_posted.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel)) {
+            DIAG_F("MAIN/EngineModal/040: user-gguf model-missing offer coalesced (manager already offered)\n");
+            return;
+        }
+        // 261123_0001 R2 (fix F-02): the SESSION latch arms only AFTER the
+        // open is known to be queued. Arming it before the post burned the
+        // session's one load-failure manager open whenever PostMessageW failed
+        // (only the offer latch rolled back), so every later identical failure
+        // degraded to the tooltip hint without the user ever seeing the
+        // manager. The coalescing latch above still covers the post -> arm
+        // window: a racing producer's CAS fails there and coalesces.
+        if (::PostMessageW(emebalachat::g_hControllerWnd,
+                           emebalachat::kMsgOpenGgufManager, 0, 0) == FALSE) {
+            g_gguf_manager_offer_posted.store(false, std::memory_order_release);
+            DIAG_F("MAIN/EngineModal/041: user-gguf manager offer post failed (GLE %lu)\n",
+                   ::GetLastError());
+            return;
+        }
+        if (file_present) {
+            // The manager is opening for a LOAD FAILURE, not a missing file:
+            // arm the sticky per-session latch so the NEXT same-state failure
+            // degrades to the tooltip hint instead of reopening the modal.
+            g_gguf_manager_load_failure_shown.store(true, std::memory_order_release);
+        }
+        return;
+    }
+    namespace bs = emebalachat::engine_host_bootstrap;
+    const bs::ComponentCheckResult check = bs::CheckComponents();
+    const bool model_only =
+        emebalachat::modeldownloader::MissingIsModelOnly(check.missing);
+    DIAG_F("MAIN/EngineModal/042: model-missing offer evaluated engine=%s model_only=%d missing=%zu\n",
+           std::string(engine_type).c_str(), model_only ? 1 : 0, check.missing.size());
+    emebalachat::RequestEngineUnavailableModal(
+        emebalachat::g_hControllerWnd,
+        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
+        emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody),
+        model_only); // the offer flag: only a models/-only miss one-click-downloads
+}
+
+// ---- V10F P3-C2 (UX-3): the badge engine mini-tag token --------------------
+// The RIGHT mini-tag chip the badge renders next to the pill (badge.hpp's
+// SetEngineTag). One token per persisted engine_type value; the app only ever
+// writes the four tokens + "auto" (every switch routes through the tray radio
+// / the OpenAI save / the gguf registration), so the default arm covers the
+// shipped "auto" and any unrecognized token degrades to the auto router's
+// posture instead of hiding the chip.
+const wchar_t* BadgeEngineTagFor(std::string_view engine_type) {
+    if (engine_type == "local") return L"L";
+    if (engine_type == "openai") return L"AI";
+    if (engine_type == "user_gguf") return L"U";
+    if (engine_type == "google") return L"G";
+    return L"A"; // "auto" + the unreachable unknown-token arm
+}
+
+// ---- V10F P3 wave B: the dynamic cheat-sheet body ---------------------------
+// The localized CheatSheetBody hardcodes the DEFAULT combos ("F9",
+// "Ctrl + F9", "Ctrl + Shift + Enter"), so a user who remapped a hotkey in
+// config.json got a guide that lied (the ux_and_longform_architecture U4
+// finding). The body is therefore REBUILT at show time: the localized text
+// stays the base, the default-combo tokens are substituted with the LIVE
+// display strings (KeyboardHook::HotkeySpecToDisplayString over the same
+// Resolve*FromConfig seams Start() compiles), and the gestures the static
+// body never mentioned (selection translate, Double Ctrl+C, ESC cancel,
+// badge-click cancel) are appended. Single left-to-right pass: needles are
+// tried longest-first at each position and the scan advances PAST an inserted
+// replacement, so a live value that itself contains a shorter needle's text
+// (a remapped "Ctrl+Alt+F9" holding "F9") can never be re-matched. The toggle
+// needle is boundary-guarded: an "F9" that is part of a longer combo ("Ctrl +
+// F9") has a non-space, non-bullet predecessor and is skipped. Documented
+// limitation: locales that spell the default modifiers in their own words
+// (German "Strg + F9", French "Ctrl + Maj + Entrée") do not carry the English
+// needle, so their UNREMAPPED body stays byte-identical (true) and their
+// REMAPPED body keeps the localized default spelling for that line until the
+// phase i18n pass keys placeholder strings (## I18N REQUESTS).
+void SubstituteCheatSheetHotkeys(std::wstring& body,
+                                 const std::wstring& live_toggle,
+                                 const std::wstring& live_lang,
+                                 const std::wstring& live_mode) {
+    struct Needle {
+        std::wstring tight;
+        std::wstring spaced;
+        const std::wstring* live;
+        bool boundary; // whole-token guard (the bare toggle key)
+    };
+    auto spaced_form = [](const std::wstring& tight) {
+        std::wstring s = tight;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == L'+') {
+                s.replace(i, 1, L" + ");
+                // Skip the inserted " + " (3 chars): its middle '+' must never
+                // be re-processed, or the replace feeds itself forever.
+                i += 2;
+            }
+        }
+        return s;
+    };
+    const std::wstring d_toggle =
+        emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+            emebalachat::KeyboardHook::kDefaultToggleHotkey);
+    const std::wstring d_lang =
+        emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+            emebalachat::KeyboardHook::kDefaultLangHotkey);
+    const std::wstring d_mode =
+        emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+            emebalachat::KeyboardHook::kDefaultModeHotkey);
+    const Needle needles[] = {
+        {d_mode, spaced_form(d_mode), &live_mode, false},
+        {d_lang, spaced_form(d_lang), &live_lang, false},
+        {d_toggle, std::wstring(), &live_toggle, true},
+    };
+    std::wstring out;
+    out.reserve(body.size() + 64);
+    std::size_t i = 0;
+    while (i < body.size()) {
+        bool matched = false;
+        for (const Needle& n : needles) {
+            std::size_t needle_len = 0;
+            const auto try_one = [&](const std::wstring& needle) -> bool {
+                if (needle.empty() ||
+                    body.compare(i, needle.size(), needle) != 0) {
+                    return false;
+                }
+                if (n.boundary) {
+                    // the bare toggle key: refuse when the token continues a
+                    // longer combo — walk back over spaces and reject '+',
+                    // letters and digits ("Ctrl + F9", "Shift+F9")
+                    std::size_t back = i;
+                    while (back > 0 && body[back - 1] == L' ') --back;
+                    if (back > 0) {
+                        const wchar_t prev = body[back - 1];
+                        if (prev == L'+' || (prev >= L'a' && prev <= L'z') ||
+                            (prev >= L'A' && prev <= L'Z') ||
+                            (prev >= L'0' && prev <= L'9')) {
+                            return false;
+                        }
+                    }
+                }
+                needle_len = needle.size();
+                return true;
+            };
+            const bool hit = try_one(n.tight) || try_one(n.spaced);
+            if (hit && *n.live != n.tight) {
+                out += *n.live;
+                i += needle_len;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            out += body[i];
+            ++i;
+        }
+    }
+    body = std::move(out);
+}
+
 // 260922_0001 A1: armed state of the tray single-click debounce timer. The
 // decision logic itself is the pure TrayToggleDebounceStateMachine() in
 // tray_toggle_debounce.hpp (unit-testable: main.cpp is not linked into
@@ -843,6 +1150,167 @@ constexpr UINT_PTR kTimerTrayToggle = 5003;
 // main.cpp is not linked into run_tests.exe, so the counter lives here and the
 // decision logic stays in the header.
 unsigned g_hook_health_ticks = 0;
+
+// ---- V10F P3-C1 wave B: the OpenAI instant-switch gate ----------------------
+// The engine submenu's radio row (ID_TRAY_ENGINE_OPENAI -> on_select_engine(2))
+// is the INSTANT switch: when the persisted openai block already names a
+// usable profile (endpoint + model + credential), picking the row switches
+// engine_type WITHOUT opening the settings modal (the P3-C1 UX-1 split; the
+// modal moved to its own row, on_open_openai_settings). Only the NO-profile
+// case routes into the dialog. "Configured" mirrors what the engine's OpenAI
+// leg needs to attempt a request: a base URL, a model id, and a credential
+// (either the DPAPI blob or, for legacy/keyless-migrated blocks, the digest).
+bool OpenAiProfileConfigured(const emebalachat::OpenAiConfig& cfg) {
+    return !cfg.base_url.empty() && !cfg.model.empty() &&
+           (!cfg.api_key_dpapi.empty() || !cfg.api_key_sha256.empty());
+}
+
+// ---------------------------------------------------------------------------
+// V10F (261122_0002 P2-F): the unified active-reading registry.
+// The four reading paths (drag icon, tooltip re-translation, floating
+// back-translation, double-Ctrl+C) run on their own worker threads, and the
+// Enter pipeline runs on the pipeline worker. Before this registry the ONLY
+// cancel surface was the pipeline's busy flag (badge click / nothing else);
+// Esc dismissed cards while a multi-second reading translation kept running.
+// The registry gives every reading job type a per-type cancel token + running
+// flag so BOTH Esc and the badge single-click can cancel EVERYTHING that is
+// in flight. Pure STL discipline (same precedent as GgufFileStem above): the
+// decision rules are header-visible inline functions below, unit-tested as
+// re-derived mirrors in tests/p2_f_tests.inc (main.cpp is not linked into
+// run_tests.exe); wWinMain owns the one instance.
+// ---------------------------------------------------------------------------
+struct ReadingJobRegistry {
+    std::atomic<bool> drag_running{false};
+    std::atomic<bool> drag_cancel{false};
+    std::atomic<bool> retranslate_running{false};
+    std::atomic<bool> retranslate_cancel{false};
+    std::atomic<bool> back_running{false};
+    std::atomic<bool> back_cancel{false};
+    std::atomic<bool> dbl_running{false};
+    std::atomic<bool> dbl_cancel{false};
+    // Single-writer lease for the tooltip's shared chunk-preview surface
+    // (V10F L3-B): the preview state machine carries NO generation guard, so
+    // two concurrent jobs (a drag translation and a re-translation run on
+    // separate workers BY DESIGN) must serialize through this CAS lease or
+    // their Begin/Append ops would interleave into one corrupted card. The
+    // job that loses the lease simply renders no live preview; its final card
+    // still lands through the ordinary generation-guarded seams.
+    std::atomic<unsigned long long> preview_lease{0};
+};
+
+// Job-start protocol, ONE rule: clear the STALE cancel token BEFORE
+// publishing running, so a concurrent cancel-reader (Esc/badge on the hook
+// threads) that observes running==true also observes a live, current-job
+// token. Tokens are latched until the next start, never cleared mid-job.
+inline void ReadingJobBegin(std::atomic<bool>& running, std::atomic<bool>& cancel) {
+    cancel.store(false, std::memory_order_release);
+    running.store(true, std::memory_order_release);
+}
+
+inline bool ReadingJobRunning(const std::atomic<bool>& running) {
+    return running.load(std::memory_order_acquire);
+}
+
+inline bool AnyReadingJobRunning(const ReadingJobRegistry& r) {
+    return ReadingJobRunning(r.drag_running) || ReadingJobRunning(r.retranslate_running) ||
+           ReadingJobRunning(r.back_running) || ReadingJobRunning(r.dbl_running);
+}
+
+// Latch ALL per-job cancel tokens. Idempotent; each job clears its own token
+// at start (ReadingJobBegin), so a latched token can never cancel a later
+// job. The Enter pipeline is NOT covered here - the caller pairs this with
+// PipelineWorker::RequestCancelTranslation().
+inline void CancelAllReadingJobs(ReadingJobRegistry& r) {
+    r.drag_cancel.store(true, std::memory_order_release);
+    r.retranslate_cancel.store(true, std::memory_order_release);
+    r.back_cancel.store(true, std::memory_order_release);
+    r.dbl_cancel.store(true, std::memory_order_release);
+}
+
+// Chunk-preview lease primitives (pure CAS rules): Acquire succeeds only from
+// the free state and returns the granted id (>0; 0 = held by someone else);
+// Release is valid only for the current holder. A failed Acquire/Release
+// never mutates the lease.
+inline unsigned long long PreviewLeaseAcquire(std::atomic<unsigned long long>& lease,
+                                              unsigned long long id) {
+    unsigned long long expected = 0;
+    return lease.compare_exchange_strong(expected, id, std::memory_order_acq_rel,
+                                         std::memory_order_acquire)
+               ? id
+               : 0;
+}
+inline bool PreviewLeaseRelease(std::atomic<unsigned long long>& lease, unsigned long long id) {
+    unsigned long long expected = id;
+    return lease.compare_exchange_strong(expected, 0, std::memory_order_acq_rel,
+                                         std::memory_order_acquire);
+}
+
+// Scope guard for ONE job body: publishes the running flag via the begin
+// protocol on construction and RELEASE-clears it on destruction (all four
+// reading lambdas hold one for their whole body, however many early returns
+// they take).
+class ReadingJobScope {
+public:
+    ReadingJobScope(std::atomic<bool>& running, std::atomic<bool>& cancel)
+        : running_(running) {
+        ReadingJobBegin(running_, cancel);
+    }
+    ~ReadingJobScope() { running_.store(false, std::memory_order_release); }
+    ReadingJobScope(const ReadingJobScope&) = delete;
+    ReadingJobScope& operator=(const ReadingJobScope&) = delete;
+private:
+    std::atomic<bool>& running_;
+};
+
+// V10F L3-B (261122_0002 P2-F): one job's lease on the tooltip's shared
+// chunk-preview surface. TryBegin runs ONLY for a genuine multi-chunk plan
+// (ShowChunkProgress; single-chunk jobs never touch the preview, preserving
+// the pre-V10F byte-identical behavior for short runs); Append is a no-op
+// until the lease is held. End(false) RETIRES the card (the tooltip's
+// ApplyChunkPreviewOp ends a failed preview with DismissExplicit), so a
+// terminal branch that surfaces any failure notice/modal MUST call End(false)
+// BEFORE that show; the destructor is the backstop for paths with no
+// subsequent show (cancel arms, silent keeps).
+class ChunkPreviewLease {
+public:
+    ChunkPreviewLease(ReadingJobRegistry& registry, TooltipWindow& tooltip)
+        : registry_(registry), tooltip_(tooltip) {}
+    ~ChunkPreviewLease() { End(false); }
+    ChunkPreviewLease(const ChunkPreviewLease&) = delete;
+    ChunkPreviewLease& operator=(const ChunkPreviewLease&) = delete;
+
+    void TryBegin(int total_chunks) {
+        if (owned_ || !emebalachat::ShowChunkProgress(static_cast<std::size_t>(total_chunks))) {
+            return;
+        }
+        const unsigned long long id = NextLeaseId();
+        if (PreviewLeaseAcquire(registry_.preview_lease, id) == 0) {
+            return; // another job owns the surface; this run renders no preview
+        }
+        lease_id_ = id;
+        owned_ = true;
+        tooltip_.BeginChunkPreview(total_chunks);
+    }
+    void Append(const std::wstring& cumulative) {
+        if (owned_) tooltip_.AppendChunkPreviewText(cumulative);
+    }
+    void End(bool success) {
+        if (!owned_) return;
+        owned_ = false;
+        tooltip_.EndChunkPreview(success);
+        PreviewLeaseRelease(registry_.preview_lease, lease_id_);
+    }
+
+private:
+    static unsigned long long NextLeaseId() {
+        static std::atomic<unsigned long long> next{1}; // 0 is the free marker
+        return next.fetch_add(1, std::memory_order_relaxed);
+    }
+    ReadingJobRegistry& registry_;
+    TooltipWindow& tooltip_;
+    unsigned long long lease_id_ = 0;
+    bool owned_ = false;
+};
 
 // Re-register whichever LL hooks are installed, on the GUI thread (the only
 // threads allowed to Start/Stop the hooks). Always reinstall on the event
@@ -1037,9 +1505,19 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // staged library is adopted on the owning config by
         // g_apply_openai_settings BEFORE its save, never persisted here.
         emebalachat::OpenAiDeclaredLanguagesFold declaration;
+        // V10F-R1 F-17: the http-consent origin channel (in/out). IN: the
+        // persisted scope seeds the dialog's consent record at
+        // WM_INITDIALOG (the handler cannot name wWinMain's AppConfig, so the
+        // seed value travels in this buffer; empty = the dialog falls back to
+        // reading the persisted file itself). OUT: on kSaved it holds the
+        // scope the dialog recorded, which g_apply_openai_settings persists
+        // through the locked verb; on kDeleted it is ignored (that seam
+        // clears the origin itself).
+        std::string consent_origin_scope;
         const emebalachat::OpenAiSettingsOutcome openai_outcome =
             emebalachat::ShowOpenAiSettingsDialogEx(
-                /*parent=*/emebalachat::g_hControllerWnd, edited, declaration, profiles_fold);
+                /*parent=*/emebalachat::g_hControllerWnd, edited, declaration, profiles_fold,
+                &consent_origin_scope);
         if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kCancelled) {
             // Cancel: engine untouched, refresh the tray check mark back.
             // No declaration is adopted (declaration.edited is false): the
@@ -1047,7 +1525,9 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             // 261122_0001 B-U5: no profile library is adopted either — the
             // seam receives nullptr for the fold (double-guard: the dialog
             // also reported it unedited), so the stored library survives a
-            // cancelled dialog untouched.
+            // cancelled dialog untouched. V10F-R1 F-17: the consent origin is
+            // adopted on the saved path only, so a cancelled grant attempt
+            // leaves the stored scope untouched too.
             DIAG_F("MAIN/on_select_engine/003: openai settings cancelled; engine unchanged\n");
             if (g_apply_openai_settings) {
                 g_apply_openai_settings(edited, /*saved=*/false, nullptr, nullptr);
@@ -1055,6 +1535,12 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
         if (openai_outcome == emebalachat::OpenAiSettingsOutcome::kSaved) {
+            // V10F-R1 F-17: persist the consent origin FIRST (the locked verb,
+            // no save of its own) so the g_apply_openai_settings save below is
+            // the single persist that carries it.
+            if (g_apply_openai_consent_origin) {
+                g_apply_openai_consent_origin(consent_origin_scope);
+            }
             if (g_apply_openai_settings) {
                 // P9c-1c: pass the folded declaration (possibly EMPTY = the
                 // user cleared the declaration, which must remove the key
@@ -1095,17 +1581,28 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // REQ-048 R2-D: open the user-.gguf model manager AFTER the
         // TrackPopupMenuEx modality has fully torn down. wParam/LPARAM are
         // IGNORED entirely (pure (0,0) wake-up, same SEC-ADJ contract as
-        // kMsgOpenOpenAiSettings). No coalescing latch is needed (unlike the
-        // OpenAI flow): the only producer is the tray dispatch on this GUI
+        // kMsgOpenOpenAiSettings). No coalescing latch is needed for the tray
+        // producer: the only producer is the tray dispatch on this GUI
         // thread, and a modal dialog blocks that thread's message handling,
         // so a second open cannot be posted while one is up. The open + tray
         // refresh travels through g_open_gguf_model_manager (the wWinMain
         // lambda), so this handler never names config/engine/refresh_tray.
+        // V10F E2 (261122_0002 P3-C4 wave B): a SECOND producer now exists:
+        // the worker-thread LocalModelMissing offer helper
+        // (RequestModelMissingOfferOrModal) posts through the same wake-up,
+        // coalesced by its own producer-side atomic. That latch is released
+        // HERE, AFTER the modal lambda returns: while the dialog runs the
+        // worker can only coalesce. 261123_0001 (Bug A): the SESSION-scoped
+        // load-failure latch (g_gguf_manager_load_failure_shown) is NEVER
+        // released here — a later file-missing failure re-opens the manager,
+        // while a later load-failure failure degrades to the tooltip hint.
+        // The during-modal coalescing contract is unchanged.
         // return 0 is MANDATORY by the same contract as the OpenAI handler —
         // falling through to DefWindowProc would break the modal-open flow.
         if (g_open_gguf_model_manager) {
             g_open_gguf_model_manager();
         }
+        g_gguf_manager_offer_posted.store(false, std::memory_order_release);
         return 0;
     }
 
@@ -1401,11 +1898,18 @@ LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
             return 0;
         } else if (lParam == WM_LBUTTONUP) {
-            // Fix Bug 3 (500ms Tray Single-Click Lag): toggle active state immediately
-            // on left-click with 0ms latency instead of delaying by GetDoubleClickTime().
-            g_tray_toggle_pending = false;
-            if (g_pHook) {
-                g_pHook->ToggleActive();
+            // V10F BUG-02: route the single click through the debounce state
+            // machine (the 260922_0001 A1 contract) instead of toggling
+            // immediately — the immediate toggle made EVERY double-click also
+            // flip the engine before the badge-visibility arm could cancel it.
+            // The arm is kTimerTrayToggle for GetDoubleClickTime(); the
+            // WM_TIMER handler above performs ToggleActive() only when the
+            // dblclk arm has not cancelled the pending arm first.
+            const TrayToggleDecision decision = TrayToggleDebounceStateMachine(
+                TrayToggleEvent::kLeftButtonUp, g_tray_toggle_pending);
+            g_tray_toggle_pending = decision.timer_pending;
+            if (decision.action == TrayToggleAction::kArmTimer) {
+                ::SetTimer(hwnd, kTimerTrayToggle, ::GetDoubleClickTime(), nullptr);
             }
             return 0;
         } else if (lParam == WM_LBUTTONDBLCLK) {
@@ -2269,6 +2773,45 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                       emebalachat::I18n::Get(emebalachat::StringId::TooltipCancelHint));
     });
 
+    // V10F (RISK-03, 261122_0002 P2-D/P2-F): the typing-mode error-detail
+    // display. The worker calls this (on the pipeline worker thread) exactly
+    // when the Enter path's Translate() reports EngineFailed on an OpenAI leg
+    // AND a non-empty per-request cause exists (TranslationTaskContext::
+    // out_error_detail, already key-masked + bounded by the client) - the
+    // typing path had NO text surface at all before. Registered BEFORE the
+    // engine-unavailable registration below (the req047_tests.inc P5-F1
+    // placement constraint: the engine-unavailable registration stays the
+    // LAST worker Set*Callback in the file). The wrapper marshals through the
+    // REQ-R10 ShowMessageThreadSafe seam with the DEDICATED typing-error
+    // autohide budget (V10F-R1 F-06: kTypingErrorAutohideMs = 3 s — the shared
+    // 1.8 s kMessageAutohideMs every other message-mode notice uses is
+    // untouched), with the SAME body shape the drag failure
+    // notice uses (TooltipTranslateFailed + "\n" + detail). An empty detail
+    // never reaches here (the worker keeps the tone-only surface then).
+    worker.SetOnTypingError([&tooltip](const std::wstring& detail) {
+        POINT cur;
+        if (!::GetCursorPos(&cur)) {
+            cur = { 0, 0 };
+        }
+        std::wstring body = emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed);
+        body += L"\n";
+        body += detail;
+        // V10F-R1 F-06: the typing-error notice gets the DEDICATED 3 s
+        // autohide (kTypingErrorAutohideMs), not the shared 1.8 s
+        // kMessageAutohideMs every other message-mode notice uses.
+        tooltip.ShowMessageThreadSafe(cur.x, cur.y,
+                                      emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
+                                      body, emebalachat::TooltipWindow::kGenNone,
+                                      emebalachat::TooltipWindow::kTypingErrorAutohideMs);
+    });
+
+    // V10F (261122_0002 P2-F): the one active-reading registry instance. The
+    // four reading lambdas below hold a ReadingJobScope on it for their whole
+    // body; the Esc / badge-click arms read it through AnyReadingJobRunning
+    // and latch it through CancelAllReadingJobs. Declared before the
+    // back-translate worker (the first consumer) is constructed.
+    emebalachat::ReadingJobRegistry reading_jobs;
+
     // ---- 261108_0002 (WS3, v0.10.6): floating back-translation card --------
     // The user rule (verbatim): "config.back_translation_enabled 이 true 면
     // ExecuteTask 가 콜백을 발화하고, back_translate_worker 가 BBBBB 를 원문
@@ -2333,6 +2876,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                      // verbatim prefix of a tail translation)
         std::string forward_target;  // BBBBB's language (Translate source)
         std::string back_target;     // AAAAA's language (Translate target)
+        // V10F-R1 F-04: AAAAA's language — the forward translation's resolved
+        // source (the pipeline's resolved_engine_src, carried by the request's
+        // detected_source slot). The history entry needs the TRUE pair
+        // (original language -> forward_target); without this field the Push
+        // used to stuff forward_target into the src slot and back_target into
+        // the tgt slot, exactly backwards.
+        std::string forward_source;
         std::wstring source_label;   // header: AAAAA's short code ("KO")
         std::wstring target_label;   // header: BBBBB's short code ("EN")
         HWND target_hwnd = nullptr;  // the window that received BBBBB
@@ -2346,7 +2896,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // Runs ON back_translate_worker. Pure in-memory verification: engine round
     // trip -> canonical comparison -> marshal. Any failure keeps the screen
     // untouched (no card) - the required silent-skip policy.
-    auto run_back_translate = [&config, &engine, &tooltip](const BackTranslateJob& job) {
+    auto run_back_translate = [&config, &engine, &tooltip, &reading_jobs](const BackTranslateJob& job) {
+        // V10F (261122_0002 P2-F): publish this job in the unified registry for
+        // its whole body (Esc / badge-click can cancel the round trip).
+        emebalachat::ReadingJobScope back_scope(reading_jobs.back_running,
+                                                reading_jobs.back_cancel);
         if (job.forward_text.empty() || job.forward_target.empty() ||
             job.back_target.empty()) {
             return;
@@ -2369,9 +2923,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // Same engine manager the Enter pipeline and the drag/F9 paths use, so
         // consent gating, cancel latch and engine selection are IDENTICAL to the
         // forward translation (no privacy path is bypassed or added here).
+        // V10F (261122_0002 P2-F): the per-request task context wires this
+        // path into the unified cancel registry (ctx.cancel) and the live
+        // chunk-preview surface (on_chunk -> TryBegin / on_chunk_text ->
+        // Append, lease-guarded); out_error_detail carries THIS request's
+        // bounded cause, replacing any process-global read.
+        emebalachat::TranslationTaskContext bt_ctx;
+        bt_ctx.cancel = &reading_jobs.back_cancel;
+        std::string bt_error_detail;
+        bt_ctx.out_error_detail = &bt_error_detail;
+        emebalachat::ChunkPreviewLease bt_preview(reading_jobs, tooltip);
+        bt_ctx.on_chunk = [&bt_preview](std::size_t, std::size_t total) {
+            bt_preview.TryBegin(static_cast<int>(total));
+        };
+        bt_ctx.on_chunk_text = [&bt_preview](const std::wstring& cumulative) {
+            bt_preview.Append(cumulative);
+        };
         emebalachat::TranslationStatus bt_status = emebalachat::TranslationStatus::Ok;
         const std::wstring back_text =
-            engine.Translate(job.forward_text, job.forward_target, job.back_target, &bt_status);
+            engine.Translate(job.forward_text, job.forward_target, job.back_target, &bt_status, bt_ctx);
+        if (!bt_error_detail.empty()) {
+            // Shape-only evidence that the per-request carrier fired (the
+            // cause itself never logs - R14-06 class).
+            DIAG_LOG("UI", "back_translate_error_detail_len=%zu", bt_error_detail.size());
+        }
         if (bt_status != emebalachat::TranslationStatus::Ok || back_text.empty()) {
             // fix-list-round15 R15-21 (F-3b): back_tgt is a language token
             // (can be a user-typed stored name) — the R14-06 class — so it
@@ -2424,9 +2999,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                      job.forward_text.size(), back_text.size(), job.original_text.size(),
                      meaning_matched ? 1 : 0, job.back_target.size());
         }
+        // V10F L2 (261122_0002 P2-G): freeze the live preview BEFORE the card
+        // replaces it (the P2-C contract: End(true) -> Show* replaces), then
+        // record the finished round trip in the translation-history ring. The
+        // back-translate job is the ONLY carrier of the verified back_text, so
+        // it Pushes a fresh full entry here (the Push/Recent API has no
+        // update verb; original entries recorded by the forward paths keep
+        // back empty until this full triple lands).
+        bt_preview.End(true);
         tooltip.ShowBackTranslationThreadSafe(job.original_text, back_text, job.source_label,
                                               job.target_label, meaning_matched,
                                               job.target_hwnd, job.badge_hwnd);
+        // V10F-R1 F-04: the TRUE pair — src_code is the FORWARD SOURCE language
+        // (the language of original_text, the resolved source the pipeline
+        // handed us in the request's detected_source slot), tgt_code is the
+        // forward target. The pre-fix push stuffed forward_target into the src
+        // slot and back_target into the tgt slot, so the editor's retranslate
+        // aimed at the wrong language for typing-path entries. (The owning PID
+        // is recorded centrally by the history Push, V10F-R1 F-09.)
+        emebalachat::translation_history::Push({ job.original_text, job.forward_text, back_text,
+                                                 emebalachat::ToUtf16(job.forward_source),
+                                                 emebalachat::ToUtf16(job.forward_target),
+                                                 job.target_hwnd });
     };
 
     // Dedicated worker: the second inference call costs the same seconds the
@@ -2462,6 +3056,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 req.compare_text.empty() ? req.original_text : req.compare_text;
             job.forward_text = req.forward_text;
             job.forward_target = req.forward_target;
+            // V10F-R1 F-04: the forward source the pipeline RESOLVED (pinned or
+            // detected) — the language of original_text. The request carries it
+            // in the detected_source slot (worker.cpp passes resolved_engine_src
+            // there; configured_source may be "auto"/empty).
+            job.forward_source = req.detected_source;
             job.back_target = back_target;
             job.source_label = short_lang_label(back_target);
             job.target_label = short_lang_label(req.forward_target);
@@ -2504,7 +3103,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // drain handler — the only GUI-thread site — so this callback, which runs
     // on the WORKER thread, never touches GUI-only state (design §A.4 ⚠️,
     // Tech Gate §D1 #2: no cross-thread bool sharing).
-    worker.SetEngineUnavailableCallback([](emebalachat::TranslationStatus status) {
+    worker.SetEngineUnavailableCallback([&config](emebalachat::TranslationStatus status) {
         if (status == emebalachat::TranslationStatus::Ok) {
             // Success sentinel: no title/body — the drain handler treats an
             // empty request as the latch-reset signal.
@@ -2522,12 +3121,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // transient pipe error) - telling the user "files are missing, reinstall"
         // for a transient failure sent users into pointless reinstalls, so the
         // transient state gets its own retry-oriented body (repair_transient_body).
+        // V10F E2 (261122_0002 P3-C4 wave B): LocalModelMissing now also arrives
+        // from the post-request convergence (engine.cpp reports model_missing
+        // truthfully), so that cause routes to the one-click offer helper
+        // (built-in download consent / user-gguf manager) instead of the
+        // dead-end wording; CloudConsentBlocked is unchanged. The engine_type
+        // read is the locked snapshot (this callback runs on the worker
+        // thread; the snapshot accessor is its I4 contract).
+        if (status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // 261123_0001: the user_model_id rides the SAME locked snapshot as
+            // engine_type (Bug A's file-presence classification is an I4 read).
+            const auto missing_snap = config.GetSnapshot();
+            emebalachat::RequestModelMissingOfferOrModal(missing_snap.engine_type,
+                                                         missing_snap.user_model_id);
+            return;
+        }
         emebalachat::RequestEngineUnavailableModal(
             emebalachat::g_hControllerWnd,
             emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-            emebalachat::I18n::Get(status == emebalachat::TranslationStatus::LocalModelMissing
-                                       ? emebalachat::StringId::RepairFailedBody
-                                       : emebalachat::StringId::RepairTransientBody));
+            emebalachat::I18n::Get(emebalachat::StringId::RepairTransientBody));
     });
 
     // REQ-005 (plan §2.2): branded About popup. Singleton next to the tooltip;
@@ -2575,6 +3187,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // call, the toggle callback and any later refresh_tray() site can never
         // leave the row out of sync with config.json (the SC-02 discipline).
         tray.SetBackTranslationEnabled(snap.back_translation_enabled);
+        // V10F P3-C2 (261122_0002, UX-3 Option A wave B): the badge's right
+        // mini-tag state rides the SAME single-writer refresh (SetEngineTag /
+        // SetAutoSendIndicator are thread-safe marshals, badge.hpp's contract),
+        // so EVERY engine switch (tray radio / OpenAI save / gguf registration)
+        // and every auto-send surface that funnels through here keeps the chip
+        // truthful with zero per-site push calls. The raw persisted engine_type
+        // token names the chip (G/L/AI/U/A); BadgeEngineTagFor's default arm
+        // covers "auto" and the unreachable unknown token.
+        badge.SetEngineTag(emebalachat::BadgeEngineTagFor(snap.engine_type));
+        badge.SetAutoSendIndicator(snap.auto_send);
     };
 
     // 261116_0003 P9b-3 U3 (plan §5 P9, D6 first-use capability probe): the
@@ -2726,6 +3348,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
             config.SaveToFile();
             snap = config.GetSnapshot(); // read the authoritative post-write state
+            // V10F (261122_0002 P3-C1 wave B): every TARGET change applied
+            // through this ONE coordinator - the tray submenus, the shared
+            // picker's commits, the swap rows, the Ctrl+F9 cycle - forwards to
+            // the tray's recent-TARGET MRU through NoteRecentLanguage (the
+            // wave-B contract; tray-driven picks are ALSO recorded at the
+            // tray's own dispatch, and the MRU's move-to-front dedupe makes the
+            // double-record idempotent). GUI thread only, both sides.
+            // plan.target_language is the resolved canonical form; a
+            // user-language stored name normalizes to AUTO inside the tray and
+            // is dropped there (the same rule the tray's own rows apply).
+            if (!req_tgt.empty()) {
+                tray.NoteRecentLanguage(plan.target_language);
+            }
         }
         // 261116_0003 P9b-3 U3 (D6 first-use capability probe): the accepted
         // plan's TARGET resolved to a user-defined language on an
@@ -2921,6 +3556,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // 261122_0001 fix-E (round-2 N2): locked verb, never a direct member
         // write (same PR9-12 race as the g_apply_openai_settings site).
         config.SetOpenAiConfig(edited);
+        // V10F-R1 F-17: the deleted block carries no http consent, so the
+        // stored origin scope is revoked with it (the locked verb, before the
+        // save below — the [설정 삭제] path persists its own clear through a
+        // second AppConfig instance too, see the dialog unit).
+        config.SetHttpConsentOrigin("");
         // 261122_0001 fix-E (round-2 seat1 N-01): this direct read is safe by
         // the member invariant — every WRITER of openai_profiles is GUI-thread-
         // only through the locked verbs, and off-thread SaveToFile reads under
@@ -2932,6 +3572,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         engine.SetOpenAiConfig(config.openai);
         config.SaveToFile();
         refresh_tray();
+    };
+    // V10F-R1 F-17: the http-consent origin seam body. Applies the scope on the
+    // LIVE config through the locked verb; the kSaved branch invokes this
+    // BEFORE g_apply_openai_settings, whose single save persists it (this body
+    // deliberately performs no save of its own — one writer, one save, the
+    // P9c-1c discipline).
+    emebalachat::g_apply_openai_consent_origin = [&](const std::string& origin) {
+        config.SetHttpConsentOrigin(origin);
     };
 
     // REQ-048 R2-D + REQ-050: publish the gguf-model-manager open for the
@@ -2972,7 +3620,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         emebalachat::EngineHostConfig out;
         if (emebalachat::ShowEngineHostSettingsDialog(emebalachat::g_hControllerWnd,
                                                       config.engine_host, out)) {
-            config.engine_host = out; // verbatim: enabled/spawn/idle_exit_ms/worker_idle_ms + the edited warmup
+            // V10F BUG-08: through the locked verb SetEngineHostConfig (the
+            // P1-U4 mirror of SetOpenAiConfig), never a direct member write -
+            // an off-thread SaveToFile serialises this block under mutex_.
+            // DEPENDENCY: AppConfig::SetEngineHostConfig is added by unit
+            // P1-U4 (config.hpp/cpp); until it lands this call does not
+            // compile.
+            config.SetEngineHostConfig(out); // verbatim: enabled/spawn/idle_exit_ms/worker_idle_ms + the edited warmup
             config.SaveToFile();
             engine.SetEngineHostConfig(config.engine_host); // REQ-060: RefreshActiveEngine -> WarmupSetState
             refresh_tray();
@@ -3066,15 +3720,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //
     // Coordinator ordering (design §5.2-5 "reset write -> refresh" invariant,
     // plus the input-correctness step the B-6 oracle surfaced):
-    //   (0) re-resolve "auto" -> DetectSystemLocale and SetLocale FIRST. The
-    //       OS-derived default the design's rule table documents is consumed
-    //       through I18n::GetSystemLanguageCode, i.e. the ACTIVE locale's
-    //       code: computing the defaults under the stale explicit UI choice
-    //       the reset is discarding would derive them from the wrong input
-    //       (OS=th + UI=ja would reset to Japanese). Doing it first makes the
-    //       reset produce EXACTLY the fresh-install values (I18n::Initialize
-    //       "auto" -> DetectSystemLocale -> the same ResolveDragDefaultTarget
-    //       input), which is what "as if freshly installed" means.
+    //   (0) re-resolve "auto" -> DetectSystemLocale and SetLocale FIRST.
+    //       261123_0001 R2 (fix F-01): the four language DEFAULTS no longer
+    //       depend on this step. Since 261123_0001 (Bug B) they are OS-sourced
+    //       and Initialize-independent (ComputeSystemDefaultLanguages ->
+    //       ResolveDragDefaultTarget reading DetectSystemLocale +
+    //       LocaleToString), so step (1) writes the fresh-install values
+    //       whatever locale the reset starts from. The pre-fix rationale,
+    //       that the default was "consumed through
+    //       I18n::GetSystemLanguageCode, i.e. the ACTIVE locale's code", with
+    //       OS=th + UI=ja resetting to Japanese, described the old seam and
+    //       is dead. What (0) still buys is the REFRESH input: the tray /
+    //       badge / tooltip / About re-render in (2) resolves through the
+    //       restored system locale, so (0) must run before (2). The
+    //       reset write -> refresh invariant of (1) -> (2) is unchanged.
     //   (1) write all five keys (4 languages + ui_language "auto") and
     //       persist them under ONE SaveToFile atomic swap, so no restart can
     //       ever observe a half-reset config (G-1 without C5's persistence).
@@ -3175,6 +3834,59 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // re-points routing at the shared inference host — the host's worker
     // process spawns on demand at the first host request, so there is no
     // resident model to warm up and no preload thread to join at shutdown.
+
+    // V10F P3-C1 wave B (UX-1 Option B): the SEEDED DEFERRED OPEN the OpenAI
+    // settings dialog uses, extracted from the old inline on_select_engine(2)
+    // body so BOTH the engine submenu's separate "OpenAI 호환 엔진 설정…" row
+    // (Callbacks::on_open_openai_settings) and the no-profile engine-radio
+    // pick share ONE implementation. The contract is byte-identical to the
+    // pre-wave-B branch: latch -> snapshot config.openai + the profile library
+    // (by copy, no AppConfig alias survives) -> pure (0,0) kMsgOpenOpenAiSettings
+    // wake-up, with the latch + snapshots rolled back on a failed post. The
+    // save/switch body still resolves in g_apply_openai_settings on the GUI
+    // thread (REQ-047 D3 modality contract).
+    auto open_openai_settings_deferred = [&]() {
+        if (emebalachat::s_openai_dialog_pending) {
+            DIAG_F("MAIN/on_select_engine/007: openai settings open already deferred; coalesced\n");
+            return;
+        }
+        emebalachat::s_openai_dialog_pending = true;
+        emebalachat::s_pending_openai_cfg = config.openai;
+        // 261122_0001 B-U5 (design-pick item 4): seed the deferred open with
+        // the profile library snapshot too — a COPY, so the AppConfig vector
+        // never aliases the fold the handler will hand the dialog.
+        // 261122_0001 fix-A2 (R1-01) trace: this read stays unfiltered on
+        // purpose. It is not a persist site — the kDeleted branch applies no
+        // fold, and the delete's own prune runs on the live library in
+        // g_apply_openai_deleted before that branch's save, so the copy
+        // seeded here can never carry a retired credential back to the file
+        // (the next open seeds the already-pruned library).
+        // 261122_0001 fix-E (round-2 seat1 N-01): the copy is also safe
+        // unlocked — all openai_profiles writers are GUI-thread-only via
+        // the locked verbs (read-read, no concurrent writer exists).
+        emebalachat::s_pending_openai_profiles = config.openai_profiles;
+        if (::PostMessageW(emebalachat::g_hControllerWnd,
+                           emebalachat::kMsgOpenOpenAiSettings, 0, 0) == FALSE) {
+            // Post failed: roll the latch back so the user can retry; the
+            // pending snapshot is dropped with it.
+            emebalachat::s_openai_dialog_pending = false;
+            emebalachat::s_pending_openai_cfg.reset();
+            emebalachat::s_pending_openai_profiles.reset();
+            DIAG_F("MAIN/on_select_engine/008: PostMessage openai-settings open failed (GLE %lu)\n",
+                   ::GetLastError());
+            return;
+        }
+        // The dialog open + engine switch now resolve in the
+        // kMsgOpenOpenAiSettings handler on the GUI thread (after the menu
+        // modality has fully torn down). SaveToFile / refresh_tray run
+        // there via g_apply_openai_settings.
+    };
+    // The settings hub's Engines tab [OpenAI 호환 설정…] action shares the same
+    // deferred open (the hub is modeless, but the dialog's REQ-047 D3 owner and
+    // the kMsgOpenOpenAiSettings consumer are identical, so one implementation
+    // keeps the latch/snapshot discipline in exactly one place).
+    trayCallbacks.on_open_openai_settings = open_openai_settings_deferred;
+
     trayCallbacks.on_select_engine = [&](int engine_idx) {
         // REQ-029-B (design §2.1 change 4): the tray engine switch was a
         // complete log blind spot (decisions.md 2026-09-07 11:40 item 3 -
@@ -3205,34 +3917,54 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             engine.SetUserModelDisplayStem({});
             config.SetEngineTypeName("local");
         } else if (engine_idx == 2) {
-            // REQ-047 D3 (design §C.2 안 C-1, Tech Gate §D3 #3): the OpenAI
-            // branch is now EXPLICIT (previously the else-terminator). The
-            // settings dialog open is DEFERRED to the GUI thread's
-            // ControllerWndProc via kMsgOpenOpenAiSettings — entering the
-            // dialog box synchronously here, while the
-            // TrackPopupMenuEx modality may still be tearing down, produced the
-            // "minimized window, no input" symptom (P2 root cause, 235020).
-            // The SEC-ADJ house pattern is reused: the pending config snapshot
-            // travels in the GUI-thread store s_pending_openai_cfg, and the
-            // posted message is a PURE (0,0) wake-up. A latch coalesces a
-            // second pick while one open is already posted. The actual
-            // save/switch body now lives in g_apply_openai_settings (set at
-            // startup); cancel leaves the previous engine untouched.
+            // V10F P3-C1 (UX-1 Option B, wave B): the radio row is the INSTANT
+            // switch. An EXISTING configured profile (endpoint + model +
+            // credential, OpenAiProfileConfigured above) switches engines
+            // WITHOUT opening the settings modal - the modal lives on the
+            // submenu's separate "OpenAI 호환 엔진 설정…" row now
+            // (on_open_openai_settings, wired above). Only the NO-profile case
+            // keeps routing into the deferred dialog (today's pre-V10F
+            // behavior, shared with the settings row through
+            // open_openai_settings_deferred).
+            if (emebalachat::OpenAiProfileConfigured(config.openai)) {
+                // The switch body mirrors the google/local arms + the
+                // g_apply_openai_settings engine half: re-point the runtime
+                // engine (refreshing its openai block from the live config so
+                // an externally edited config.json is honored too), clear the
+                // user-model display stem (REQ-051 U-2), persist, refresh.
+                engine.SetOpenAiConfig(config.openai);
+                engine.SetEngineType(emebalachat::EngineType::OpenAi);
+                engine.SetUserModelDisplayStem({});
+                config.SetEngineTypeName("openai");
+                config.SaveToFile();
+                refresh_tray();
+                DIAG_F("MAIN/on_select_engine/002: engine switch persisted; active=%s\n",
+                       engine.GetActiveEngineName().c_str());
+                return;
+            }
+            DIAG_F("MAIN/on_select_engine/011: openai radio picked with no configured profile; opening settings dialog\n");
+            // No profile: the deferred dialog open stays INLINE in this branch
+            // (the req047_tests.inc D3 pin requires the PostMessageW +
+            // kMsgOpenOpenAiSettings + latch to live inside the index-2
+            // branch) - the body is identical to open_openai_settings_deferred
+            // above, which serves the settings row and the hub; the two copies
+            // are the same house pattern and must stay in sync (a future
+            // test-worker re-pin may factor them).
             if (emebalachat::s_openai_dialog_pending) {
                 DIAG_F("MAIN/on_select_engine/007: openai settings open already deferred; coalesced\n");
                 return;
             }
             emebalachat::s_openai_dialog_pending = true;
             emebalachat::s_pending_openai_cfg = config.openai;
-            // 261122_0001 B-U5 (design-pick item 4): seed the deferred open with
-            // the profile library snapshot too — a COPY, so the AppConfig vector
-            // never aliases the fold the handler will hand the dialog.
+            // 261122_0001 B-U5 (design-pick item 4): seed the deferred open
+            // with the profile library snapshot too — a COPY, so the AppConfig
+            // vector never aliases the fold the handler will hand the dialog.
             // 261122_0001 fix-A2 (R1-01) trace: this read stays unfiltered on
-            // purpose. It is not a persist site — the kDeleted branch applies no
-            // fold, and the delete's own prune runs on the live library in
+            // purpose. It is not a persist site — the kDeleted branch applies
+            // no fold, and the delete's own prune runs on the live library in
             // g_apply_openai_deleted before that branch's save, so the copy
-            // seeded here can never carry a retired credential back to the file
-            // (the next open seeds the already-pruned library).
+            // seeded here can never carry a retired credential back to the
+            // file (the next open seeds the already-pruned library).
             // 261122_0001 fix-E (round-2 seat1 N-01): the copy is also safe
             // unlocked — all openai_profiles writers are GUI-thread-only via
             // the locked verbs (read-read, no concurrent writer exists).
@@ -3260,11 +3992,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // the cache on engine_type=="user_gguf"). Hy-MT2 "local" stays
             // untouched: picking index 1 sets engine_type="local", which the
             // host's C1 gate maps back to the pinned model.
-            // user_model_id is read directly (not via GetSnapshot): like
-            // cloud_fallback_enabled it is never consumed by the hook/worker
-            // threads, so it intentionally has no Snapshot entry (config.hpp).
-            // This callback runs on the GUI thread, same as the config.openai
-            // direct read below.
+            // user_model_id is read directly here (not via GetSnapshot):
+            // this callback runs on the GUI thread, same as the config.openai
+            // direct read below. Since 261123_0001 the field ALSO has a
+            // Snapshot entry (snapshot.user_model_id), which the WORKER-thread
+            // LocalModelMissing routing consumes (config.hpp contract).
             if (config.user_model_id.empty()) {
                 // REQ-050 Q2 (real-device finding, one-shot entry): an EMPTY
                 // binding is not "no model" — a REGISTERED origin=="user"
@@ -3537,6 +4269,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
     trayCallbacks.on_toggle_auto_send = [&]() {
         hook.ToggleAutoSend();
+        // V10F P3-C2 (UX-3 wave B): the badge's auto-send chip follows the
+        // flip. ToggleAutoSend stores the new value SYNCHRONOUSLY before it
+        // returns (the fx worker only persists + refreshes the tray), so the
+        // relaxed atomic read here already sees the post-flip state. The
+        // Ctrl+Shift+Enter hotkey path flips inside hook.cpp with no main.cpp
+        // seam; its chip catches up on the next refresh_tray() self-heal push
+        // (documented in the unit report).
+        badge.SetAutoSendIndicator(config.auto_send.load(std::memory_order_relaxed));
     };
 
     trayCallbacks.on_toggle_sound = [&]() {
@@ -3696,22 +4436,68 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // dialog window only. Scope discipline (§2.2.4): the owner is nullptr and
     // the flag is computed at THIS call only — it can never leak into other
     // surfaces; LTR UI locales pass no flag (byte-identical dialog today).
-    trayCallbacks.on_show_cheat_sheet = [&]() {
+    // V10F P3 wave B (ux_and_longform_architecture U4): the body is REBUILT at
+    // show time - the localized CheatSheetBody stays the base with the default
+    // combo tokens substituted for the LIVE config.hotkey_* display strings
+    // (SubstituteCheatSheetHotkeys above), then the gestures the static body
+    // never mentioned are appended (selection-translate hotkey, Double Ctrl+C,
+    // ESC cancel, badge-click cancel). Shared with the settings hub's
+    // [단축키 안내…] action through ONE lambda so the two surfaces cannot drift.
+    auto show_cheat_sheet = [&config]() {
         UINT type = MB_OK | MB_ICONINFORMATION;
         if (emebalachat::DirectionForLocale(emebalachat::I18n::GetCurrentLocale()) ==
             emebalachat::TextDirection::RTL) {
             type |= MB_RTLREADING;
         }
+        const std::wstring live_toggle =
+            emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+                emebalachat::KeyboardHook::ResolveToggleFromConfig(config.hotkey_toggle));
+        const std::wstring live_lang =
+            emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+                emebalachat::KeyboardHook::ResolveLangFromConfig(config.hotkey_lang));
+        const std::wstring live_mode =
+            emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+                emebalachat::KeyboardHook::ResolveModeFromConfig(config.hotkey_mode));
+        const std::wstring live_selection =
+            emebalachat::KeyboardHook::HotkeySpecToDisplayString(
+                emebalachat::KeyboardHook::ResolveSelectionFromConfig(
+                    config.hotkey_selection_translate));
+        std::wstring body =
+            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetBody);
+        emebalachat::SubstituteCheatSheetHotkeys(body, live_toggle, live_lang, live_mode);
+        // The appended gestures. Where an existing StringId carries the
+        // meaning it is reused (the badge-cancel line is TooltipCancelHint
+        // verbatim - a complete localized sentence describing exactly this
+        // gesture); the 261122_0002 Phase-3 i18n micro-pass landed the four
+        // appendix ids (CheatSheetMoreGestures / -SelectionTranslate /
+        // -DoubleCtrlC / -EscCancel) in all 89 tables, closing the P3-C5
+        // I18N REQUEST.
+        body += L"\n\n";
+        body += emebalachat::I18n::Get(
+            emebalachat::StringId::CheatSheetMoreGestures);
+        body += L"\n";
+        body += L"  • " + live_selection + L" : " +
+                emebalachat::I18n::Get(
+                    emebalachat::StringId::CheatSheetSelectionTranslate) +
+                L"\n";
+        body += L"  • Ctrl+C ×2 : " +
+                emebalachat::I18n::Get(
+                    emebalachat::StringId::CheatSheetDoubleCtrlC) +
+                L"\n";
+        body += L"  • ESC : " +
+                emebalachat::I18n::Get(
+                    emebalachat::StringId::CheatSheetEscCancel) +
+                L"\n";
+        body += L"  • " +
+                emebalachat::I18n::Get(emebalachat::StringId::TooltipCancelHint);
         // REQ-206 (session 260911_0002 T4): the Cheat Sheet must tell users
         // WHERE config.json lives, as a relative/env-var path. The line is
         // appended after a '\n' separator so the MessageBox keeps the body
         // and the path on separate lines; the string stays LITERAL
         // (%LOCALAPPDATA% token never expanded via ExpandEnvironmentStrings),
         // per the user's "not an absolute path" requirement.
-        const std::wstring body =
-            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetBody) +
-            L"\n" +
-            emebalachat::I18n::Get(emebalachat::StringId::CheatSheetConfigPath);
+        body += L"\n" +
+                emebalachat::I18n::Get(emebalachat::StringId::CheatSheetConfigPath);
         ::MessageBoxW(
             nullptr,
             body.c_str(),
@@ -3719,12 +4505,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             type
         );
     };
+    trayCallbacks.on_show_cheat_sheet = show_cheat_sheet;
 
     trayCallbacks.on_exit = [&]() {
         ::PostQuitMessage(0);
     };
 
     tray.Create(hController, hInstance, trayCallbacks);
+    // V10F P3-C1 (UX-1 Option B, wave B): the settings container's first row
+    // ("일반…") opens the settings hub. Precedence: this slot wins over
+    // Callbacks::on_open_settings_hub (SetOpenSettingsHubCallback's contract);
+    // the hub is opened modeless with the controller as owner (sane z-order,
+    // and the owned window tears down with the controller BEFORE wWinMain's
+    // locals die) and the LIVE badge visibility flag (HubRuntimeState's truth
+    // contract: the General tab badge toggle diffs against the value the
+    // caller passes). GUI thread: the row dispatches on this thread.
+    tray.SetOpenSettingsHubCallback([&badge, &config]() {
+        emebalachat::HubRuntimeState hub_runtime;
+        hub_runtime.badge_visible = badge.IsVisible();
+        emebalachat::OpenSettingsHub(config, hub_runtime, emebalachat::g_hControllerWnd);
+    });
     // R6 Phase 6: mirror the persisted ui_language into the tray's selector
     // check state (snapshot read; the warmup thread already exists here).
     tray.SetUiLanguage(config.GetSnapshot().ui_language);
@@ -3778,8 +4578,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // origin=="user" registry entry so a registered model never
         // disappears from the menu; a registry miss shows the raw config id
         // so the label never lies. user_model_id is read directly (not via
-        // the snapshot): per the config.hpp contract it is a GUI-thread-only
-        // field, and this resolver always runs on the GUI thread.
+        // the snapshot): this resolver always runs on the GUI thread (worker
+        // threads read the field through snapshot.user_model_id instead,
+        // added for the 261123_0001 LocalModelMissing routing).
         std::string user_model_stem;
         {
             auto reg = emebalachat::engine_host_registry::LoadDefaultRegistry();
@@ -3918,6 +4719,44 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // worker), so the flag is atomic; relaxed ordering suffices (standalone
     // bool, no data depends on the ordering).
     std::atomic<bool> drag_press_own_popup{false};
+    // V10F D1: whether the CURRENT gesture's mouse-down landed on our own
+    // DragIconWindow rect. Mirrors the own-popup predicate above: a press on
+    // the icon is an icon interaction (its click callback owns the translate
+    // launch), so the drag-release callback must never re-summon/move the icon
+    // for a gesture that started on it. Same atomic/relaxed discipline.
+    std::atomic<bool> drag_press_own_drag_icon{false};
+    // V10F FUP-02: whether the CURRENT gesture's mouse-down landed on our own
+    // language-search palette (the modal "검색…" popup or its EDIT/LISTBOX
+    // children). Mirrors the own-popup predicate: picker-internal gestures
+    // (query edit, row drag) must not summon the drag icon over the open
+    // picker, and picker clicks must not dismiss the tooltip behind it.
+    std::atomic<bool> drag_press_own_palette{false};
+
+    // V10F FUP-02: TRUE when the window at `pt` is our own language picker —
+    // the point's window OR any of its ancestors carries the picker class and
+    // belongs to this process (the click may land on the picker's EDIT/LISTBOX
+    // children, whose own classes are "Edit"/"ListBox"; GetAncestor(GA_ROOT)
+    // reaches the popup). The class half is the pure
+    // language_palette::IsLanguagePaletteWindowClass predicate; the pid check
+    // keeps a foreign same-class window from ever exempting a click.
+    auto OwnLanguagePaletteWindowAtPoint = [](POINT pt) -> bool {
+        const HWND under = ::WindowFromPoint(pt);
+        if (!under) {
+            return false;
+        }
+        HWND probe = ::GetAncestor(under, GA_ROOT);
+        if (!probe) {
+            probe = under;
+        }
+        wchar_t cls[64] = {};
+        if (::GetClassNameW(probe, cls, 64) <= 0 ||
+            !emebalachat::language_palette::IsLanguagePaletteWindowClass(cls)) {
+            return false;
+        }
+        DWORD pid = 0;
+        ::GetWindowThreadProcessId(probe, &pid);
+        return pid == ::GetCurrentProcessId();
+    };
 
     // Drag release callback. Fires on the mouse-hook thread (a completed drag
     // past the DPI-aware system drag threshold, mouse_hook.cpp
@@ -3945,6 +4784,34 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (drag_press_own_popup.load(std::memory_order_relaxed)) {
             DIAG_LOG("UI", "drag_release exempted: press started over own popup menu (no card needed)");
             return;
+        }
+        // V10F D1: consult the PRESS-time own-drag-icon predicate
+        // UNCONDITIONALLY (same R1-E discipline as the popup flag): a gesture
+        // whose mouse-down landed on the DragIconWindow is an icon interaction,
+        // never a drag-translate summon - without this the release re-posted
+        // RequestShowAt and teleported the icon off the click site.
+        if (drag_press_own_drag_icon.load(std::memory_order_relaxed)) {
+            DIAG_LOG("UI", "drag_release exempted: press started on drag icon (no card needed)");
+            return;
+        }
+        // V10F FUP-02: consult the PRESS-time own-palette predicate first (same
+        // R1-E unconditional discipline as the popup flag): a gesture whose
+        // mouse-down landed on the open picker is a picker interaction (query
+        // edit / row drag) even when the release escapes the window.
+        if (drag_press_own_palette.load(std::memory_order_relaxed)) {
+            DIAG_LOG("UI", "drag_release exempted: press started over own language picker");
+            return;
+        }
+        // V10F FUP-02 second layer (press-time flag is the primary): a release
+        // landing on our open language picker while the press started elsewhere
+        // (drag across the modal popup) is picker-owned - never summon the
+        // drag icon over it.
+        {
+            const POINT release_pt = { x, y };
+            if (OwnLanguagePaletteWindowAtPoint(release_pt)) {
+                DIAG_LOG("UI", "drag_release exempted: release landed over own language picker");
+                return;
+            }
         }
         // 261111_0001 U1 (v0.10.7, audit D1a/D1b/D4, ISSUE-009): a visible
         // translation card must NEVER suppress the gesture globally (the old
@@ -3991,6 +4858,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             }
             tooltip.Dismiss();
         }
+        // V10F D3 (main side): skip the icon summon itself when the foreground
+        // window is a console/terminal - there the drag release means a text
+        // selection, not a translate request, and the click's synthetic Ctrl+C
+        // capture would be a SIGINT (REQ-005). The click-time guard in
+        // run_drag_translate (IsConsoleCaptureUnsafe at the drag-icon click) is
+        // kept as defense-in-depth; this release-time guard stops the summon
+        // one step earlier. Fail-open by construction: any query failure inside
+        // IsConsoleCaptureUnsafe (including a null foreground hwnd) returns
+        // false and the existing path runs unchanged.
+        if (emebalachat::IsConsoleCaptureUnsafe(::GetForegroundWindow())) {
+            DIAG_LOG("UI", "drag_release skipped: console/terminal foreground (SIGINT hazard)");
+            return;
+        }
         // REQ-R10 (audit §3.4): the single-threaded D2D render target belongs
         // to the main GUI thread. Call ShowAt directly here produced
         // D2DERR_WRONG_THREAD and an invisible icon. PostMessage to the icon's
@@ -4010,6 +4890,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         drag_start_x.store(x, std::memory_order_relaxed);
         drag_start_y.store(y, std::memory_order_relaxed);
         drag_press_own_popup.store(false, std::memory_order_relaxed);
+        // V10F D1 + FUP-02: every press re-evaluates the own-drag-icon and
+        // own-palette predicates too (same R1-E reset contract as the popup
+        // flag above).
+        drag_press_own_drag_icon.store(false, std::memory_order_relaxed);
+        drag_press_own_palette.store(false, std::memory_order_relaxed);
         POINT pt = { x, y };
         // REQ-026 (Phase A §3 B-3, attributed failure mode (a) callback-never-
         // fires): a physical click landing on OUR OWN transient popup menu
@@ -4045,11 +4930,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                 }
             }
         }
+        // V10F FUP-02: a press on our own language picker (the modal "검색…"
+        // popup or its EDIT/LISTBOX children - OwnLanguagePaletteWindowAtPoint
+        // resolves the ancestor that carries the picker class) is a picker
+        // interaction. Without this exemption the fall-through dismissed the
+        // tooltip behind the picker (a palette click sits outside the tooltip
+        // rect): Dismiss() empties source_text_/source_lang_code_, and the
+        // pick's retranslate then read wiped state (retranslate_skip_empty).
+        // The gesture is also stamped picker-owned so the drag-release callback
+        // never summons the drag icon over the open picker.
+        if (OwnLanguagePaletteWindowAtPoint(pt)) {
+            drag_press_own_palette.store(true, std::memory_order_relaxed);
+            DIAG_LOG("UI", "mouse_down exempted over own language picker (no dismissal)");
+            return;
+        }
         if (drag_icon.IsVisible()) {
             RECT r = {};
             ::GetWindowRect(drag_icon.GetHwnd(), &r);
             if (!::PtInRect(&r, pt)) {
                 drag_icon.Hide();
+            } else {
+                // V10F D1: the press landed ON our own drag icon - stamp the
+                // press-time predicate (the visible icon stays; the release
+                // callback consults the flag unconditionally).
+                drag_press_own_drag_icon.store(true, std::memory_order_relaxed);
             }
         }
         if (tooltip.IsVisible()) {
@@ -4142,6 +5046,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // references are now provably safe - the worker is joined BEFORE those
     // objects can leave scope, and before the surfaces' Destroy() runs.
     auto run_drag_translate = [&](int click_x, int click_y, uint64_t gen) {
+        // V10F (261122_0002 P2-F): publish this job in the unified registry
+        // for its whole body (Esc / badge-click cancel the inference; a fresh
+        // drag click supersedes it through the same token).
+        emebalachat::ReadingJobScope drag_scope(reading_jobs.drag_running,
+                                                reading_jobs.drag_cancel);
         // FIX-B1 residual (a), FIX-B2: the drag gesture owns its capture-chord
         // write through a task scope, so a concurrent pipeline task can never
         // read it as its own (and vice versa). Declared before the backup and
@@ -4167,6 +5076,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                           gen);
             return;
         }
+
+        // V10F L2 (261122_0002 P2-G): the window this selection came from,
+        // recorded for the translation-history ring (and the editor window's
+        // "apply to original window"). Sampled here - the icon is
+        // WS_EX_NOACTIVATE, so the foreground is still the text source. Best
+        // effort: the user may have switched windows during a slow inference.
+        const HWND drag_target_hwnd = ::GetForegroundWindow();
 
         emebalachat::ClipboardBackup backup;
         // R1-6 (v0.10.4 sweep, 261029_0001): the backup RESULT gates both restore
@@ -4399,6 +5315,25 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             config, badge, emebalachat::ToUtf16(eff_src), emebalachat::ToUtf16(tgt_lang));
 
         badge.SetStatus(emebalachat::BadgeStatus::Translating);
+        // V10F (261122_0002 P2-F): the per-request task context. ctx.cancel
+        // polls the registry token (Esc / badge click / superseding drag);
+        // out_error_detail carries THIS request's bounded, sanitized cause -
+        // the racy process-global OpenAiCompatibleClient::LastChatErrorDetail
+        // read this block used to do immediately after the call is GONE (that
+        // slot could be cleared/overwritten by any concurrent request); the
+        // lease-guarded on_chunk/on_chunk_text seams drive the live preview
+        // card for genuine multi-chunk runs only.
+        emebalachat::TranslationTaskContext drag_ctx;
+        drag_ctx.cancel = &reading_jobs.drag_cancel;
+        std::string drag_error_detail;
+        drag_ctx.out_error_detail = &drag_error_detail;
+        emebalachat::ChunkPreviewLease drag_preview(reading_jobs, tooltip);
+        drag_ctx.on_chunk = [&drag_preview](std::size_t, std::size_t total) {
+            drag_preview.TryBegin(static_cast<int>(total));
+        };
+        drag_ctx.on_chunk_text = [&drag_preview](const std::wstring& cumulative) {
+            drag_preview.Append(cumulative);
+        };
         // REQ-047 P5-F2 (technical review 175600 finding #2): receive the
         // status instead of discarding it — the 3-arg overload swallowed
         // CloudConsentBlocked / LocalModelMissing, so a strict local failure
@@ -4406,28 +5341,46 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // engine-unavailable seam the Enter pipeline uses (the drain handler
         // applies the streak-latch policy on the GUI thread).
         emebalachat::TranslationStatus drag_status = emebalachat::TranslationStatus::Ok;
-        std::wstring translated = engine.Translate(selected, eff_src, tgt_lang, &drag_status);
-        // R2-I (v0.10.7, 261111_0001 fix-list round 1): read the provider error
-        // detail into a local IMMEDIATELY after the call, on this worker thread,
-        // before any release/queue op - LastChatErrorDetail is a process-global
-        // slot another thread's engine.Translate could clear or overwrite. The
-        // residual window (this read vs the call) is now just the badge set
-        // below; the per-request out_error_detail carrier is the long-term fix.
-        std::string drag_openai_detail;
-        if (engine.GetEngineType() == emebalachat::EngineType::OpenAi) {
-            drag_openai_detail = emebalachat::OpenAiCompatibleClient::LastChatErrorDetail();
-        }
+        std::wstring translated = engine.Translate(selected, eff_src, tgt_lang, &drag_status, drag_ctx);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
-        if (drag_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
-            drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
+        if (drag_status == emebalachat::TranslationStatus::Canceled) {
+            // V10F (261122_0002 P2-F): an INTENTIONAL user cancel (Esc / badge
+            // click / superseding drag). No failure notice for a cancel the
+            // user asked for; the preview lease dtor retires the live card.
+            DIAG_LOG("UI", "drag_translate_canceled gen=%llu",
+                     static_cast<unsigned long long>(gen));
+            return;
+        }
+        if (drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // V10F E2 (261122_0002 P3-C4 wave B): same one-click offer routing
+            // as the Enter-pipeline seam (built-in download consent / user-gguf
+            // manager for a model-only miss) instead of the dead-end wording.
+            // V10F: retire the live preview BEFORE the offer/modal (End(false)
+            // hides the window - it must not swallow what follows).
+            drag_preview.End(false);
+            // 261123_0001: fresh locked snapshot at failure time (engine_type
+            // + user_model_id read together, I4) for the route classification.
+            const auto miss_snap = config.GetSnapshot();
+            emebalachat::RequestModelMissingOfferOrModal(miss_snap.engine_type,
+                                                         miss_snap.user_model_id);
+            // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): these
+            // statuses always carry an EMPTY translation, and falling through
+            // to ShowTranslationThreadSafe below used to render a permanent
+            // empty ghost card (ShowTranslation kills the message autohide
+            // timer, tooltip.cpp kTimerMessageAutohide, and arms no hide of
+            // its own). The modal above IS the user feedback; stop here.
+            return;
+        }
+        if (drag_status == emebalachat::TranslationStatus::CloudConsentBlocked) {
             // REQ-048 R4: same cause split as the Enter-pipeline seam - missing
             // source vs transient serving failure get different bodies.
+            // V10F: retire the live preview BEFORE the modal (End(false) hides
+            // the window - it must not swallow the modal that follows).
+            drag_preview.End(false);
             emebalachat::RequestEngineUnavailableModal(
                 emebalachat::g_hControllerWnd,
                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                emebalachat::I18n::Get(drag_status == emebalachat::TranslationStatus::LocalModelMissing
-                                           ? emebalachat::StringId::RepairFailedBody
-                                           : emebalachat::StringId::RepairTransientBody));
+                emebalachat::I18n::Get(emebalachat::StringId::RepairTransientBody));
             // 261111_0001 U1 (v0.10.7, audit D3-feedback, ISSUE-009): these
             // statuses always carry an EMPTY translation, and falling through
             // to ShowTranslationThreadSafe below used to render a permanent
@@ -4449,17 +5402,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // 261111_0001 U6 (v0.10.7, R1 P1-3): when the failed leg is the
             // OpenAI-compatible engine, the notice carries the REAL cause —
             // the HTTP status + the provider's own message, already bounded,
-            // sanitized and API-key-masked by the client
-            // (OpenAiCompatibleClient::LastChatErrorDetail) — so a 503
+            // sanitized and API-key-masked by the client - so a 503
             // "Credit accounting is temporarily unavailable" reads as the
             // transient platform state it is, not a silent failure. Local /
             // Google failures keep the established generic notice, and the
             // translation itself stays empty (no invented text).
+            // V10F (261122_0002 P2-F): the cause now comes from THIS request's
+            // out_error_detail carrier (see the ctx wiring above) - never the
+            // process-global slot. Retire the live preview BEFORE the notice
+            // (End(false) hides the window; the notice must survive).
+            drag_preview.End(false);
             std::wstring fail_body =
                 emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed);
-            if (!drag_openai_detail.empty()) {
+            if (!drag_error_detail.empty()) {
                 fail_body += L"\n";
-                fail_body += emebalachat::ToUtf16(drag_openai_detail);
+                fail_body += emebalachat::ToUtf16(drag_error_detail);
             }
             tooltip.ShowMessageThreadSafe(click_x, click_y,
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
@@ -4474,6 +5431,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             return;
         }
 
+        // V10F L3-B: freeze the live preview with the last cumulative text
+        // BEFORE the final card replaces it (the P2-C contract order).
+        drag_preview.End(true);
+
         // Worker thread, so marshal the D2D render to the GUI thread via the
         // REQ-R10 thread-safe seam (audit §3.4) instead of a direct call.
         // R6 B1-H1: if a newer request was stamped while this thread was
@@ -4484,6 +5445,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // this call - every empty-result path above returns first.
         tooltip.ShowTranslationThreadSafe(click_x, click_y, selected, tooltip_src, tgt_lang, translated,
                                           gen);
+        // V10F L2 (261122_0002 P2-G): record the successful drag in the
+        // translation-history ring (back empty - the drag path never runs the
+        // verification round trip; only the back-translate job Pushes the
+        // full triple).
+        emebalachat::translation_history::Push({ selected, translated, std::wstring(),
+                                                 emebalachat::ToUtf16(src_code),
+                                                 emebalachat::ToUtf16(tgt_lang),
+                                                 drag_target_hwnd });
     };
 
     // D2 (session 260910_0007): loop body extracted verbatim into
@@ -4516,6 +5485,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         int x = 0;
         int y = 0;
         uint64_t gen = emebalachat::TooltipWindow::kGenNone;
+        // V10F L2 (261122_0002 P2-G): EDITOR-ORIGIN jobs only (the tooltip
+        // header's "edit / re-translate" hand-off). When set, the result is
+        // delivered through this completion ON THE RETRANSLATE WORKER THREAD
+        // (the editor marshals to its own GUI thread) INSTEAD of re-rendering
+        // the tooltip card. Empty = the ordinary tooltip re-render path,
+        // byte-identical to the pre-V10F behavior.
+        std::function<void(const std::wstring&)> on_done;
     };
     // D2 (session 260910_0007): slot state now lives inside the
     // SingleSlotWorker<RetranslateJob> instance declared below the handler.
@@ -4528,6 +5504,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // failed translation keeps the existing tooltip content instead of
     // rendering an empty body.
     auto run_retranslate = [&](const RetranslateJob& job) {
+        // V10F (261122_0002 P2-F): publish this job in the unified registry
+        // for its whole body (Esc / badge-click cancel it; a fresh language
+        // pick or editor re-translate supersedes it through the same token).
+        emebalachat::ReadingJobScope rt_scope(reading_jobs.retranslate_running,
+                                              reading_jobs.retranslate_cancel);
+        // V10F L2: an editor-origin job with an empty source can only fail -
+        // report completion immediately so the editor never waits on a job
+        // that produces nothing.
+        if (job.src.empty()) {
+            if (job.on_done) job.on_done(std::wstring());
+            return;
+        }
         // fix-list-round15 R15-21 (F-3b): tgt is a language token (can be a
         // user-typed stored name) — the R14-06 class — so it logs only
         // behind diag::ContentLoggingEnabled(); gen/src_len ride both
@@ -4616,15 +5604,56 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // REQ-047 P5-F2 (technical review 175600 finding #2): same strict-
         // failure surfacing as the drag path above — the 3-arg overload used
         // to discard the status, leaving a strict local failure silent.
+        // V10F (261122_0002 P2-F): the per-request task context wires this
+        // path into the unified cancel registry (ctx.cancel) and the live
+        // chunk-preview surface (lease-guarded); out_error_detail carries
+        // THIS request's bounded cause (shape-only logged below; the
+        // ADR-A1-5 "existing content kept" display policy is unchanged - the
+        // retranslate failure never re-rendered the card and still doesn't).
+        emebalachat::TranslationTaskContext rt_ctx;
+        rt_ctx.cancel = &reading_jobs.retranslate_cancel;
+        std::string rt_error_detail;
+        rt_ctx.out_error_detail = &rt_error_detail;
+        emebalachat::ChunkPreviewLease rt_preview(reading_jobs, tooltip);
+        rt_ctx.on_chunk = [&rt_preview](std::size_t, std::size_t total) {
+            rt_preview.TryBegin(static_cast<int>(total));
+        };
+        rt_ctx.on_chunk_text = [&rt_preview](const std::wstring& cumulative) {
+            rt_preview.Append(cumulative);
+        };
         emebalachat::TranslationStatus rt_status = emebalachat::TranslationStatus::Ok;
-        std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang, &rt_status);
+        std::wstring translated = engine.Translate(job.src, eff_src, tgt_lang, &rt_status, rt_ctx);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
-        if (rt_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
-            rt_status == emebalachat::TranslationStatus::LocalModelMissing) {
+        if (!rt_error_detail.empty()) {
+            DIAG_LOG("UI", "retranslate_error_detail_len=%zu gen=%llu",
+                     rt_error_detail.size(), static_cast<unsigned long long>(job.gen));
+        }
+        if (rt_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // V10F E2 (261122_0002 P3-C4 wave B): one-click offer routing (the
+            // Enter/drag seams' policy): model-only miss -> built-in download
+            // consent, user-gguf -> the model manager.
+            rt_preview.End(false); // retire the live preview BEFORE the offer
+            // 261123_0001 R2 (fix F-04): fresh locked snapshot at failure time
+            // (engine_type + user_model_id read together, I4) for the route
+            // classification, matching the three sibling producers. The
+            // job-start snapshot above is the retranslate INPUT contract
+            // (source/target resolution), not the failure route's input.
+            const auto miss_snap = config.GetSnapshot();
+            emebalachat::RequestModelMissingOfferOrModal(miss_snap.engine_type,
+                                                         miss_snap.user_model_id);
+            if (job.on_done) job.on_done(std::wstring());
+            return; // existing content kept (ADR-A1-5); the offer carries the notice
+        }
+        if (rt_status == emebalachat::TranslationStatus::CloudConsentBlocked) {
+            // REQ-048 R4: the transient serving failure keeps the retry wording
+            // (the pre-V10F body named RepairFailedBody for BOTH statuses; the
+            // cause split the other seams use is applied here too).
+            rt_preview.End(false); // retire the live preview BEFORE the modal
             emebalachat::RequestEngineUnavailableModal(
                 emebalachat::g_hControllerWnd,
                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                emebalachat::I18n::Get(emebalachat::StringId::RepairFailedBody));
+                emebalachat::I18n::Get(emebalachat::StringId::RepairTransientBody));
+            if (job.on_done) job.on_done(std::wstring());
             return; // existing content kept (ADR-A1-5); the modal carries the notice
         }
         if (!translated.empty()) {
@@ -4636,6 +5665,20 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (translated.empty()) {
             DIAG_LOG("UI", "retranslate_skip_empty gen=%llu existing_content_kept=1",
                      static_cast<unsigned long long>(job.gen));
+            // V10F L2: failure / cancel completion for an editor-origin job.
+            if (job.on_done) job.on_done(std::wstring());
+            return;
+        }
+        // V10F L3-B: freeze the live preview BEFORE the final card replaces it.
+        rt_preview.End(true);
+        if (job.on_done) {
+            // V10F L2: editor-origin job - the RESULT goes to the editor (on
+            // this worker thread; the editor marshals), NOT to the tooltip.
+            emebalachat::translation_history::Push({ job.src, translated, std::wstring(),
+                                                     emebalachat::ToUtf16(src_code),
+                                                     emebalachat::ToUtf16(tgt_lang),
+                                                     nullptr });
+            job.on_done(translated);
             return;
         }
         // Worker thread -> marshal to the GUI thread. If a newer request
@@ -4643,11 +5686,65 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // tooltip's generation guard drops this stale payload.
         tooltip.ShowTranslationThreadSafe(job.x, job.y, job.src, tooltip_src,
                                           tgt_lang, translated, job.gen);
+        // V10F L2 (261122_0002 P2-G): record the successful re-translation in
+        // the translation-history ring. target_hwnd is unknown on this path
+        // (the card is tooltip-anchored) - nullptr, documented in the report.
+        emebalachat::translation_history::Push({ job.src, translated, std::wstring(),
+                                                 emebalachat::ToUtf16(src_code),
+                                                 emebalachat::ToUtf16(tgt_lang),
+                                                 nullptr });
     };
 
     // D2 (session 260910_0007): same template; the handler takes the job
     // directly (the only call-shape delta between the two loops).
     emebalachat::SingleSlotWorker<RetranslateJob> retranslate_worker(run_retranslate);
+
+    // ---- V10F L2 (261122_0002 P2-G): tooltip header -> translation editor --
+    // The tooltip's two header buttons ("edit / re-translate" and "open in
+    // window") invoke these callbacks ON THE GUI THREAD inside the tooltip
+    // WndProc (P2-C contract). Both hand the MOST RECENT history entry to the
+    // editor window; the editor's re-translate requests come back through
+    // editor_retranslate_fn, which runs the EXISTING retranslate_worker path
+    // (ADR-A1-5: never a synchronous engine.Translate) and reports the result
+    // through the job's on_done completion.
+    const emebalachat::translation_editor_window::RetranslateFn editor_retranslate_fn =
+        [&](const std::wstring& source, const std::wstring& tgt_code,
+            std::function<void(const std::wstring&)> on_done) {
+            // The editor's request is itself a NEW translate request (B1-H1
+            // stamp) so an in-flight older result cannot overwrite it.
+            const uint64_t gen = tooltip.BeginTranslationRequest();
+            // V10F RISK-04 Option C: an editor-issued re-translate supersedes
+            // an in-flight one (same-queue latest-wins, now cancel-based
+            // instead of render-dropped).
+            if (emebalachat::ReadingJobRunning(reading_jobs.retranslate_running)) {
+                reading_jobs.retranslate_cancel.store(true, std::memory_order_release);
+            }
+            RetranslateJob job;
+            job.src = source;
+            // src_code stays empty: the editor contract carries only the
+            // edited source + target, so the run_retranslate safety net
+            // re-detects (pinned drag_source_language still wins, F3-3).
+            job.new_tgt = emebalachat::ToUtf8(tgt_code);
+            job.gen = gen;
+            job.on_done = std::move(on_done);
+            retranslate_worker.Submit(std::move(job));
+        };
+    const auto open_translation_editor = [&]() {
+        const auto recent = emebalachat::translation_history::Recent();
+        if (recent.empty()) {
+            // No translation has completed yet (e.g. the Enter path with
+            // back-translation off records nothing). Nothing to edit: the
+            // click is logged and dropped (no new StringId; see the unit
+            // report's I18N REQUESTS for the follow-up hint string).
+            DIAG_LOG("UI", "translation_editor_open_skipped: history empty");
+            return;
+        }
+        emebalachat::translation_editor_window::Open(recent.front(), editor_retranslate_fn);
+    };
+    // P2-C: an UNWIRED callback renders its header button dimmed + inert, so
+    // wiring both unconditionally keeps the header geometry stable.
+    tooltip.SetEditRequestCallback([open_translation_editor]() { open_translation_editor(); });
+    tooltip.SetOpenInWindowCallback([open_translation_editor]() { open_translation_editor(); });
 
     // Click on DragIconWindow: runs ON THE MAIN GUI THREAD (its WndProc).
     // Stamp the generation at trigger time (R6 Phase 2 B1-H1), hand the job
@@ -4661,6 +5758,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // still on screen after an F9 pause must never launch a translation.
         if (!hook.IsActive()) {
             return;
+        }
+        // V10F RISK-04 Option C (261122_0002): a fresh drag click SUPERSEDES an
+        // in-flight drag translation - the old run unwinds at the next
+        // between-chunk cancel poll instead of burning seconds of inference
+        // whose render the B1-H1 generation guard would drop anyway.
+        if (emebalachat::ReadingJobRunning(reading_jobs.drag_running)) {
+            reading_jobs.drag_cancel.store(true, std::memory_order_release);
         }
         // Generation stamping STAYS at the producer (D2 acceptance
         // constraint): stamp at trigger time, then hand the job over.
@@ -4689,6 +5793,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (!config.GetSnapshot().drag_to_translate || !hook.IsActive()) {
             return;
         }
+
+        // V10F (261122_0002 P2-F): publish this job in the unified registry
+        // for its whole body (Esc / badge-click cancel the inference).
+        emebalachat::ReadingJobScope dbl_scope(reading_jobs.dbl_running,
+                                               reading_jobs.dbl_cancel);
 
         // R6 Phase 2 (B1-H1): stamp the generation at trigger time on this
         // (REQ-R06 worker) thread; every show below carries it.
@@ -4719,6 +5828,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (copied.empty() || copied.find_first_not_of(L" \t\r\n") == std::wstring::npos) {
             return;
         }
+
+        // V10F L2 (261122_0002 P2-G): the window the selection came from, for
+        // the translation-history ring. Sampled after the confirmed capture;
+        // the user may still switch windows during a slow inference (best
+        // effort, documented in the unit report).
+        const HWND dbl_target_hwnd = ::GetForegroundWindow();
 
         // Phase 3 Batch 2 (plan §2.5, REQ-007): double-Ctrl+C is a DRAG-context
         // translation (tooltip surface) - it uses the drag pair.
@@ -4845,33 +5960,68 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // failure surfacing as the other two drag-family paths — the 3-arg
         // overload used to discard the status, leaving a strict local failure
         // silent.
+        // V10F (261122_0002 P2-F): the per-request task context wires this
+        // path into the unified cancel registry (ctx.cancel) and the live
+        // chunk-preview surface (lease-guarded); out_error_detail carries
+        // THIS request's bounded cause - the racy process-global
+        // OpenAiCompatibleClient::LastChatErrorDetail read after the call is
+        // GONE (that slot could be cleared/overwritten by any concurrent
+        // request between the call and the read).
+        emebalachat::TranslationTaskContext dbl_ctx;
+        dbl_ctx.cancel = &reading_jobs.dbl_cancel;
+        std::string dbl_error_detail;
+        dbl_ctx.out_error_detail = &dbl_error_detail;
+        emebalachat::ChunkPreviewLease dbl_preview(reading_jobs, tooltip);
+        dbl_ctx.on_chunk = [&dbl_preview](std::size_t, std::size_t total) {
+            dbl_preview.TryBegin(static_cast<int>(total));
+        };
+        dbl_ctx.on_chunk_text = [&dbl_preview](const std::wstring& cumulative) {
+            dbl_preview.Append(cumulative);
+        };
         emebalachat::TranslationStatus dbl_status = emebalachat::TranslationStatus::Ok;
-        std::wstring translated = engine.Translate(copied, eff_src, tgt_lang, &dbl_status);
-        // R2-I (v0.10.7, 261111_0001 fix-list round 1): capture the provider
-        // error detail into a local IMMEDIATELY after the call, on this worker
-        // thread, before any release/queue op - LastChatErrorDetail is a
-        // process-global slot another thread's engine.Translate could overwrite.
-        // Residual window is now just the badge set below; the per-request
-        // out_error_detail carrier is the long-term fix (engine repo).
-        std::string dbl_openai_detail;
-        if (engine.GetEngineType() == emebalachat::EngineType::OpenAi) {
-            dbl_openai_detail = emebalachat::OpenAiCompatibleClient::LastChatErrorDetail();
-        }
+        std::wstring translated = engine.Translate(copied, eff_src, tgt_lang, &dbl_status, dbl_ctx);
         badge.SetStatus(emebalachat::BadgeStatus::Active);
-        if (dbl_status == emebalachat::TranslationStatus::CloudConsentBlocked ||
-            dbl_status == emebalachat::TranslationStatus::LocalModelMissing) {
+        if (dbl_status == emebalachat::TranslationStatus::Canceled) {
+            // V10F: an INTENTIONAL user cancel (Esc / badge click). No failure
+            // notice for a cancel the user asked for; the preview lease dtor
+            // retires the live card.
+            DIAG_LOG("UI", "dbl_ctrl_c_canceled gen=%llu",
+                     static_cast<unsigned long long>(gen));
+            return;
+        }
+        if (dbl_status == emebalachat::TranslationStatus::LocalModelMissing) {
+            // V10F E2 (261122_0002 P3-C4 wave B): one-click offer routing (the
+            // Enter/drag/retranslate seams' policy).
+            // V10F: retire the live preview BEFORE the offer (End(false) hides
+            // the window - it must not swallow what follows).
+            dbl_preview.End(false);
+            // 261123_0001: fresh locked snapshot at failure time (engine_type
+            // + user_model_id read together, I4) for the route classification.
+            const auto miss_snap = config.GetSnapshot();
+            emebalachat::RequestModelMissingOfferOrModal(miss_snap.engine_type,
+                                                         miss_snap.user_model_id);
             // R1-A (v0.10.7, 261111_0001 fix-list round 1): mirror the drag-icon
             // path's terminal structure (run_drag_translate) - the modal IS the
             // feedback, and these statuses always carry an empty translation, so
             // STOP here. Falling through used to pass L"" to
             // ShowTranslationThreadSafe and render a permanent empty ghost card
             // (ShowTranslation kills the notice autohide timer and arms no hide).
+            return;
+        }
+        if (dbl_status == emebalachat::TranslationStatus::CloudConsentBlocked) {
+            // V10F: retire the live preview BEFORE the modal (End(false) hides
+            // the window - it must not swallow the modal that follows).
+            dbl_preview.End(false);
+            // R1-A (v0.10.7, 261111_0001 fix-list round 1): mirror the drag-icon
+            // path's terminal structure (run_drag_translate) - the modal IS the
+            // feedback, and these statuses always carry an EMPTY translation, so
+            // STOP here. Falling through used to pass L"" to
+            // ShowTranslationThreadSafe and render a permanent empty ghost card
+            // (ShowTranslation kills the notice autohide timer and arms no hide).
             emebalachat::RequestEngineUnavailableModal(
                 emebalachat::g_hControllerWnd,
                 emebalachat::I18n::Get(emebalachat::StringId::RepairFailedTitle),
-                emebalachat::I18n::Get(dbl_status == emebalachat::TranslationStatus::LocalModelMissing
-                                           ? emebalachat::StringId::RepairFailedBody
-                                           : emebalachat::StringId::RepairTransientBody));
+                emebalachat::I18n::Get(emebalachat::StringId::RepairTransientBody));
             return;
         } else if (!translated.empty()) {
             // Success sentinel: resets the streak latch (same seam as Enter).
@@ -4884,11 +6034,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // Surface the same transient failure notice the drag-icon path uses
             // (StringId::TooltipTranslateFailed), plus the provider detail when
             // the failed leg is the OpenAI-compatible engine, then STOP.
+            // V10F: the cause comes from THIS request's out_error_detail carrier
+            // (see the ctx wiring above). Retire the live preview BEFORE the
+            // notice (End(false) hides the window; the notice must survive).
+            dbl_preview.End(false);
             std::wstring fail_body =
                 emebalachat::I18n::Get(emebalachat::StringId::TooltipTranslateFailed);
-            if (!dbl_openai_detail.empty()) {
+            if (!dbl_error_detail.empty()) {
                 fail_body += L"\n";
-                fail_body += emebalachat::ToUtf16(dbl_openai_detail);
+                fail_body += emebalachat::ToUtf16(dbl_error_detail);
             }
             tooltip.ShowMessageThreadSafe(cursor.x + 12, cursor.y + 12,
                                           emebalachat::I18n::Get(emebalachat::StringId::TooltipTitle),
@@ -4896,6 +6050,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                           gen);
             return;
         }
+
+        // V10F L3-B: freeze the live preview with the last cumulative text
+        // BEFORE the final card replaces it (the P2-C contract order).
+        dbl_preview.End(true);
 
         // REQ-R10-adjacent: worker thread, so marshal the D2D render to the GUI
         // thread instead of calling ShowTranslation() directly (audit §3.4).
@@ -4905,10 +6063,62 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // every empty-result path above returns first (no empty ghost card).
         tooltip.ShowTranslationThreadSafe(
             cursor.x + 12, cursor.y + 12, copied, tooltip_src, tgt_lang, translated, gen);
+        // V10F L2 (261122_0002 P2-G): record the successful double-Ctrl+C
+        // translation in the translation-history ring (back empty - this path
+        // never runs the verification round trip).
+        emebalachat::translation_history::Push({ copied, translated, std::wstring(),
+                                                 emebalachat::ToUtf16(src_code),
+                                                 emebalachat::ToUtf16(tgt_lang),
+                                                 dbl_target_hwnd });
+    });
+
+    // V10F L4-C (261122_0002 P2-D): the explicit selection-replace hotkey.
+    // The hook compiles the combo from config.hotkey_selection_translate
+    // (default "Ctrl+Alt+T" since V10F-R1 F-05, parsed by P2-D), swallows the keydown on the
+    // hook thread ONLY while this callback is registered, and dispatches the
+    // CURRENT FOREGROUND window here off-thread (DispatchHotkeyFx, the Input
+    // P0-1 discipline). Posting the task is thread-safe (the pipeline's
+    // single-slot accept); a busy pipeline drops the request with the same
+    // silent policy as the Enter path's busy guard - the only feedback is
+    // this shape-only diag line (no new StringId; see the unit report).
+    hook.SetSelectionReplaceCallback([&worker](HWND target_hwnd) {
+        if (!worker.PostSelectionReplaceTask(target_hwnd)) {
+            DIAG_LOG("UI", "selection_replace_dropped: pipeline busy");
+        }
     });
 
     // ESC Key Dismissal
     hook.SetEscCallback([&]() -> bool {
+        // V10F FUP-02: while the language picker is modal, Esc belongs to the
+        // picker - it cancels the invocation (PickerCommand::Cancel), and the
+        // tooltip / drag icon / about surfaces behind the picker must stay.
+        // Returning false leaves the key unconsumed so the picker's own modal
+        // pump (and its focused EDIT) receives it.
+        if (emebalachat::LanguagePickerShowing()) {
+            DIAG_LOG("UI", "esc deferred: language picker owns the key");
+            return false;
+        }
+        // V10F (261122_0002 P2-F): UNIFIED CANCEL FIRST. While ANY translation
+        // is active - the Enter pipeline (worker.IsBusy) OR any of the four
+        // reading workers (drag / retranslate / back-translate / double-Ctrl+C
+        // via the registry) - Esc CANCELS THEM ALL and is consumed. The
+        // cancel is cooperative: the tokens are polled at the engine's
+        // between-chunk seams, so the in-flight request unwinds bounded by
+        // one chunk/request round; a reading job's chunk-preview card retires
+        // itself through the job's lease. Only an IDLE app falls through to
+        // the dismiss chain below. This check MUST precede the tooltip
+        // IsVisible arm: a live chunk-preview card IS a visible tooltip.
+        if (worker.IsBusy() || emebalachat::AnyReadingJobRunning(reading_jobs)) {
+            worker.RequestCancelTranslation();
+            emebalachat::CancelAllReadingJobs(reading_jobs);
+            DIAG_LOG("UI", "esc unified cancel: pipeline=%d drag=%d retranslate=%d back=%d dbl=%d",
+                     worker.IsBusy() ? 1 : 0,
+                     emebalachat::ReadingJobRunning(reading_jobs.drag_running) ? 1 : 0,
+                     emebalachat::ReadingJobRunning(reading_jobs.retranslate_running) ? 1 : 0,
+                     emebalachat::ReadingJobRunning(reading_jobs.back_running) ? 1 : 0,
+                     emebalachat::ReadingJobRunning(reading_jobs.dbl_running) ? 1 : 0);
+            return true;
+        }
         if (tooltip.IsVisible()) {
             tooltip.Dismiss();
             return true;
@@ -4939,6 +6149,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::wstring src = tooltip.GetSourceText();
         std::string src_code = tooltip.GetSourceLangCode();
+        // V10F FUP-02: a palette pick can dispatch after a mid-session
+        // dismissal emptied the card state (TeardownCard clears both fields);
+        // the snapshot latched at picker-open time is then the fallback that
+        // keeps this retranslate fed. Live non-empty state always wins, so a
+        // card refreshed while the picker was open still retranslates its
+        // newest content.
+        if (src.empty()) {
+            if (auto pick_snap = tooltip.GetLanguagePickerSourceSnapshot();
+                pick_snap.valid) {
+                src = std::move(pick_snap.source_text);
+                src_code = std::move(pick_snap.source_lang_code);
+            }
+        }
         std::string new_tgt = std::string(new_target_lang);
 
         RECT r = {};
@@ -4975,6 +6198,13 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             DIAG_LOG("UI", "retranslate_enqueued gen=%llu tgt_len=%zu",
                      static_cast<unsigned long long>(gen), new_tgt.size());
         }
+        // V10F RISK-04 Option C (261122_0002): a fresh language pick supersedes
+        // an in-flight re-translation through the unified cancel token (the
+        // old run unwinds at the next between-chunk poll instead of burning
+        // inference whose render the B1-H1 guard would drop anyway).
+        if (emebalachat::ReadingJobRunning(reading_jobs.retranslate_running)) {
+            reading_jobs.retranslate_cancel.store(true, std::memory_order_release);
+        }
         retranslate_worker.Submit(RetranslateJob{ src, src_code, new_tgt,
                                                   r.left, r.top, gen });
     });
@@ -4997,6 +6227,23 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
 
         std::wstring src = tooltip.GetSourceText();
         std::string src_code = tooltip.GetSourceLangCode(); // AUTO fallback only
+        // V10F FUP-02: same empty-state fallback as the target-pick callback
+        // above - the picker-open snapshot keeps a wiped card's retranslate
+        // fed. Live non-empty state always wins.
+        if (src.empty()) {
+            if (auto pick_snap = tooltip.GetLanguagePickerSourceSnapshot();
+                pick_snap.valid) {
+                src = std::move(pick_snap.source_text);
+                src_code = std::move(pick_snap.source_lang_code);
+            }
+        }
+        // V10F FUP-03: an "Auto Detect" source pick must DROP the carried
+        // detection code - ResolveEffectiveSource("Auto Detect", "KO") returns
+        // "KO" verbatim (config.cpp), so the stale carried code would feed the
+        // engine the old source and the run_retranslate empty-path re-detect
+        // would never run. A concrete pick keeps the carry (F3-3).
+        src_code = emebalachat::CarriedSourceCodeForSourcePick(src_code,
+                                                               new_source_lang);
         // Keep the currently SHOWN effective target (the drag pair's target
         // may have been pivoted - the tooltip re-shows at the same effective
         // target it is displaying right now).
@@ -5039,6 +6286,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             DIAG_LOG("UI", "retranslate_enqueued_src gen=%llu pick_len=%zu tgt_len=%zu",
                      static_cast<unsigned long long>(gen),
                      new_source_lang.size(), tgt_lang.size());
+        }
+        // V10F RISK-04 Option C: same-queue supersede (see the target-pick site
+        // above for the rationale).
+        if (emebalachat::ReadingJobRunning(reading_jobs.retranslate_running)) {
+            reading_jobs.retranslate_cancel.store(true, std::memory_order_release);
         }
         retranslate_worker.Submit(RetranslateJob{ src, src_code, tgt_lang,
                                                   r.left, r.top, gen });
@@ -5085,19 +6337,276 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                                       hotkey_label, body);
     });
 
+    // ---- V10F P3-C2 (UX-3 Option A, wave B): the badge 3-zone wiring --------
+    // Wired once after badge.Create (the C2 cross-unit contract). The SRC/TGT
+    // zone clicks open the SHARED language picker on the TYPE pair through the
+    // SAME deferred-open seam the tray's "검색…" rows use (the picker module's
+    // per-surface latch + the controller's kMsgOpenLanguagePalette drain own
+    // the modal loop + the single-instance guard, so a badge-opened picker
+    // behaves byte-identically to a tray-opened one); the swap arrow runs the
+    // EXISTING swap verb (PlanLanguageSwap + ApplyLanguageChange, persist +
+    // badge/tray/tooltip refresh + chime all inside the coordinator), which
+    // is ALSO the badge double-click's verb, so both affordances can never
+    // drift. SetSwapRequestCallback is the ONLY swap executor when set (the
+    // zone callback is never handed zone 1), so wiring both cannot swap twice.
+    badge.SetZoneLanguageClickCallback([&](int zone) {
+        if (zone != 0 && zone != 2) {
+            // Zone 1 (the arrow) arrives here ONLY when no swap callback is
+            // wired - ours is, so this is the unreachable defensive arm; run
+            // the swap verb anyway rather than dropping the click.
+            if (zone == 1) trayCallbacks.on_swap_languages();
+            return;
+        }
+        // Mirror the tray's typing-picker request verbatim (tray.cpp
+        // typing_src_req/typing_tgt_req): the same surface/role the tray's
+        // "검색…" rows latch, the active engine's registry view, and the
+        // normalized persisted pair as the preselection anchors. The commit
+        // dispatches through the controller drain into ApplyLanguageChange
+        // (LanguageContext::Type), so the badge path and the tray path are
+        // ONE code path end to end.
+        const auto snap = config.GetSnapshot();
+        emebalachat::language_palette::PickerInit req;
+        req.surface = emebalachat::language_palette::PickerSurface::TrayTyping;
+        req.role = (zone == 0) ? emebalachat::language_palette::PickerRole::Source
+                               : emebalachat::language_palette::PickerRole::Target;
+        req.engine = emebalachat::TrayLanguageEngineFor(
+            emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+        req.source_code = emebalachat::NormalizeLanguageCode(snap.type_source_language);
+        req.target_code = emebalachat::NormalizeLanguageCode(snap.type_target_language);
+        ::SetLastError(ERROR_SUCCESS);
+        if (!emebalachat::PostDeferredLanguagePaletteOpen(emebalachat::g_hControllerWnd,
+                                                          req)) {
+            const DWORD post_gle = ::GetLastError();
+            if (post_gle != ERROR_SUCCESS) {
+                DIAG_F("MAIN/BadgeZone/001: deferred language-picker open post failed (GLE %lu)\n",
+                       post_gle);
+            } else {
+                DIAG_F("MAIN/BadgeZone/002: deferred language-picker open not posted (coalesced)\n");
+            }
+        }
+    });
+    badge.SetSwapRequestCallback([&]() {
+        // The existing tray Swap verb: same planner, same coordinator, same
+        // persist + chime; ApplyLanguageChange's surface refresh re-pushes the
+        // badge label (and the new AUTO-source "" contract rides the FUP-03
+        // coordinator path, so the pill never shows a stale code).
+        trayCallbacks.on_swap_languages();
+    });
+    // The engine mini-tag chip click opens the tray context menu at the badge
+    // (the same surface the badge right-click already summons): engine
+    // switching, recent languages and the settings container all stay one
+    // click away from the chip.
+    badge.SetTagClickCallback([&]() {
+        tray.ShowContextMenu();
+    });
+
+    // ---- V10F P3-C3 (UX-2, wave B): the settings hub action set -------------
+    // SetHubActions runs ONCE at startup (the g_open_* contract: the hub
+    // deep-copies the set). Every action reuses an EXISTING entry point - the
+    // deferred dialog opens, the cheat-sheet lambda, the About update check,
+    // the system-defaults reset - so the hub surfaces and their pre-hub
+    // equivalents can never drift. The half-wired-build gate (SyncActionGates)
+    // greys exactly the control whose callback is empty; this set fills all
+    // of them. The lambdas capture wWinMain locals by reference and the hub
+    // window is opened with the CONTROLLER as owner, so a live hub at exit is
+    // destroyed with the controller BEFORE those locals die (the C3 risk
+    // note's owner contract).
+    emebalachat::SetHubActions({
+        // Engines tab.
+        /*open_openai=*/open_openai_settings_deferred,
+        /*open_gguf_manager=*/
+        [&]() {
+            // Direct call, not a post: the hub is a modeless dialog, not a
+            // TrackPopupMenuEx, so the REQ-047 D3 teardown deferral does not
+            // apply; the lambda opens the modal on the controller + refreshes.
+            if (emebalachat::g_open_gguf_model_manager) {
+                emebalachat::g_open_gguf_model_manager();
+            }
+        },
+        /*open_model_download=*/
+        [&]() {
+            // The existing consent + progress flow (REQ-MD D9); the hub is
+            // modeless so a modal parented to the controller is legal.
+            emebalachat::OfferModelDownload(emebalachat::g_hControllerWnd);
+        },
+        // Languages tab.
+        /*open_user_language=*/
+        [&]() {
+            if (emebalachat::g_open_user_lang_add) {
+                emebalachat::g_open_user_lang_add();
+            }
+        },
+        /*open_user_language_manager=*/
+        [&]() {
+            if (emebalachat::g_open_user_lang_manager) {
+                emebalachat::g_open_user_lang_manager();
+            }
+        },
+        // Advanced tab.
+        /*open_cheat_sheet=*/show_cheat_sheet,
+        /*check_updates=*/
+        [&about_window]() {
+            // The About window owns the whole update flow (job slot, zone
+            // states, consent + download); its StartUpdateCheck is private
+            // and reachable only from the card's own [업데이트 확인…] zone, so
+            // the existing PUBLIC entry point is to open the card centered at
+            // the cursor - the same surface the tray "소개" row summons. The
+            // check itself starts on the zone click (documented in the unit
+            // report; a public RequestUpdateCheck on AboutWindow would let a
+            // follow-up start the check directly).
+            POINT cursor = {};
+            ::GetCursorPos(&cursor);
+            about_window.Show(cursor.x, cursor.y);
+        },
+        /*reset_defaults=*/apply_system_defaults,
+        // The additive seams (the C3 wiring contract).
+        /*open_ui_language_picker=*/
+        [&config]() {
+            // The shared 검색… picker in its UI-language mode: the same
+            // TrayUiLanguage request shape the tray's own row latches
+            // (surface = mode discriminator, role inert, engine Auto, the
+            // canonical persisted locale spelling - "auto" routed through
+            // StringToLocale's auto branch, never the raw empty string).
+            const auto snap = config.GetSnapshot();
+            const bool auto_checked = (snap.ui_language == "auto" ||
+                                       snap.ui_language.empty());
+            emebalachat::language_palette::PickerInit req;
+            req.surface = emebalachat::language_palette::PickerSurface::TrayUiLanguage;
+            req.role = emebalachat::language_palette::PickerRole::Source;
+            req.engine = emebalachat::LanguageEngine::Auto;
+            req.source_code = emebalachat::I18n::LocaleToString(
+                emebalachat::I18n::StringToLocale(auto_checked ? "auto"
+                                                               : snap.ui_language));
+            req.target_code.clear();
+            ::SetLastError(ERROR_SUCCESS);
+            if (!emebalachat::PostDeferredLanguagePaletteOpen(
+                    emebalachat::g_hControllerWnd, req)) {
+                const DWORD post_gle = ::GetLastError();
+                if (post_gle != ERROR_SUCCESS) {
+                    DIAG_F("MAIN/HubPicker/001: deferred UI-language picker post failed (GLE %lu)\n",
+                           post_gle);
+                }
+            }
+        },
+        /*change_typing_pair=*/
+        [&config]() {
+            const auto snap = config.GetSnapshot();
+            emebalachat::language_palette::PickerInit req;
+            req.surface = emebalachat::language_palette::PickerSurface::TrayTyping;
+            req.role = emebalachat::language_palette::PickerRole::Source; // Tab flips to target
+            req.engine = emebalachat::TrayLanguageEngineFor(
+                emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+            req.source_code = emebalachat::NormalizeLanguageCode(snap.type_source_language);
+            req.target_code = emebalachat::NormalizeLanguageCode(snap.type_target_language);
+            ::SetLastError(ERROR_SUCCESS);
+            if (!emebalachat::PostDeferredLanguagePaletteOpen(
+                    emebalachat::g_hControllerWnd, req)) {
+                const DWORD post_gle = ::GetLastError();
+                if (post_gle != ERROR_SUCCESS) {
+                    DIAG_F("MAIN/HubPicker/002: deferred typing-pair picker post failed (GLE %lu)\n",
+                           post_gle);
+                }
+            }
+        },
+        /*change_drag_pair=*/
+        [&config]() {
+            const auto snap = config.GetSnapshot();
+            emebalachat::language_palette::PickerInit req;
+            req.surface = emebalachat::language_palette::PickerSurface::TrayTooltip;
+            req.role = emebalachat::language_palette::PickerRole::Source; // Tab flips to target
+            req.engine = emebalachat::TrayLanguageEngineFor(
+                emebalachat::TrayPreferredEngineIndex(snap.engine_type));
+            req.source_code = emebalachat::NormalizeLanguageCode(snap.drag_source_language);
+            req.target_code = emebalachat::NormalizeLanguageCode(snap.drag_target_language);
+            ::SetLastError(ERROR_SUCCESS);
+            if (!emebalachat::PostDeferredLanguagePaletteOpen(
+                    emebalachat::g_hControllerWnd, req)) {
+                const DWORD post_gle = ::GetLastError();
+                if (post_gle != ERROR_SUCCESS) {
+                    DIAG_F("MAIN/HubPicker/003: deferred drag-pair picker post failed (GLE %lu)\n",
+                           post_gle);
+                }
+            }
+        },
+        /*set_badge_visible=*/
+        [&badge, &refresh_tray](bool visible) {
+            // The tray on_toggle_badge idiom minus the flip: runtime-only
+            // visibility (never persisted - the tray toggle's contract), with
+            // the SC-02 refresh so the tray check mark follows immediately.
+            badge.SetVisible(visible);
+            refresh_tray();
+        },
+        /*apply_extra=*/
+        [&config, &engine](const emebalachat::settings_hub::HubExtraSettings& extra) {
+            // The fields the hub deliberately does NOT write itself. The
+            // hotkey_* strings restart-apply (the hook compiles them at
+            // Start()); the sampling values and the cloud-fallback switch take
+            // effect NOW through the same engine pushers the startup path uses
+            // (engine.cpp applies them under its own mutex). V10F-R1 F-02: the
+            // config fields are written through the LOCKED verbs (the BUG-08
+            // class — an off-thread SaveToFile serialises them under mutex_, so
+            // the direct assignments this callback used to make could interleave
+            // with that iteration); drag_to_translate / cloud_fallback_enabled
+            // keep their established write discipline (snapshot-pair atomic /
+            // startup-gated single writer).
+            config.SetHotkeyToggle(extra.hotkey_toggle);
+            config.SetHotkeyLang(extra.hotkey_lang);
+            config.SetHotkeyMode(extra.hotkey_mode);
+            config.SetHotkeySelectionTranslate(extra.hotkey_selection_translate);
+            config.SetSamplingParams(extra.temperature, extra.top_p, extra.top_k,
+                                     extra.repetition_penalty);
+            config.drag_to_translate = extra.drag_to_translate;
+            config.cloud_fallback_enabled = extra.cloud_fallback_enabled;
+            engine.SetSamplingParams(extra.temperature, extra.top_p, extra.top_k,
+                                     extra.repetition_penalty);
+            engine.SetCloudFallbackEnabled(extra.cloud_fallback_enabled);
+        },
+        /*after_apply=*/
+        [&](const emebalachat::settings_hub::HubApplyResult& result) {
+            // Re-push exactly the surfaces that moved (the C3 contract). The
+            // hub already persisted + wrote the config; this is view-only.
+            if (result.theme_changed) {
+                // Reuses the shared theme coordinator: ui::SetActiveTheme +
+                // badge/tray/tooltip/about repaint + drag-icon re-show. The
+                // config already carries the normalized theme, so this is an
+                // apply of the persisted value, not a second decision.
+                apply_theme_change(config.GetSnapshot().ui_theme);
+            }
+            if (result.engine_host_changed) {
+                // SetEngineHostConfig -> RefreshActiveEngine -> warmup
+                // re-evaluation, the g_open_engine_host_settings OK-path push.
+                engine.SetEngineHostConfig(config.engine_host);
+            }
+            // The hub wrote auto_send/back_translation/sound directly: the
+            // SC-02 refresh re-pushes the tray (incl. the back-translate check)
+            // and the badge auto-send chip in one place.
+            refresh_tray();
+            if (!config.back_translation_enabled.load(std::memory_order_relaxed)) {
+                tooltip.DismissThreadSafe();
+            }
+        },
+    });
+
     // Badge Mouse Controls:
     // Single Click: Cancel an in-flight translation, otherwise Toggle Active / Paused
     badge.SetClickCallback([&]() {
-        // 261121_0002 (T6, design-pick.md "main.cpp"): while a translation
-        // task is in flight the single click CANCELS it (worker.IsBusy() ->
-        // RequestCancelTranslation - GUI-thread safe, RELEASE store, immediate
-        // "Cancelling..." badge feedback; the task then ends Canceled, holding
-        // the Enter so the untranslated original is never submitted). While
-        // idle the click keeps the legacy pause toggle. The click still
-        // arrives through the kTimerSingleClick deferral, so the cancel lands
-        // after the OS double-click window - by design, a double-click (swap
+        // 261121_0002 (T6, design-pick.md "main.cpp") + V10F (261122_0002
+        // P2-F): while ANY translation is in flight the single click CANCELS
+        // it - the Enter pipeline (worker.IsBusy) AND the four reading
+        // workers (drag / retranslate / back-translate / double-Ctrl+C via
+        // the unified registry). The cancel tokens are latched (RELEASE
+        // stores) and polled at the engine's between-chunk seams, so the
+        // tasks unwind bounded by one chunk/request round; while idle the
+        // click keeps the legacy pause toggle. The click still arrives
+        // through the kTimerSingleClick deferral, so the cancel lands after
+        // the OS double-click window - by design, a double-click (swap
         // languages) must never be swallowed by a cancel.
-        worker.IsBusy() ? worker.RequestCancelTranslation() : hook.ToggleActive();
+        if (worker.IsBusy() || emebalachat::AnyReadingJobRunning(reading_jobs)) {
+            worker.RequestCancelTranslation();
+            emebalachat::CancelAllReadingJobs(reading_jobs);
+            return;
+        }
+        hook.ToggleActive();
     });
 
     // Double Click: Swap Source ⇄ Target
@@ -5154,6 +6663,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     //     Translate() is still in flight (the engine mutex is held across the
     //     whole cloud/host request) before the manager is destroyed.
     engine.RequestCancel();
+    // V10F BUG-09/RISK-01: the pipeline worker can hold a queued or in-flight
+    // Enter translation that the engine latch alone does not unwind promptly -
+    // RequestCancelTranslation flips its per-task cancel (GUI-thread safe,
+    // RELEASE store) so the task ends Canceled instead of starting engine
+    // work that could transmit user text after the exit intent.
+    worker.RequestCancelTranslation();
     // fix-list-round15 R18 (unit F-4): latch the probe service's shutdown
     // intent HERE - at the start of the sequence, before the language-sync
     // drain below, whose accepted-plan path calls
@@ -5169,6 +6684,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     mouse_hook.Stop();
     hook.Stop();
     worker.Stop();
+    // V10F BUG-09/RISK-01: the tray icon and the on-disk config are retired
+    // BEFORE the bounded worker joins below. Rationale: (a) a tray click/menu
+    // pick in the join window could dispatch new work or a config write while
+    // the teardown is bounded-waiting - Destroy() removes the notify icon so
+    // the interaction surface is gone (the later language-sync drain's
+    // refresh_tray() call is benign: SystemTray::UpdateStatus's NIM_MODIFY
+    // simply fails on the deleted icon); (b) if a bounded join escalates to
+    // the TerminateProcess backstop (probe_service.ShutdownJoinWorkers, the
+    // last bounded join below), everything after this point would never run -
+    // persisting config HERE guarantees the session's writes survive that
+    // escalation. Every later mutation path still self-persists (the drain's
+    // ApplyLanguageChange and the probe recorded callback both call
+    // SaveToFile themselves), so nothing is lost by the early write.
+    tray.Destroy();
+    config.SaveToFile();
     // R6 Phase 3 (audit item 7): join the drag-translate worker here, BEFORE
     // the language-sync queue drain below (no producer can post a
     // kMsgApplyLanguageSync payload after this point) and before any surface
@@ -5263,6 +6793,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     // REQ-047 D3: retire the OpenAI coordinator with it, so a late posted
     // kMsgOpenOpenAiSettings can never call into destroyed config/engine/tray.
     emebalachat::g_apply_openai_settings = nullptr;
+    // V10F-R1 F-17: the consent-origin seam retires with the same contract.
+    emebalachat::g_apply_openai_consent_origin = nullptr;
     // REQ-051 (Symptom D): the kDeleted seam retires with the same contract.
     emebalachat::g_apply_openai_deleted = nullptr;
     // REQ-048 R2-D: retire the gguf-model-manager coordinator with it, so a
@@ -5302,11 +6834,18 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     if (emebalachat::g_hPowerWnd) {
         ::WTSUnRegisterSessionNotification(emebalachat::g_hPowerWnd);
     }
-    tray.Destroy();
+    // V10F BUG-09/RISK-01: tray.Destroy() moved ABOVE the bounded worker joins
+    // (right after worker.Stop()); the notify icon is already gone here.
     badge.Destroy();
     tooltip.Destroy();
     drag_icon.Destroy();
     about_window.Destroy();
+    // V10F-R1 F-09: the modeless translation editor has no parent/owner, so it
+    // never appeared in any teardown list; destroy it here (GUI thread) before
+    // the HWND teardown continues, then zeroize the translation-history ring
+    // (full user content) before the process teardown frees its buffers.
+    emebalachat::translation_editor_window::ShutdownDestroy();
+    emebalachat::translation_history::Clear();
     // 260922_0001 A8: join the resident sound worker last — the hook thread
     // (stopped above via hook.Stop()) and the tray menu callbacks (retired by
     // tray.Destroy()) were the only PlaySoundAsync producers, so no enqueue
@@ -5327,7 +6866,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     emebalachat::g_pTooltip = nullptr; // REQ-005 (M6 T6): release the repair-thread view
     emebalachat::g_hControllerWnd = nullptr;
 
-    config.SaveToFile();
+    // V10F BUG-09/RISK-01: the unconditional exit save moved ABOVE the bounded
+    // worker joins (right after worker.Stop()); nothing below mutates config.
     ::CoUninitialize();
 
     if (hMutex) {

@@ -89,7 +89,81 @@ enum class TranslationStatus {
     // their integer order (0..4), so log-based diagnostic scripts that
     // static_cast<int>(status) stay compatible.
     LocalModelMissing,
+    // V10F-R1 (261122_0002 fix-list round 1, F-11): a multi-frame coordinator
+    // run that returns a stitched PREFIX — a later frame failed after earlier
+    // frames produced text, and ONLY a preview-opt-in caller (on_chunk_text;
+    // translation_coordinator.hpp PartialResultsOptIn) can ever receive this.
+    // The text is real but incomplete, so the status must never be the
+    // plain-Ok whole-answer attribution. Appended AFTER LocalModelMissing:
+    // existing values keep their integer order, so log-based diagnostic
+    // scripts that static_cast<int>(status) stay compatible (the same
+    // discipline as the LocalModelMissing append above). Consumers that switch
+    // on specific statuses treat an unrecognized value like Ok-with-text (the
+    // conservative reading: the result is used, no failure surface fires).
+    Partial,
 };
+
+// V10F (261122_0002 P3-C4, E2 Option B): the HONEST strict-local failure status
+// for a local-seam convergence that has NO cloud consent left to spend.
+//
+// Before this, every non-served strict-local request reported
+// CloudConsentBlocked, so a host that answered "model_missing" — the pinned
+// Hy-MT2 registry file is not installed, or a user_gguf pick has no live
+// binding (ResolveLocalRequestModelId above sends the empty pin and the host
+// answers exactly this) — blamed the H2 privacy gate and sent the user to the
+// cloud-consent wording instead of the model-install / repair path. "model_missing"
+// is the ONLY local-seam code that names an absent model, so it is the only one
+// promoted: every other permanent code (bad_request / unauthorized /
+// version_mismatch / pin_mismatch / no_host_binary / ...) and every transient
+// code that already survived the REQ-051 retry keeps CloudConsentBlocked (the
+// pre-fix status for those paths is unchanged). The Auto policy and the
+// consented explicit-local policy never reach this mapping — they take the
+// cloud leg above it.
+//
+// Pure and header-inline so the unit suite pins the mapping directly; the
+// downstream consumers (main.cpp's strict-failure modal, worker.cpp's audible
+// set) already handle BOTH statuses, so this is a truthfulness change, not a
+// new routing surface.
+constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err) {
+    return host_err == "model_missing" ? TranslationStatus::LocalModelMissing
+                                       : TranslationStatus::CloudConsentBlocked;
+}
+
+// ---- 261123_0001 (handoff §1.2, Bug A): user_gguf model-missing routing ----
+//
+// The host's model_missing answer for the user_gguf route lumps THREE causes
+// (the registry file-missing fast-path, an orchestrator spawn failure, and a
+// worker load failure: an HF-incompatible .gguf fails the llama load and maps
+// to the same code), and the frozen v1 wire cannot split them. The client
+// re-derives the ONE fact that changes the UX headlessly: is the pinned user
+// model file actually on disk? Decision table (pinned_model_file_present,
+// load_failure_manager_already_shown_this_session) -> route:
+//   * (false, *) -> kOpenManager. A file-missing miss is a REAL state change
+//     (unregistered / deleted / moved model): the manager is the right fix
+//     every time, so this arm is NEVER latched and a later deletion re-opens
+//     even after a load-failure session.
+//   * (true, false) -> kOpenManager. The file EXISTS but the host could not
+//     serve it (the HF-incompatible-model class): the first miss opens the
+//     manager, and the CALLER then arms the sticky per-session flag.
+//   * (true, true) -> kShowTooltipHint. The same load-failure state recurred:
+//     degrade to a quiet tooltip hint instead of re-opening the modal on
+//     every translation ("one manager open per load-failure state per
+//     session; afterwards the same state switches to the tooltip hint").
+// Pure and header-inline (the StrictLocalFailureStatus precedent) so the unit
+// suite pins the decision table directly; main.cpp owns the file-presence
+// probe and the tooltip/manager routing.
+enum class UserGgufMissingRoute { kOpenManager, kShowTooltipHint };
+
+inline UserGgufMissingRoute RouteUserGgufModelMissing(
+    bool pinned_model_file_present,
+    bool load_failure_manager_already_shown_this_session) {
+    if (!pinned_model_file_present) {
+        return UserGgufMissingRoute::kOpenManager; // real state change: never latched
+    }
+    return load_failure_manager_already_shown_this_session
+               ? UserGgufMissingRoute::kShowTooltipHint
+               : UserGgufMissingRoute::kOpenManager;
+}
 
 enum class EngineType {
     // Auto (REQ-R02 policy, documented semantics restored): the local source
@@ -502,6 +576,34 @@ public:
     // request (the badge's chunk-count label); the cloud legs tick (i+1, n)
     // themselves. The REQ-R16 RequestCancel() shutdown latch below is
     // UNTOUCHED — the user token is per-request and separate.
+    //
+    // V10F (261122_0002 P2-B) — the long-form / cancel-bridge additions. The
+    // parameter stays `const&`, so Translate() works on ONE internal copy for
+    // the whole request; a caller's context is never mutated:
+    //   * ABORT BRIDGE: when ctx.abort is null the copy points it at this
+    //     manager's shutdown latch (cancel_requested_, a member that outlives
+    //     the call), and a null ctx.cancel is aliased to the same seam so the
+    //     existing cloud chunk loops honor an exit intent without a client
+    //     edit. The local forwarder and the two cloud forwarders consume the
+    //     seam: on a trip they call GoogleTranslate::RequestAbortCurrent /
+    //     OpenAiCompatibleClient::RequestAbortCurrent (P2-A's in-flight
+    //     HINTERNET close) and then the engine-host cancel frame, so blocking
+    //     budgets no longer have to run out.
+    //   * PREVIEW: when ctx.on_chunk_text is installed it is invoked with the
+    //     CUMULATIVE stitched translation after every completed chunk, on the
+    //     CALLING thread (marshalling is the receiver's job), on every engine
+    //     path.
+    //   * PARTIAL OPT-IN: the same callback's presence lets a multi-frame
+    //     local run return the stitched prefix a later frame failure already
+    //     produced (translation_coordinator.hpp PartialResultsOptIn) instead
+    //     of all-or-nothing.
+    //   * LONG FORM: a source whose JSON-escaped size cannot fit one 1 MiB
+    //     engine-host frame is served locally as several <=768 KiB frames
+    //     through the pure coordinator (rolling prev_source/prev_target pair,
+    //     per-frame output validation, between-frame cancel). Below that size
+    //     the single-request path is byte-identical to the pre-V10F build.
+    //   * RISK-03: ctx.out_error_detail (non-null) receives the sanitized
+    //     failure cause; it is cleared at request entry.
     std::wstring Translate(
         std::wstring_view text,
         std::string_view src_code_or_name,
@@ -531,6 +633,16 @@ public:
     // True while a cancellation request is pending.
     // Exposed for the shutdown watchdog and the headless seam tests.
     bool IsCancelRequested();
+
+    // V10F (E1, 261122_0002 P1-U4): ANY-cancel predicate for the local leg's
+    // retry / fallback / cloud-entry gates — the REQ-R16 shutdown latch
+    // (cancel_requested_) OR the per-request user token (ctx.cancel). Before
+    // this helper those gates consulted only ChunkLoopCancelRequested, so a
+    // shutdown latched while a pipe request was in flight let the Auto /
+    // consented-local fallback start a cloud request and transmit the user's
+    // text mid-exit. Exposed for the unit suite (the truth table pins both
+    // operands).
+    bool IsAnyCancelRequested(const TranslationTaskContext& ctx) const;
 
     // REQ-R16 watchdog helper: returns true once the REQUEST-SPANNING lock is
     // free again, i.e. every in-flight Translate() (cloud WinHTTP or

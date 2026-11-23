@@ -452,8 +452,10 @@ std::wstring ReplaceToken(std::wstring text, const std::wstring& token,
 
 // REQ-060: create (once) + show/hide the duplicate-warning pair and swap the
 // top row between the add-method buttons (normal state) and the warning pair
-// (duplicates present). Called at dialog open and after every cleanup. With
-// no duplicate group the dialog looks exactly like the REQ-050 shape.
+// (duplicates present). Called at dialog open, after every cleanup, and (through
+// RefreshManagerView) after every list MUTATION that can change the store's
+// duplicate set — the add-file/add-HF registration flows and delete. With no
+// duplicate group the dialog looks exactly like the REQ-050 shape.
 void ApplyDuplicateWarning(HWND dlg, ManagerDialogState* st) {
     const std::vector<DupGroup> groups = ScanModelDuplicates(st);
     int targets = 0;
@@ -530,6 +532,45 @@ void ApplyDuplicateWarning(HWND dlg, ManagerDialogState* st) {
                "(warn=%p dedupe=%p)\n", static_cast<void*>(warn),
                static_cast<void*>(dedupe));
     }
+}
+
+// V10F (261122_0002 P3-C4, G1 + G3-3): the two manager-view refresh helpers.
+//
+// RefreshManagerView is the ONE post-mutation view update: rebuild the ListBox
+// from the in-memory registry, then re-run the duplicate scan + top-row warning
+// swap. The pre-fix code rebuilt the list after [파일에서 추가…] /
+// [Hugging Face에서 추가…] / [삭제] but left the duplicate warning showing the
+// state from dialog open, so a newly added duplicate was invisible (and a
+// dissolved group's warning stayed up with a dead [중복 정리] button). The
+// policy toggle, rename and double-click-activate paths deliberately keep the
+// rebuild-only call: they never change the registry's FILE set, so paying for
+// the duplicate scan's disk stats there would be pure I/O.
+//
+// SelectManagerRowById re-selects the row whose registry id is `id` after a
+// rebuild. LB_SETCURSEL posts no LBN_SELCHANGE, and every caller runs this
+// right after RebuildManagerList (which already synced the action pair from its
+// row-0 auto-select), so a re-select to another VALID row cannot change the
+// buttons' enabled verdict — that is why this helper carries no
+// SyncManagerActionButtons call of its own (the activate handler keeps its
+// explicit sync; the REQ-053 pin counts exactly four sync call sites).
+void SelectManagerRowById(HWND dlg, ManagerDialogState* st, const std::string& id) {
+    HWND list = ::GetDlgItem(dlg, IDC_MGR_LIST);
+    if (!list) return;
+    const int count = static_cast<int>(::SendMessageW(list, LB_GETCOUNT, 0, 0));
+    for (int row = 0; row < count; ++row) {
+        const LPARAM data =
+            ::SendMessageW(list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
+        if (data >= 0 && static_cast<size_t>(data) < st->user_ids.size() &&
+            st->user_ids[static_cast<size_t>(data)] == id) {
+            ::SendMessageW(list, LB_SETCURSEL, static_cast<WPARAM>(row), 0);
+            break;
+        }
+    }
+}
+
+void RefreshManagerView(HWND dlg, ManagerDialogState* st) {
+    RebuildManagerList(dlg, st);
+    ApplyDuplicateWarning(dlg, st);
 }
 
 // REQ-060: [중복 정리] — move ONLY the unregistered side of each duplicate
@@ -610,9 +651,8 @@ void RunDuplicateCleanup(HWND dlg, ManagerDialogState* st) {
     // Aborted by the shell is a quiet no-op (same discipline as a declined
     // confirmation; with FOF_WANTNUKEWARNING this also covers a declined
     // Recycle-Bin-full permanent-delete warning); success and failure both
-    // refresh from the live store.
-    RebuildManagerList(dlg, st);
-    ApplyDuplicateWarning(dlg, st);
+    // refresh from the live store (list + duplicate warning in one step).
+    RefreshManagerView(dlg, st);
 }
 
 INT_PTR CALLBACK RenameModelProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -743,6 +783,14 @@ struct HfAddDialogState {
     std::thread worker;
     bool worker_running = false;
     bool registered = false; // out: a model was registered (or reused)
+    // V10F (261122_0002 P3-C4, G2): the runtime progress bar's mode. The bar is
+    // created with PBS_MARQUEE and PBM_SETMARQUEE TRUE (unknown length); the
+    // first determinate percent clears the PBS_MARQUEE STYLE once (a plain
+    // PBM_SETMARQUEE FALSE leaves the marquee animation in charge, so
+    // PBM_SETPOS/PBM_SETRANGE32 had no visible effect and the bar kept sweeping
+    // while the status line said "42%"). Tracked per dialog so the style is
+    // touched exactly once per transition, never on every progress tick.
+    bool marquee_active = false;
     // Written by the worker before its final kHfMsgDone post; read by the GUI
     // thread only after the join (join is the happens-before edge).
     std::wstring worker_url;
@@ -816,10 +864,13 @@ using HfScopedHInternet = std::unique_ptr<void, HfScopedHandleDeleter>;
 // every failure AND cancel path; the GUI thread moves it to the final name
 // after a verified-complete exit.
 //
-// Redirect note: huggingface.co resolve URLs answer 302 -> the HF CDN, and
-// WinHTTP's DEFAULT redirect policy follows up to 5 hops while REFUSING
-// https->http downgrades — exactly the safe shape for this flow, so no
-// explicit option is set.
+// Redirect handling (V10F-R1 F-15): huggingface.co resolve URLs answer 302 ->
+// the HF CDN. The session's redirect policy is pinned to NEVER (fail-closed on
+// the SetOption result) and the 3xx hops are followed ONLY by the explicit
+// allowlisted loop inside — https scheme gate + HF-CDN host allowlist + hop
+// cap + cancel polls between hops (the update_checker SplitHttpsUrl /
+// IsAllowedUpdateHost pattern; the WinHTTP default auto-follow can never bypass
+// the gate because the policy is pinned).
 void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
     int code = 1; // 0 complete / 1 failed / 2 cancelled by the user
     unsigned long long got = 0;
@@ -840,6 +891,15 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
             constexpr std::size_t kPrefixLen = 23; // "https://huggingface.co/"
             static_assert(kPrefixLen == std::wstring_view(L"https://huggingface.co/").size());
             const wchar_t* path = st->worker_url.c_str() + kPrefixLen;
+            // V10F (261122_0002 P3-C4, G3-4): the request target must be
+            // percent-encoded. A show_file_info URL is decoded by
+            // NormalizeHfUrl (a space, a UTF-8 filename), so the raw path can
+            // carry bytes WinHTTP cannot put on a request line — the request
+            // then fails with a server 400 (or, once registered, a 404 probe).
+            // Encoding happens HERE only, after the validators ran, so
+            // NormalizeHfUrl / IsHfResolveUrl keep the decoded form.
+            const std::wstring request_path =
+                ToUtf16(HfPercentEncodeRequestPath(ToUtf8(path)));
             HfScopedHInternet session(::WinHttpOpen(
                 L"EmebalaChat/1.0 (gguf-model-manager)",
                 WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -849,6 +909,20 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
                 // bootstrap's 15s receive timeout suits small manifests
                 // only): resolve/connect 10s, send 30s, receive 60s.
                 ::WinHttpSetTimeouts(session.get(), 10000, 10000, 30000, 60000);
+                // V10F-R1 F-15: pin the redirect policy to NEVER so a 3xx is
+                // handled ONLY by the explicit allowlisted follower below —
+                // the WinHTTP default (auto-follow up to 5 hops) would bypass
+                // the gate entirely. Fail-closed: a SetOption failure kills
+                // the session, every downstream handle creation fails, and
+                // the download refuses (the update_checker PinRedirectPolicyNever
+                // discipline, with the result checked).
+                DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+                if (!::WinHttpSetOption(session.get(), WINHTTP_OPTION_REDIRECT_POLICY,
+                                        &redirect_policy, sizeof(redirect_policy))) {
+                    DIAG_F("UI/HfAdd/022: redirect-policy pin refused (GLE %lu); failing closed\n",
+                           ::GetLastError());
+                    session.reset();
+                }
             }
             // REQ-052: connect/request publish into the dialog state as soon as
             // they exist, so the IDCANCEL path can close them and abort a
@@ -870,7 +944,8 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
             HfScopedHInternet request(nullptr, HfScopedHandleDeleter{
                 st, &HfAddDialogState::hf_request});
             if (connect) {
-                request.reset(::WinHttpOpenRequest(connect.get(), L"GET", path,
+                request.reset(::WinHttpOpenRequest(connect.get(), L"GET",
+                                                   request_path.c_str(),
                                                    nullptr, WINHTTP_NO_REFERER,
                                                    WINHTTP_DEFAULT_ACCEPT_TYPES,
                                                    WINHTTP_FLAG_SECURE));
@@ -893,7 +968,142 @@ void HfDownloadWorker(HWND dlg, HfAddDialogState* st) {
                 ::WinHttpQueryHeaders(request.get(),
                     WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                     WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
-                if (status != 200) {
+                // V10F-R1 F-15: 301/302/303/307/308 are followed ONLY by the
+                // explicit allowlisted hop loop below — the session policy is
+                // pinned to NEVER (above), so WinHTTP cannot auto-follow and
+                // bypass the gate. Every hop re-targets through
+                // SplitHfRedirectLocation + IsAllowedHfDownloadHost (https AND
+                // Hugging Face's own CDN only), with the Location path kept
+                // VERBATIM — the CDN URL is already wire-encoded and carries
+                // the signed query, so it must NOT go through the percent
+                // encoder the initial decoded path uses. The cancel poll runs
+                // between hops, and the whole follower completes BEFORE the
+                // downloaded bytes reach the structural GGUF gate in
+                // HfRegisterDownloaded.
+                if (status == 301 || status == 302 || status == 303 ||
+                    status == 307 || status == 308) {
+                    wchar_t location[2048] = {};
+                    DWORD loc_sz = sizeof(location);
+                    const BOOL have_loc =
+                        ::WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_LOCATION,
+                                              WINHTTP_HEADER_NAME_BY_INDEX,
+                                              location, &loc_sz,
+                                              WINHTTP_NO_HEADER_INDEX) != FALSE;
+                    // Close this hop's handles (request first: it references
+                    // the connect; the slot deleters keep exactly-once close
+                    // across the worker and the cancel path).
+                    request.reset(nullptr);
+                    connect.reset(nullptr);
+                    if (!have_loc) {
+                        DIAG_F("UI/HfAdd/023: redirect without a Location header; failing closed\n");
+                        ok = false;
+                    } else {
+                        std::string redir_host, redir_path;
+                        // Fail-closed: a non-https target, a userinfo/port-
+                        // bearing host, or ANY host outside the HF CDN
+                        // allowlist kills the download right here.
+                        if (!SplitHfRedirectLocation(ToUtf8(location), &redir_host,
+                                                     &redir_path) ||
+                            !IsAllowedHfDownloadHost(redir_host)) {
+                            DIAG_F("UI/HfAdd/024: redirect target refused (host_len=%zu)\n",
+                                   redir_host.size());
+                            ok = false;
+                        } else {
+                            std::wstring cur_host = ToUtf16(redir_host);
+                            std::wstring cur_path = ToUtf16(redir_path);
+                            // The initial request above + at most 5 explicit
+                            // follows, the same bound WinHTTP's default policy
+                            // used. Each hop publishes its handles into the
+                            // REQ-052 slots so the cancel path aborts a blocked
+                            // call on EVERY hop.
+                            for (int hop = 1; hop < 6 && ok; ++hop) {
+                                if (st->cancel.load(std::memory_order_relaxed)) {
+                                    code = 2;
+                                    ok = false;
+                                    break;
+                                }
+                                request.reset(nullptr);
+                                connect.reset(::WinHttpConnect(
+                                    session.get(), cur_host.c_str(),
+                                    INTERNET_DEFAULT_HTTPS_PORT, 0));
+                                if (connect) {
+                                    std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+                                    st->hf_connect = connect.get();
+                                }
+                                if (connect) {
+                                    request.reset(::WinHttpOpenRequest(
+                                        connect.get(), L"GET", cur_path.c_str(),
+                                        nullptr, WINHTTP_NO_REFERER,
+                                        WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                        WINHTTP_FLAG_SECURE));
+                                    if (request) {
+                                        std::lock_guard<std::mutex> lk(st->hf_handles_mutex);
+                                        st->hf_request = request.get();
+                                    }
+                                }
+                                ok = request != nullptr;
+                                if (!ok) break;
+                                if (::WinHttpSendRequest(
+                                        request.get(), WINHTTP_NO_ADDITIONAL_HEADERS,
+                                        0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) == FALSE ||
+                                    ::WinHttpReceiveResponse(request.get(), nullptr) ==
+                                        FALSE) {
+                                    ok = false;
+                                    break;
+                                }
+                                DWORD hop_status = 0;
+                                DWORD hop_sz = sizeof(hop_status);
+                                ::WinHttpQueryHeaders(
+                                    request.get(),
+                                    WINHTTP_QUERY_STATUS_CODE |
+                                        WINHTTP_QUERY_FLAG_NUMBER,
+                                    WINHTTP_HEADER_NAME_BY_INDEX, &hop_status, &hop_sz,
+                                    WINHTTP_NO_HEADER_INDEX);
+                                if (hop_status == 301 || hop_status == 302 ||
+                                    hop_status == 303 || hop_status == 307 ||
+                                    hop_status == 308) {
+                                    wchar_t hop_loc[2048] = {};
+                                    DWORD hop_loc_sz = sizeof(hop_loc);
+                                    const BOOL hop_have_loc =
+                                        ::WinHttpQueryHeaders(
+                                            request.get(), WINHTTP_QUERY_LOCATION,
+                                            WINHTTP_HEADER_NAME_BY_INDEX, hop_loc,
+                                            &hop_loc_sz,
+                                            WINHTTP_NO_HEADER_INDEX) != FALSE;
+                                    request.reset(nullptr);
+                                    connect.reset(nullptr);
+                                    std::string next_host, next_path;
+                                    if (!hop_have_loc ||
+                                        !SplitHfRedirectLocation(
+                                            ToUtf8(hop_loc), &next_host, &next_path) ||
+                                        !IsAllowedHfDownloadHost(next_host)) {
+                                        DIAG_F("UI/HfAdd/025: redirect hop %d refused; failing closed\n",
+                                               hop);
+                                        ok = false;
+                                        break;
+                                    }
+                                    cur_host = ToUtf16(next_host);
+                                    cur_path = ToUtf16(next_path);
+                                    continue;
+                                }
+                                if (hop_status != 200) {
+                                    DIAG_F("UI/HfAdd/002: HF download HTTP %lu (path_len=%zu)\n",
+                                           hop_status, st->worker_url.size());
+                                    ok = false;
+                                }
+                                break; // 200 (streamed below) or terminal status
+                            }
+                            if (ok && !request) {
+                                // Every hop redirected and the 5-hop cap ran
+                                // out with the last hop's handles already
+                                // closed: fail closed instead of streaming
+                                // from a null request.
+                                DIAG_F("UI/HfAdd/026: redirect hop cap exhausted; failing closed\n");
+                                ok = false;
+                            }
+                        }
+                    }
+                } else if (status != 200) {
                     DIAG_F("UI/HfAdd/002: HF download HTTP %lu (path_len=%zu)\n",
                            status, st->worker_url.size());
                     ok = false;
@@ -1091,7 +1301,13 @@ HfPreFlightResult HfPreFlight(HWND dlg, HfAddDialogState* st,
         res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
     }
     for (const auto& m : res.registry.models) {
-        if (m.files.empty() || m.files[0] != filename) {
+        // V10F (261122_0002 P3-C4, G3-1): the reuse compare folds ASCII case
+        // like the cleanup guard (IsRegisteredModelFile) does — the store is a
+        // Windows volume, so a registered "Model.gguf" IS the file the URL's
+        // "model.gguf" names. The pre-fix operator!= re-downloaded the same
+        // multi-GB file under a second spelling (and, on the post-download
+        // path, refused a completed download as a collision).
+        if (m.files.empty() || !ManagerFileNameMatches(m.files[0], filename)) {
             continue;
         }
         if (m.origin == "bundled") {
@@ -1204,7 +1420,10 @@ bool HfRegisterDownloaded(HWND dlg, HfAddDialogState* st) {
         res.registry.schema_version = engine_host_registry::kRegistrySchemaVersion;
     }
     for (const auto& m : res.registry.models) {
-        if (m.files.empty() || m.files[0] != st->worker_filename) {
+        // V10F (261122_0002 P3-C4, G3-1): same case-folding reuse compare as the
+        // pre-flight; a download that completed for a differently-cased spelling
+        // of an already-registered file is a REUSE, not a collision.
+        if (m.files.empty() || !ManagerFileNameMatches(m.files[0], st->worker_filename)) {
             continue;
         }
         discard_tmp(); // the bytes are already on disk under this entry
@@ -1331,6 +1550,10 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                    ::GetLastError());
         } else {
             ::SendMessageW(prog, PBM_SETMARQUEE, TRUE, 50);
+            // V10F (261122_0002 P3-C4, G2): the bar starts in marquee mode with
+            // the PBS_MARQUEE style the CreateWindowExW call above set; the
+            // first determinate tick clears that style exactly once.
+            st->marquee_active = true;
         }
         return TRUE;
     }
@@ -1341,9 +1564,31 @@ INT_PTR CALLBACK HfAddProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         const auto bytes = static_cast<unsigned long long>(lp);
         if (HWND prog = ::GetDlgItem(dlg, IDC_HF_PROGRESS)) {
             if (percent < 0) {
+                // V10F (261122_0002 P3-C4, G2): a fresh unknown-length run (the
+                // first attempt, or a retry after a failed one) re-arms the
+                // marquee, restoring the PBS_MARQUEE style if a previous
+                // determinate run cleared it.
+                if (!st->marquee_active) {
+                    LONG_PTR style = ::GetWindowLongPtrW(prog, GWL_STYLE);
+                    ::SetWindowLongPtrW(prog, GWL_STYLE,
+                                        style | static_cast<LONG_PTR>(PBS_MARQUEE));
+                    st->marquee_active = true;
+                }
                 ::SendMessageW(prog, PBM_SETMARQUEE, TRUE, 50);
             } else {
-                ::SendMessageW(prog, PBM_SETMARQUEE, FALSE, 0);
+                // V10F (G2): the FIRST determinate tick clears the PBS_MARQUEE
+                // style once. PBM_SETMARQUEE FALSE alone does not hand the bar
+                // back to the position/range messages while the style is set,
+                // so the pre-fix bar kept sweeping and never showed the percent
+                // the status line reported. The style write happens exactly
+                // once per transition; every later tick is range+pos only.
+                if (st->marquee_active) {
+                    LONG_PTR style = ::GetWindowLongPtrW(prog, GWL_STYLE);
+                    ::SetWindowLongPtrW(prog, GWL_STYLE,
+                                        style & ~static_cast<LONG_PTR>(PBS_MARQUEE));
+                    ::SendMessageW(prog, PBM_SETMARQUEE, FALSE, 0);
+                    st->marquee_active = false;
+                }
                 ::SendMessageW(prog, PBM_SETRANGE32, 0, 100);
                 ::SendMessageW(prog, PBM_SETPOS, static_cast<WPARAM>(percent), 0);
             }
@@ -1537,7 +1782,9 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 ::EndDialog(dlg, IDCANCEL);
                 return TRUE;
             }
-            RebuildManagerList(dlg, st);
+            // V10F (261122_0002 P3-C4, G1): a newly registered file can BE a
+            // duplicate copy, so the mutation refreshes the warning too.
+            RefreshManagerView(dlg, st);
             return TRUE;
         }
         case IDC_MGR_ADD_HF: {
@@ -1551,7 +1798,8 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                     ::EndDialog(dlg, IDCANCEL);
                     return TRUE;
                 }
-                RebuildManagerList(dlg, st);
+                // V10F (G1): same mutation contract as the file-picker arm.
+                RefreshManagerView(dlg, st);
             }
             return TRUE;
         }
@@ -1603,22 +1851,9 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 }
                 RebuildManagerList(dlg, st);
                 // Re-select the activated row so the next action is obvious
-                // (the RunRenameFlow re-select precedent).
-                if (HWND list = ::GetDlgItem(dlg, IDC_MGR_LIST)) {
-                    const int count =
-                        static_cast<int>(::SendMessageW(list, LB_GETCOUNT, 0, 0));
-                    for (int row = 0; row < count; ++row) {
-                        const LPARAM data = ::SendMessageW(
-                            list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
-                        if (data >= 0 &&
-                            static_cast<size_t>(data) < st->user_ids.size() &&
-                            st->user_ids[static_cast<size_t>(data)] == id) {
-                            ::SendMessageW(list, LB_SETCURSEL,
-                                           static_cast<WPARAM>(row), 0);
-                            break;
-                        }
-                    }
-                }
+                // (V10F G3-3: the shared re-select helper, same as the policy
+                // toggle and the rename path).
+                SelectManagerRowById(dlg, st, id);
                 SyncManagerActionButtons(dlg, st);
                 return TRUE;
             }
@@ -1635,21 +1870,7 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 RebuildManagerList(dlg, st);
                 // Re-select the renamed row so the next action is obvious.
                 if (!applied_new_id.empty()) {
-                    if (HWND list = ::GetDlgItem(dlg, IDC_MGR_LIST)) {
-                        const int count =
-                            static_cast<int>(::SendMessageW(list, LB_GETCOUNT, 0, 0));
-                        for (int row = 0; row < count; ++row) {
-                            const LPARAM data = ::SendMessageW(
-                                list, LB_GETITEMDATA, static_cast<WPARAM>(row), 0);
-                            if (data >= 0 &&
-                                static_cast<size_t>(data) < st->user_ids.size() &&
-                                st->user_ids[static_cast<size_t>(data)] == applied_new_id) {
-                                ::SendMessageW(list, LB_SETCURSEL,
-                                               static_cast<WPARAM>(row), 0);
-                                break;
-                            }
-                        }
-                    }
+                    SelectManagerRowById(dlg, st, applied_new_id);
                 }
             }
             return TRUE;
@@ -1683,7 +1904,15 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // reset user_model_id and fall engine_type back to "auto" — with
             // the runtime re-point, mirroring the registration pipeline's
             // config-only-would-stale precedent (RegisterUserGgufModel §5).
-            if (st->config->user_model_id == old_id) {
+            // V10F (261122_0002 P3-C4, G3-2): the reset is gated on the LIVE
+            // user_gguf route, exactly like the manager list's active marker
+            // (RebuildManagerList: user_model_id == id && engine_type ==
+            // "user_gguf"). Without the engine_type half, deleting a stale
+            // registration while the user runs google/openai silently flipped
+            // the user's chosen engine to "auto" — a registration-management
+            // action must never re-route a live translation engine.
+            if (st->config->user_model_id == old_id &&
+                st->config->engine_type == "user_gguf") {
                 st->config->SetUserModelId("");
                 st->config->SetEngineTypeName("auto");
                 st->engine->SetEngineType(EngineType::Auto);
@@ -1693,7 +1922,9 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 st->config->SaveToFile();
             }
             st->registry_changed = true;
-            RebuildManagerList(dlg, st);
+            // V10F (G1): removing a registration can dissolve a duplicate
+            // group (the warning must clear) or change the cleanup target set.
+            RefreshManagerView(dlg, st);
             ::MessageBoxW(dlg, I18n::Get(StringId::GgufManagerDone).c_str(),
                           I18n::Get(StringId::GgufManagerTitle).c_str(),
                           MB_OK | MB_ICONINFORMATION);
@@ -1736,7 +1967,14 @@ INT_PTR CALLBACK GgufManagerProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // REQ-060: the toggle deliberately does NOT touch
             // config.user_model_id — the engine binding stays exactly as it
             // was; only the residency hint in the registry flips.
+            // V10F (261122_0002 P3-C4, G3-3): the rebuild re-selects row 0, so
+            // the pre-fix toggle moved the selection away from the toggled
+            // model (and the next [로드 방식 전환] click hit the wrong entry). The
+            // shared helper restores the toggled row. Deliberately rebuild-only:
+            // a policy flip never changes the store's file set, so the
+            // duplicate scan's disk stats stay off this path.
             RebuildManagerList(dlg, st);
+            SelectManagerRowById(dlg, st, sel_id);
             if (const auto* entry = st->registry.FindModel(sel_id)) {
                 // Shape-only (host/004 contract): the id's length, never its
                 // content, goes to the diag log.
@@ -1891,6 +2129,116 @@ bool IsRegisteredModelFile(const engine_host_registry::Registry& registry,
         }
     }
     return false;
+}
+
+// V10F (261122_0002 P3-C4, G3-1), declared in the header: the reuse compare is
+// ManagerLower's A-Z-only fold applied to the UTF-8 bytes (the store is a
+// Windows volume — file-name lookup is case-insensitive). Non-ASCII bytes are
+// compared EXACTLY: unlike a ToUtf16 round trip, no invalid byte sequence can
+// collapse into U+FFFD and make two different names look equal.
+bool ManagerFileNameMatches(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+        unsigned char ca = static_cast<unsigned char>(a[i]);
+        unsigned char cb = static_cast<unsigned char>(b[i]);
+        if (ca >= 'A' && ca <= 'Z') {
+            ca = static_cast<unsigned char>(ca - 'A' + 'a');
+        }
+        if (cb >= 'A' && cb <= 'Z') {
+            cb = static_cast<unsigned char>(cb - 'A' + 'a');
+        }
+        if (ca != cb) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// V10F (261122_0002 P3-C4, G3-4), declared in the header: percent-encode the
+// bytes a WinHTTP request line cannot carry (space, controls, non-ASCII) while
+// leaving an already-encoded %HH triplet alone.
+std::string HfPercentEncodeRequestPath(std::string_view path) {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    auto is_hex = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+               (c >= 'A' && c <= 'F');
+    };
+    std::string out;
+    out.reserve(path.size() + 16);
+    for (size_t i = 0; i < path.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(path[i]);
+        if (c == '%') {
+            if (i + 2 < path.size() && is_hex(path[i + 1]) &&
+                is_hex(path[i + 2])) {
+                out.append(path.substr(i, 3)); // an existing triplet stays as-is
+                i += 2;
+            } else {
+                // A lone '%' (or a truncated/ bogus triplet) encodes to %25 so
+                // it can never start a bogus triplet on the request line.
+                out.append("%25");
+            }
+            continue;
+        }
+        if (c <= 0x20 || c >= 0x7F) {
+            out.push_back('%');
+            out.push_back(kHex[(c >> 4) & 0x0F]);
+            out.push_back(kHex[c & 0x0F]);
+            continue;
+        }
+        out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+
+// ---- V10F-R1 F-15: the explicit redirect follower (pure, headless-testable)
+//
+// The download worker pins the session redirect policy to NEVER and re-targets
+// 3xx hops ONLY through these two gates — the update_checker SplitHttpsUrl /
+// IsAllowedUpdateHost discipline (a redirect Location is attacker-influenceable
+// under endpoint compromise, so every hop must stay on Hugging Face's own
+// infrastructure).
+
+bool IsAllowedHfDownloadHost(std::string_view host) {
+    // The exact origin host plus HF's own CDN suffixes. Every check needs at
+    // least one label char before the dot, so the bare suffix domains
+    // (".huggingface.co" / ".hf.co" are not registrable anyway) match nothing.
+    if (host == "huggingface.co") return true;
+    constexpr std::string_view kHfCoSuffix = ".huggingface.co";
+    if (host.size() > kHfCoSuffix.size() &&
+        host.compare(host.size() - kHfCoSuffix.size(), kHfCoSuffix.size(),
+                     kHfCoSuffix) == 0) {
+        return true;
+    }
+    constexpr std::string_view kCoSuffix = ".hf.co";
+    return host.size() > kCoSuffix.size() &&
+           host.compare(host.size() - kCoSuffix.size(), kCoSuffix.size(),
+                        kCoSuffix) == 0;
+}
+
+bool SplitHfRedirectLocation(std::string_view url, std::string* out_host,
+                             std::string* out_path) {
+    if (out_host) out_host->clear();
+    if (out_path) out_path->clear();
+    constexpr std::string_view kPrefix = "https://";
+    if (url.substr(0, kPrefix.size()) != kPrefix) return false;
+    const std::string_view rest = url.substr(kPrefix.size());
+    const size_t slash = rest.find('/');
+    const std::string_view host = rest.substr(0, slash);
+    // Fail-closed: an empty host, userinfo or an explicit port is refused
+    // (HF serves on the default https port; the follower connects there).
+    if (host.empty() || host.find('@') != std::string_view::npos ||
+        host.find(':') != std::string_view::npos) {
+        return false;
+    }
+    if (out_host) out_host->assign(host);
+    if (out_path) {
+        out_path->assign(slash == std::string_view::npos
+                             ? "/"
+                             : rest.substr(slash));
+    }
+    return true;
 }
 
 // ---- REQ-050: Hugging Face resolve-URL gate (pure, headless-testable) -----
@@ -2162,7 +2510,7 @@ bool HfResolveFilename(std::string_view url, std::string* out_filename) {
 // top-row add-method buttons ([파일에서 추가…] / [Hugging Face에서 추가…]) and
 // shifted the list + action row down by 16 DLU; REQ-060 widened the shell
 // 242 -> 284 DLU (room for the fourth action button) and added the
-// [정책 전환] button to the action row:
+// [로드 방식 전환] button to the action row:
 //   add-file + add-HF + list + empty placeholder + Rename + Delete +
 //   Policy(REQ-060) + Close(IDCANCEL) = 8.
 void BuildGgufManagerTemplate(TemplateBuilder& tb) {

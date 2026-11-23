@@ -1076,10 +1076,12 @@ struct AppConfig {
     // REQ-045 P4-5 (item 3a-2, design §A.3): the registry id of the user's
     // third-party .gguf model ("" = the pinned Hy-MT2 default). Written ONLY by
     // the tray "사용자 선택(.gguf)…" registration pipeline (main.cpp) and read
-    // by the engine host at ITS boot time (host_main.cpp g_user_model_id) —
-    // never read by the Chat worker threads, so like cloud_fallback_enabled it
-    // needs no mutex_ or Snapshot entry (startup/registration-time write,
-    // read-only afterwards).
+    // by the engine host at ITS boot time (host_main.cpp g_user_model_id).
+    // 261123_0001 (Bug A): the field now ALSO rides the I4 Snapshot
+    // (snapshot.user_model_id): the worker-thread LocalModelMissing offer
+    // routing (RequestModelMissingOfferOrModal) classifies file-missing vs
+    // load-failure from the pinned id, so direct member reads stay GUI-only
+    // and every worker read goes through GetSnapshot().
     std::string user_model_id = "";
     std::string source_language = "Auto Detect";
     std::string target_language = "English";
@@ -1090,6 +1092,14 @@ struct AppConfig {
     // drag defaults are resolved at LoadFromFile time via the OS system
     // language (REQ-007), never as a compile-time constant.
     std::string drag_source_language = "Auto Detect";  // REQ-006: auto
+    // 261123_0001: still the compile-time member default, but the EFFECTIVE
+    // default is OS-resolved: LoadFromFile's fresh-create branch rewrites the
+    // pair via ResolveDragDefaultTarget() BEFORE the first save, so config.json
+    // never persists this placeholder. The resolution source is the TRUE OS
+    // language (I18n::DetectSystemLocale + LocaleToString, which query Win32
+    // directly), NOT the app UI locale: wWinMain runs LoadFromFile BEFORE
+    // I18n::Initialize, so any app-locale seam reads the static English default
+    // at seeding time. The value is sticky afterwards (REQ-008/009).
     std::string drag_target_language = "English";      // placeholder; real default = OS lang (REQ-007)
     // F2 (session 260908_0003): true once the user has EXPLICITLY picked a
     // drag TARGET (tooltip/tray Drag-target menu -> ApplyLanguageChange).
@@ -1151,6 +1161,16 @@ struct AppConfig {
     //                    preload session_open). Startup-only write on both
     //                    sides; no Snapshot entry needed (same discipline as
     //                    cloud_fallback_enabled).
+    //
+    // WRITE RULE (V10F BUG-08, 261122_0002 P1-U4): every runtime write goes
+    // through the locked verb SetEngineHostConfig() below — the same mutex_
+    // ToJsonStringLocked()/SaveToFile() hold while they serialise the block —
+    // mirroring the fix-E write surface of the "openai" block on this older
+    // REQ-043-era member (a direct GUI-thread assignment can interleave with
+    // an off-thread save iteration, tearing the block the save then persists).
+    // Reads on the GUI thread stay direct (the startup push + the tray/status
+    // paths, exactly like the openai block); GetEngineHostConfig() is the
+    // locked read for any off-thread consumer.
     EngineHostConfig engine_host;
 
     // REQ-045 P4-3 (design §3b, item 3b): the persisted "openai" block —
@@ -1174,6 +1194,25 @@ struct AppConfig {
     // openai_profiles); the fix-E write-surface pin in
     // tests/openai_profile_tests.inc enforces zero direct runtime writers.
     OpenAiConfig openai;
+
+    // V10F-R1 F-17 (261122_0002 round 1): the persisted http-consent SCOPE —
+    // the "host:port" origin the user granted plaintext-http key transmission
+    // for, recorded next to openai.http_consent_given (default ""). The
+    // request-time gate (the client unit) allows an http send only while the
+    // CURRENT base_url's origin matches this stored origin, so consent given
+    // for one endpoint cannot silently cover a re-pointed base_url. Stored on
+    // AppConfig rather than in OpenAiConfig (which
+    // src/openai_compatible_client.hpp owns — the same file-boundary rule as
+    // openai_declared_languages below) and persisted INSIDE the "openai"
+    // block as "http_consent_origin", so it rides the block's round trip.
+    //
+    // WRITE RULE (same I4 discipline as the openai block): every runtime
+    // write goes through the locked verbs SetHttpConsentOrigin() /
+    // GetHttpConsentOrigin() below — the same mutex_ ToJsonStringLocked() /
+    // SaveToFile() hold while they serialise the block. Direct assignment
+    // stays legal only before any thread exists (startup seeding, unit
+    // tests) and in the FromJsonString load path (already under mutex_).
+    std::string openai_http_consent_origin;
 
     // 261116_0003 P9c-1a: the optional "이 모델이 지원하는 언어" declaration for
     // the OpenAI-compatible endpoint - the CANONICAL set (registry codes,
@@ -1295,6 +1334,29 @@ struct AppConfig {
     std::string hotkey_lang = "Ctrl+F9";
     // REQ-022 (Phase 6): wired to the auto-send-toggle trigger (F-04) via ResolveModeFromConfig at hook Start().
     std::string hotkey_mode = "Ctrl+Shift+Enter";
+    // V10F (L4-C, session 261122_0002 P2-D): the explicit "translate my
+    // selection, in place" combo. Pressing it captures ONLY the user's live
+    // selection (plain Ctrl+C - no SelectAll, no SelectMessageBlock, no
+    // EM_SETSEL), translates that text and pastes the translation back over
+    // the same selection. It is a separate flow from the Enter pipeline, so it
+    // deliberately bypasses the hook's line-break accounting (K), the
+    // REQ-041/042 dead-ledger clamps and the whole-line smart bypass: those
+    // describe an intercepted Enter over keyboard-selected geometry, not an
+    // explicit user command over a selection the user made on purpose.
+    // Parsed once in hook Start() through the shared pure resolver
+    // ResolveSelectionFromConfig (same seam as hotkey_lang/mode); an empty or
+    // unparsable value falls back to the SAME default, so a malformed config
+    // value can never lose the feature. Startup-written / read-only after,
+    // like every other hotkey_* field (see the I4 note above) - no locking.
+    // The combo only swallows a keydown once main.cpp has registered the
+    // selection-replace callback (KeyboardHook::SetSelectionReplaceCallback);
+    // with no callback the combo passes through untouched.
+    // V10F-R1 F-05 (261122_0002 round 1): the default moved Ctrl+Shift+T ->
+    // Ctrl+Alt+T (the old default rode the browser-new-tab chord family).
+    // Deliberately NO migration: existing config.json files keep their stored
+    // value verbatim (a user who rebound the combo keeps it; only fresh
+    // installs and absent/malformed keys see the new default).
+    std::string hotkey_selection_translate = "Ctrl+Alt+T";
     // Task 2 (translation tuning) → Batch 2 empirical grid (150 runs, session
     // 260913_0002 CPO scoring 165411 §7): default lowered 0.7 → 0.0. Greedy
     // decoding (engine.cpp temp<=0.001 branch) measured highest source↔target
@@ -1329,6 +1391,12 @@ struct AppConfig {
         // back-translation card (worker.cpp reads snap.back_translation_enabled).
         bool back_translation_enabled = false;
         bool drag_to_translate = true;
+        // 261123_0001 (Bug A): the pinned user-.gguf registry id, copied under
+        // mutex_ like the rest. The worker-thread LocalModelMissing offer
+        // routing (RequestModelMissingOfferOrModal) classifies file-missing vs
+        // load-failure from this id; GUI-thread sites may still read the member
+        // directly (config.hpp contract at the user_model_id declaration).
+        std::string user_model_id;
     };
 
     // I4: thread-safe snapshot of shared fields (takes mutex_).
@@ -1392,6 +1460,44 @@ struct AppConfig {
     // torn out of the GUI-thread settings-dialog write that has raced it
     // since REQ-045/047/051).
     void SetOpenAiConfig(OpenAiConfig block);
+
+    // V10F-R1 F-17: locked write/read of the persisted openai-block
+    // "http_consent_origin" scope (member contract next to the member — the
+    // same mutex_ the serialiser holds while it emits the openai block, the
+    // SetEngineHostConfig / fix-E discipline, so a GUI-thread consent write
+    // can never interleave with an off-thread SaveToFile() iteration).
+    void SetHttpConsentOrigin(std::string origin);
+    std::string GetHttpConsentOrigin() const;
+
+    // V10F-R1 F-02: locked writes of the settings-hub-applied fields (the same
+    // mutex_ the whole-config serialiser holds — the BUG-08 / fix-E class: the
+    // hub's apply_extra and the hub diag writes run on the GUI thread while an
+    // off-thread SaveToFile() may be serialising these very fields, so the
+    // plain member assignments the hub used to make could interleave with that
+    // iteration; main.cpp:6399-6422 and settings_hub_window.cpp:718-719 now
+    // route through these verbs). The hotkey verbs store the value VERBATIM,
+    // exactly like the FromJsonString load branch — the pure ParseHotkey seam
+    // in hook Start() owns validation and falls back to the default spec, so
+    // a junk stored value can never disable the flow. SetSamplingParams
+    // applies the SAME clamps the load branch applies at the JSON choke point,
+    // so a verb-written value survives the save/load round trip unchanged.
+    void SetHotkeyToggle(std::string value);
+    void SetHotkeyLang(std::string value);
+    void SetHotkeyMode(std::string value);
+    void SetHotkeySelectionTranslate(std::string value);
+    void SetSamplingParams(float temperature, float top_p, int top_k,
+                           float repetition_penalty);
+    void SetDiagLogEnabled(bool enabled);
+    void SetDiagLogContent(bool content);
+
+    // V10F (BUG-08, 261122_0002 P1-U4): locked write/read of the "engine_host"
+    // block (same I4 discipline as SetOpenAiConfig — see the member contract).
+    // main.cpp's engine-host settings coordinator writes through
+    // SetEngineHostConfig() instead of a direct assignment; GetEngineHostConfig
+    // is the locked snapshot read for any consumer that is not on the GUI
+    // thread (and the pair the P1-U5 call-site swap consumes).
+    void SetEngineHostConfig(EngineHostConfig block);
+    EngineHostConfig GetEngineHostConfig() const;
 
     // 261116_0003 P9b-3 (PR9-12): locked write surface for user_languages (the
     // member contract above). Every verb takes mutex_, so a GUI edit can never
