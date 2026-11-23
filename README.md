@@ -276,6 +276,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
   "sound_enabled": true,
   "drag_to_translate": true,
   "cloud_fallback_enabled": false,
+  "local_context_enabled": false,
   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000, "worker_idle_ms": 90000, "warmup": false },
   "diag_log_enabled": false,
   "diag_log_content": false,
@@ -315,6 +316,7 @@ The canonical config file is `%LOCALAPPDATA%\Emebalachat\config.json`. On first 
 - `drag_to_translate`: Master switch for the drag-to-translate (double <kbd>Ctrl</kbd>+<kbd>C</kbd>) feature.
 - `back_translation_enabled` (0.10.6+, default `false`): Floating back-translation verification. When `true`, every successful translation is translated back into the language you typed and the result is shown in a floating card, so you can judge whether the meaning survived the round trip. Opt-in because it costs a second engine round trip per translation; toggle live from the tray **Floating Back-Translation** row. Configs written before 0.10.6 lack the key and read it as `false`.
 - `cloud_fallback_enabled`: Privacy consent gate. When `false` (default), a strict `local` engine pin NEVER sends your text to the cloud, even after a local failure. (Selecting `engine_type: "auto"` is itself the documented consent to the seamless cloud fallback.)
+- `local_context_enabled` (default `false`): Local-engine translate-context pilot. When `true` AND the shared engine host advertises the `context_v1` capability, the app sends the previous translated lines of the same window to the local engine as translation context. Applies to the **built-in local engine only**: the `user_gguf` route (your own registered `.gguf` model, served by the same shared host) is excluded even when this flag is on, because a user model carries an arbitrary chat template. Default `false`: the feature is a pilot, so existing installs (key absent) and fresh installs both start disabled; against a host that does not advertise `context_v1`, nothing is sent. Known residual: the same-window rule compares the window handle AND its owning process, so context never crosses an application, but a same-process window that later inherits a closed window's handle value can be offered that earlier window's lines (same app, same user, on this device, and the pilot is off by default).
 - `engine_host` (0.10.1+): Shared local inference engine (`Emebala.Engine.exe` + its translation worker) settings.
   - `enabled` (default `true`): route local translations through the shared engine when it is available.
   - `spawn` (default `true`): start the engine on demand when it is not running (fixed path `%LOCALAPPDATA%\Emebala\Common\engine\Emebala.Engine.exe`).

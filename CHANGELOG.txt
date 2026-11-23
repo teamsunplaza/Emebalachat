@@ -1,3 +1,17 @@
+v0.10.10 - 2026-11-23 (rebuild 4)
+====================
+
+Context pilot build. Same version, rebuilt: the settings hub gains a
+"translate with previous-sentence context" checkbox (below Enter
+auto-send, default OFF). When turned on, the app sends the last translated
+lines of the same window to the local engine as translation context, so
+consecutive Enter translations stop being isolated sentences. The engine
+must advertise the optional context_v1 capability (the shared engine has
+since rebuild 3); older engines and the user-.gguf route are never sent
+context, and the cloud engines never see it.
+
+Unit tests: 15,293 checks, 0 failures.
+
 v0.10.10 - 2026-11-23 (rebuild 3)
 ====================
 

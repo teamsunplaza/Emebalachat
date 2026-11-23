@@ -7,11 +7,12 @@
 // SettingsTabAdvanced) that consolidates the surfaces the tray used to scatter
 // over three submenus and five modal dialogs:
 //
-//   General   - the seven runtime toggles (auto-send, floating back-translation,
-//               sound, floating badge, start-with-Windows, drag-to-translate,
-//               cloud fallback), the UI-language row ([검색…] opens the shared
-//               picker through an injected callback), the three UI themes, and
-//               the four hotkey combos.
+//   General   - the eight runtime toggles (auto-send, previous-sentence context,
+//               floating back-translation, sound, floating badge,
+//               start-with-Windows, drag-to-translate, cloud fallback), the
+//               UI-language row ([검색…] opens the shared picker through an
+//               injected callback), the three UI themes, and the four hotkey
+//               combos.
 //   Engines   - the local load policy (engine_host.warmup) ABSORBED into a combo
 //               here (the REQ-060 dialog stays as its own entry, unchanged) plus
 //               the four engine-management actions (OpenAI settings / GGUF model
@@ -40,15 +41,18 @@
 //     id->page mapping, so a control can never end up on two pages or on none).
 //   * [확인] applies; [취소] / Esc / the caption ✕ discard. Edits reach
 //     AppConfig ONLY through its LOCKED verbs (SetUiTheme / SetEngineHostConfig
-//     / SetOpenAiDeclaredLanguages) or through the atomic toggles the app has
-//     always flipped from the GUI thread (auto_send / back_translation_enabled /
-//     sound_enabled, the tray on_toggle_sound precedent). The fields that have
-//     NO locked verb (drag_to_translate, cloud_fallback_enabled) are handed to
-//     the caller's apply_extra callback instead of being written here: a plain
-//     std::string / float write racing an off-thread SaveToFile() is exactly the
-//     class of bug V10F BUG-08 / PR9-12 closed for the openai / engine_host /
-//     user-language blocks. The hotkey_* / sampling / diag_log_* fields got
-//     their locked verbs in the V10F-R1 F-02 round and now write through them.
+//     / SetOpenAiDeclaredLanguages / SetLocalContextEnabled) or through the
+//     atomic toggles the app has always flipped from the GUI thread (auto_send /
+//     back_translation_enabled / sound_enabled, the tray on_toggle_sound
+//     precedent). The fields that have NO locked verb (drag_to_translate,
+//     cloud_fallback_enabled) are handed to the caller's apply_extra callback
+//     instead of being written here: a plain std::string / float write racing an
+//     off-thread SaveToFile() is exactly the class of bug V10F BUG-08 / PR9-12
+//     closed for the openai / engine_host / user-language blocks. The hotkey_* /
+//     sampling / diag_log_* fields got their locked verbs in the V10F-R1 F-02
+//     round and now write through them; 261123_0001 ctx-pilot added
+//     local_context_enabled behind its own locked verb (a mutex-backed bool,
+//     deliberately not one of the atomics above).
 //     See the cross-unit contract in the unit report.
 //   * DPI: the template is authored in DLU (the dialog manager maps it through
 //     the dialog font / per-monitor DPI); everything created at runtime goes
@@ -114,7 +118,7 @@ constexpr StringId HubTabCaptionId(int tab) {
 enum : WORD {
     kIdTab = 4800, // runtime-created tab strip (never in the template)
 
-    // General page (4801-4823)
+    // General page (4801-4824)
     kIdAutoSend = 4801,
     kIdBackTranslation,
     kIdSound,
@@ -138,6 +142,12 @@ enum : WORD {
     kIdHotkeyMode,
     kIdHotkeySelectionLabel,
     kIdHotkeySelection,
+    // 261123_0001 ctx-pilot: appended at the TAIL of the General band so the
+    // landed ids above keep their numeric values (kIdAutoSend 4801 ..
+    // kIdHotkeySelection 4823). It renders on the SECOND row, directly below
+    // auto-send, so id order is not template order here. The band ceiling in
+    // HubControlTab is kIdLocalContext, not kIdHotkeySelection.
+    kIdLocalContext,
 
     // Engines page (4830-4837)
     kIdWarmupLabel = 4830,
@@ -186,20 +196,21 @@ inline constexpr short kHubWidthDlu = 420;
 inline constexpr short kHubHeightDlu = 312;
 // {left, top, right, bottom} in DLU: x 8..412, y 6..30.
 inline constexpr RECT kHubTabStripDlu{8, 6, 412, 30};
-// 56 page controls (23 General + 8 Engines + 10 Languages + 15 Advanced) +
+// 57 page controls (24 General + 8 Engines + 10 Languages + 15 Advanced) +
 // [확인] + [취소].
-inline constexpr WORD kHubItemCount = 58;
+inline constexpr WORD kHubItemCount = 59;
 
 // Every page control, in creation order. The ShowPage loop walks THIS table, so
 // a control added to the template but forgotten here stays hidden (and the
 // count pin in tests/p3_c3_tests.inc fails loudly).
 inline constexpr WORD kHubPageControlIds[] = {
-    kIdAutoSend, kIdBackTranslation, kIdSound, kIdBadge, kIdStartWithWindows,
-    kIdDragToTranslate, kIdCloudFallback, kIdUiLanguageLabel, kIdUiLanguageValue,
-    kIdUiLanguageSearch, kIdUiThemeLabel, kIdThemeFluent, kIdThemeEditorial,
-    kIdThemeMonolith, kIdHotkeyHeader, kIdHotkeyToggleLabel, kIdHotkeyToggle,
-    kIdHotkeyLangLabel, kIdHotkeyLang, kIdHotkeyModeLabel, kIdHotkeyMode,
-    kIdHotkeySelectionLabel, kIdHotkeySelection,
+    kIdAutoSend, kIdBackTranslation, kIdLocalContext, kIdSound, kIdBadge,
+    kIdStartWithWindows, kIdDragToTranslate, kIdCloudFallback,
+    kIdUiLanguageLabel, kIdUiLanguageValue, kIdUiLanguageSearch, kIdUiThemeLabel,
+    kIdThemeFluent, kIdThemeEditorial, kIdThemeMonolith, kIdHotkeyHeader,
+    kIdHotkeyToggleLabel, kIdHotkeyToggle, kIdHotkeyLangLabel, kIdHotkeyLang,
+    kIdHotkeyModeLabel, kIdHotkeyMode, kIdHotkeySelectionLabel,
+    kIdHotkeySelection,
     kIdWarmupLabel, kIdWarmupCombo, kIdWarmupDesc, kIdOpenAi, kIdGgufManager,
     kIdModelDownload, kIdResetDeclared, kIdDeclaredSummary,
     kIdTypingPairLabel, kIdTypingPairValue, kIdTypingPairChange, kIdDragPairLabel,
@@ -214,9 +225,12 @@ inline constexpr std::size_t kHubPageControlCount =
     sizeof(kHubPageControlIds) / sizeof(kHubPageControlIds[0]);
 
 // Pure (constexpr): control id -> owning tab, or -1 for chrome the page switch
-// never touches (the tab strip itself, [확인], [취소]).
+// never touches (the tab strip itself, [확인], [취소]). The General ceiling is
+// kIdLocalContext (4824, the 261123_0001 ctx-pilot id appended at the band
+// tail), NOT kIdHotkeySelection: 4825-4829 stay unassigned and the Engines
+// band starts at 4830, so the bands remain disjoint.
 constexpr int HubControlTab(WORD id) {
-    return (id >= kIdAutoSend && id <= kIdHotkeySelection) ? 0
+    return (id >= kIdAutoSend && id <= kIdLocalContext) ? 0
            : (id >= kIdWarmupLabel && id <= kIdDeclaredSummary) ? 1
            : (id >= kIdTypingPairLabel && id <= kIdUserLangManage) ? 2
            : (id >= kIdDiagLogEnabled && id <= kIdCheatSheet) ? 3
@@ -284,6 +298,9 @@ HubHotkeyField MakeHubHotkeyField(std::string_view raw);
 struct HubDraft {
     // Runtime toggles.
     bool auto_send = false;
+    // 261123_0001 ctx-pilot: seed for the "previous-sentence context" checkbox
+    // (AppConfig::Snapshot::local_context_enabled).
+    bool local_context = false;
     bool back_translation = false;
     bool sound = true;
     bool badge_visible = true;
@@ -356,6 +373,9 @@ struct HubApplyPlan {
     bool any_change = false;
     std::string ui_theme; // normalized token
     bool auto_send = false;
+    // 261123_0001 ctx-pilot: persisted through SetLocalContextEnabled, the
+    // flag's locked verb (not an atomic store).
+    bool local_context = false;
     bool back_translation = false;
     bool sound = true;
     bool diag_log_enabled = false;

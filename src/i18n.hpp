@@ -741,6 +741,23 @@ enum class StringId {
     // table carries the English draft verbatim (the deliberate machine-draft
     // baseline of the 261119 policy).
     UserModelLoadFailedHint,      // "사용자 모델을 불러오지 못했습니다. 모델 관리에서 파일과 호환성을 확인하세요." / "Could not load the user model. Check the file and compatibility in Model Manager."
+
+    // 261123_0001 Unit-C (local context pilot, the settings-hub checkbox):
+    // translate the current sentence together with the previous-sentence
+    // context (local engine conversational mode). Inserted at the ENUM TAIL,
+    // immediately before EnumCount, so every pre-existing id keeps its numeric
+    // value and EnumCount absorbs +1 (248 -> 249); the P5 "EnumCount - 36 ==
+    // LanguageSearchNoMatch" sentinel therefore becomes EnumCount - 37 (the
+    // pin-site list for the test update lives in
+    // docs/261123_0001_session_gguf-missing-defaults-followup/). The STRUCT
+    // slot takes the position right AFTER user_model_load_failed_hint and
+    // right BEFORE language_search_auto_chip (the AUTO chip closes the struct
+    // tail per the P9b-3 U5 pin, the same move every tail pass made), so the
+    // enum order and the struct order differ on purpose; the Get() switch is
+    // the mapping. Per-locale fill: Korean is authored; every other designated
+    // table carries the English draft verbatim (the deliberate machine-draft
+    // baseline of the 261119 policy).
+    SettingsLocalContext,      // "이전 문장 문맥과 함께 번역" / "Translate with previous-sentence context"
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 89 since UI-language-89 phase 3,

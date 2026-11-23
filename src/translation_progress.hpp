@@ -71,6 +71,23 @@ struct TranslationTaskContext {
     std::function<void(const std::wstring&)> on_chunk_text;
 
     std::function<void(std::size_t index_1based, std::size_t total)> on_chunk;
+
+    // 261123_0001 ctx-pilot: the window THIS request's text belongs to (the
+    // paste target the pipeline captured at interception time). Opened as a
+    // void* so this header keeps its documented "pure STL, no Win32" contract
+    // (the engine_host_client.hpp pipe-handle precedent): producers store an
+    // HWND, and the engine casts it back for the per-window context gate
+    // (src/translation_context.hpp BuildFragment). nullptr (the default) means
+    // "window unknown", and an unknown window NEVER gets context.
+    void* target_hwnd = nullptr;
+
+    // 261123_0001 ctx-pilot: AppConfig::Snapshot::local_context_enabled, read
+    // ONCE by the pipeline worker (the I4 locked snapshot the task already
+    // carries) and shipped here so the router needs no config read, no global
+    // and no cross-thread flag. false is both the default and the shipped
+    // config default, and the whole pilot is gated on it: with false the
+    // fragment is never built and the local frame keeps the frozen v1 shape.
+    bool local_context_enabled = false;
 };
 
 // Progress numbers are only shown for genuine multi-chunk runs; a single

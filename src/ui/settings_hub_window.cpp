@@ -143,6 +143,9 @@ HubDraft MakeHubDraft(const AppConfig& config, const HubRuntimeState& runtime) {
     // One locked snapshot for every field it carries (the tray/menu idiom).
     const AppConfig::Snapshot snap = config.GetSnapshot();
     draft.auto_send = snap.auto_send;
+    // 261123_0001 ctx-pilot: rides the same locked snapshot (not a separate
+    // mutex read), so the seed and the persisted value can never skew here.
+    draft.local_context = snap.local_context_enabled;
     draft.back_translation = snap.back_translation_enabled;
     draft.sound = snap.sound_enabled;
     draft.drag_to_translate = snap.drag_to_translate;
@@ -189,6 +192,7 @@ HubApplyPlan FoldHubDraft(const HubDraft& edited, const HubDraft& seed) {
     HubApplyPlan plan;
     plan.ui_theme = AppConfig::NormalizeUiTheme(edited.ui_theme);
     plan.auto_send = edited.auto_send;
+    plan.local_context = edited.local_context; // 261123_0001 ctx-pilot
     plan.back_translation = edited.back_translation;
     plan.sound = edited.sound;
     plan.diag_log_enabled = edited.diag_log_enabled;
@@ -244,6 +248,7 @@ HubApplyPlan FoldHubDraft(const HubDraft& edited, const HubDraft& seed) {
     plan.any_change =
         plan.ui_theme != AppConfig::NormalizeUiTheme(seed.ui_theme) ||
         plan.auto_send != seed.auto_send ||
+        plan.local_context != seed.local_context ||
         plan.back_translation != seed.back_translation ||
         plan.sound != seed.sound ||
         plan.diag_log_enabled != seed.diag_log_enabled ||
@@ -445,14 +450,16 @@ void SyncWarmupDesc(HWND dlg) {
 // Pushes the whole draft into the controls (WM_INITDIALOG and the post-callback
 // refresh after the user-language surfaces changed).
 void SyncControlsFromDraft(HWND dlg, const HubDraft& draft) {
-    const int toggle_ids[7] = {kIdAutoSend, kIdBackTranslation, kIdSound,
-                               kIdBadge, kIdStartWithWindows, kIdDragToTranslate,
-                               kIdCloudFallback};
-    const bool toggle_values[7] = {
-        draft.auto_send,      draft.back_translation, draft.sound,
-        draft.badge_visible,  draft.start_with_windows, draft.drag_to_translate,
-        draft.cloud_fallback};
-    for (int i = 0; i < 7; ++i) {
+    // 261123_0001 ctx-pilot: kIdLocalContext joins the General toggle row set
+    // (8 entries, template order: the auto-send row, then its context row).
+    const int toggle_ids[8] = {kIdAutoSend, kIdBackTranslation, kIdLocalContext,
+                               kIdSound, kIdBadge, kIdStartWithWindows,
+                               kIdDragToTranslate, kIdCloudFallback};
+    const bool toggle_values[8] = {
+        draft.auto_send,      draft.back_translation, draft.local_context,
+        draft.sound,          draft.badge_visible,    draft.start_with_windows,
+        draft.drag_to_translate, draft.cloud_fallback};
+    for (int i = 0; i < 8; ++i) {
         ::CheckDlgButton(dlg, toggle_ids[i],
                          toggle_values[i] ? BST_CHECKED : BST_UNCHECKED);
     }
@@ -495,6 +502,7 @@ void SyncControlsFromDraft(HWND dlg, const HubDraft& draft) {
 HubDraft ReadDraftFromControls(HWND dlg, const HubDraft& seed) {
     HubDraft draft = seed;
     draft.auto_send = IsChecked(dlg, kIdAutoSend);
+    draft.local_context = IsChecked(dlg, kIdLocalContext); // 261123_0001 ctx-pilot
     draft.back_translation = IsChecked(dlg, kIdBackTranslation);
     draft.sound = IsChecked(dlg, kIdSound);
     draft.badge_visible = IsChecked(dlg, kIdBadge);
@@ -711,6 +719,12 @@ void ApplyAndClose(HWND dlg, HubDialogState* st) {
                                                std::memory_order_relaxed);
     st->config->sound_enabled.store(plan.sound, std::memory_order_relaxed);
 
+    // 261123_0001 ctx-pilot: local_context_enabled is a mutex-backed field, not
+    // one of the atomics above, so it writes through its own locked verb: an
+    // off-thread SaveToFile serialises it under mutex_, and a plain assignment
+    // here would be the BUG-08 interleave this file's contract forbids.
+    st->config->SetLocalContextEnabled(plan.local_context);
+
     // Startup-applied diagnostics switches: no runtime reader exists (main.cpp
     // caches them into diag::SetEnabled / SetContentLogging before threads), so
     // the write takes effect on restart. V10F-R1 F-02: through the locked verbs
@@ -785,7 +799,9 @@ INT_PTR CALLBACK SettingsHubDialogProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
         // Control-creation verification (the REQ-047 D3 contract): a control
         // that failed to materialize must be separable from a logic bug.
-        if (!::GetDlgItem(dlg, kIdAutoSend) || !::GetDlgItem(dlg, kIdDiagLogEnabled) ||
+        if (!::GetDlgItem(dlg, kIdAutoSend) ||
+            !::GetDlgItem(dlg, kIdLocalContext) ||
+            !::GetDlgItem(dlg, kIdDiagLogEnabled) ||
             !::GetDlgItem(dlg, kIdUserLangAdd)) {
             DIAG_F("UI/SettingsHub/009: page controls missing after dialog init\n");
         }
@@ -979,43 +995,50 @@ void BuildSettingsHubTemplate(TemplateBuilder& tb) {
                I18n::Get(StringId::MenuAutoSend));
     tb.AddItem(CHK, 212, 38, 200, 10, kIdBackTranslation, BTN_CLS,
                I18n::Get(StringId::MenuBackTranslation));
-    tb.AddItem(CHK, 8, 52, 196, 10, kIdSound, BTN_CLS,
+    // 261123_0001 ctx-pilot: the new checkbox owns the full-width slot DIRECTLY
+    // below the auto-send row (the cloud-fallback row's shape, so the longer
+    // caption never clips), which pushes every General row from y 52 down by
+    // 12 DLU. The page then ends at y 220, still 68 DLU clear of the y 288
+    // footer, so kHubHeightDlu stays 312 (no shell growth is needed).
+    tb.AddItem(CHK, 8, 52, 404, 10, kIdLocalContext, BTN_CLS,
+               I18n::Get(StringId::SettingsLocalContext));
+    tb.AddItem(CHK, 8, 64, 196, 10, kIdSound, BTN_CLS,
                I18n::Get(StringId::MenuSoundFeedback));
-    tb.AddItem(CHK, 212, 52, 200, 10, kIdBadge, BTN_CLS,
+    tb.AddItem(CHK, 212, 64, 200, 10, kIdBadge, BTN_CLS,
                I18n::Get(StringId::MenuShowBadge));
-    tb.AddItem(CHK, 8, 66, 196, 10, kIdStartWithWindows, BTN_CLS,
+    tb.AddItem(CHK, 8, 78, 196, 10, kIdStartWithWindows, BTN_CLS,
                I18n::Get(StringId::MenuStartWithWindows));
-    tb.AddItem(CHK, 212, 66, 200, 10, kIdDragToTranslate, BTN_CLS,
+    tb.AddItem(CHK, 212, 78, 200, 10, kIdDragToTranslate, BTN_CLS,
                I18n::Get(StringId::SettingsDragToTranslate));
-    tb.AddItem(CHK, 8, 80, 404, 10, kIdCloudFallback, BTN_CLS,
+    tb.AddItem(CHK, 8, 92, 404, 10, kIdCloudFallback, BTN_CLS,
                I18n::Get(StringId::SettingsCloudFallback));
-    tb.AddItem(LBL | GRP, 8, 98, 80, 9, kIdUiLanguageLabel, STATIC_CLS,
+    tb.AddItem(LBL | GRP, 8, 110, 80, 9, kIdUiLanguageLabel, STATIC_CLS,
                I18n::Get(StringId::MenuUiLanguage));
-    tb.AddItem(LBL, 92, 98, 120, 9, kIdUiLanguageValue, STATIC_CLS, L"");
-    tb.AddItem(BTN, 216, 94, 60, 14, kIdUiLanguageSearch, BTN_CLS,
+    tb.AddItem(LBL, 92, 110, 120, 9, kIdUiLanguageValue, STATIC_CLS, L"");
+    tb.AddItem(BTN, 216, 106, 60, 14, kIdUiLanguageSearch, BTN_CLS,
                I18n::Get(StringId::MenuSearchLangs));
-    tb.AddItem(LBL, 8, 114, 80, 9, kIdUiThemeLabel, STATIC_CLS,
+    tb.AddItem(LBL, 8, 126, 80, 9, kIdUiThemeLabel, STATIC_CLS,
                I18n::Get(StringId::MenuUiTheme));
-    tb.AddItem(RDO | GRP, 92, 112, 100, 10, kIdThemeFluent, BTN_CLS,
+    tb.AddItem(RDO | GRP, 92, 124, 100, 10, kIdThemeFluent, BTN_CLS,
                I18n::Get(StringId::ThemeFluent));
-    tb.AddItem(RDO, 196, 112, 100, 10, kIdThemeEditorial, BTN_CLS,
+    tb.AddItem(RDO, 196, 124, 100, 10, kIdThemeEditorial, BTN_CLS,
                I18n::Get(StringId::ThemeEditorial));
-    tb.AddItem(RDO, 300, 112, 100, 10, kIdThemeMonolith, BTN_CLS,
+    tb.AddItem(RDO, 300, 124, 100, 10, kIdThemeMonolith, BTN_CLS,
                I18n::Get(StringId::ThemeMonolith));
-    tb.AddItem(LBL | GRP, 8, 130, 404, 9, kIdHotkeyHeader, STATIC_CLS,
+    tb.AddItem(LBL | GRP, 8, 142, 404, 9, kIdHotkeyHeader, STATIC_CLS,
                I18n::Get(StringId::MenuCheatSheet));
-    tb.AddItem(LBL, 8, 144, 120, 9, kIdHotkeyToggleLabel, STATIC_CLS,
+    tb.AddItem(LBL, 8, 156, 120, 9, kIdHotkeyToggleLabel, STATIC_CLS,
                I18n::Get(StringId::SettingsHotkeyToggle));
-    tb.AddItem(EDT, 132, 141, 180, 13, kIdHotkeyToggle, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 162, 120, 9, kIdHotkeyLangLabel, STATIC_CLS,
+    tb.AddItem(EDT, 132, 153, 180, 13, kIdHotkeyToggle, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 174, 120, 9, kIdHotkeyLangLabel, STATIC_CLS,
                I18n::Get(StringId::SettingsHotkeyLang));
-    tb.AddItem(EDT, 132, 159, 180, 13, kIdHotkeyLang, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 180, 120, 9, kIdHotkeyModeLabel, STATIC_CLS,
+    tb.AddItem(EDT, 132, 171, 180, 13, kIdHotkeyLang, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 192, 120, 9, kIdHotkeyModeLabel, STATIC_CLS,
                I18n::Get(StringId::SettingsHotkeyMode));
-    tb.AddItem(EDT, 132, 177, 180, 13, kIdHotkeyMode, EDIT_CLS, L"");
-    tb.AddItem(LBL, 8, 198, 120, 9, kIdHotkeySelectionLabel, STATIC_CLS,
+    tb.AddItem(EDT, 132, 189, 180, 13, kIdHotkeyMode, EDIT_CLS, L"");
+    tb.AddItem(LBL, 8, 210, 120, 9, kIdHotkeySelectionLabel, STATIC_CLS,
                I18n::Get(StringId::SettingsHotkeySelection));
-    tb.AddItem(EDT, 132, 195, 180, 13, kIdHotkeySelection, EDIT_CLS, L"");
+    tb.AddItem(EDT, 132, 207, 180, 13, kIdHotkeySelection, EDIT_CLS, L"");
 
     // ---- Engines (tab 1) --------------------------------------------------
     tb.AddItem(LBL | GRP, 8, 38, 240, 9, kIdWarmupLabel, STATIC_CLS,

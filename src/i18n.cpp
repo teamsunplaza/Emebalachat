@@ -461,6 +461,19 @@ struct LocalizedStrings {
     // Korean authored, the other 87 designated tables carry the English draft
     // (261119 policy).
     const wchar_t* user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.";
+    // 261123_0001 Unit-C (local context pilot): the settings-hub
+    // local-context checkbox label. Trailing default like the blocks above
+    // (NOT part of EMEBALA_LSTR_FIELDS, so kLocalizedStringsFieldCount stays
+    // 156): the 88 designated locale tables carry their own designator in the
+    // same slot (right after user_model_load_failed_hint), and the English
+    // POSITIONAL table carries the literal in the same slot (right after the
+    // 261123 hint literal, ahead of the AUTO chip line, which stays this
+    // table's LAST initializer per the P9b-3 U5 tail pin). The enum id sits at
+    // the enum tail right before EnumCount, so the enum order and the struct
+    // order differ on purpose; the Get() switch is the mapping. Per-locale
+    // fill: Korean authored, the other 87 designated tables carry the English
+    // draft (261119 policy).
+    const wchar_t* settings_local_context = L"Translate with previous-sentence context";
     // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
     // decisions.md:540): the picker AUTO-view chip's dedicated label. The Auto
     // view's old chip reused MenuEngineLocal ("내장 로컬 엔진"), hiding that
@@ -504,7 +517,7 @@ static_assert(kLocalizedStringsFieldCount == 156,
 
 // 261108_0002 (FIX-R1, v0.10.6): the REAL field-count invariant. The assert
 // above is generated from the same X-macro that generates the struct, so it can
-// never notice the 92 trailing NON-X-macro members (4 theme + 5 back-translation
+// never notice the 93 trailing NON-X-macro members (4 theme + 5 back-translation
 // + 4 v0.10.9 reasoning/back-trans section strings (261121_0001 U-C) +
 // 6 261122_0001 B-U2 OpenAI profile strings (label/save/delete/name template/
 // delete confirm/limit) +
@@ -521,8 +534,9 @@ static_assert(kLocalizedStringsFieldCount == 156,
 // languages, recent languages header) +
 // 19 261122_0002 Phase-3 micro-pass strings (menu settings label,
 // settings hub caption/copy, cheat-sheet appendix);
-// 1 261123_0001 user-model load-failure hint string;
-// 261123_0001: 92 now = the previous 91 + the one hint string above;
+// 1 261123_0001 Unit-C local-context checkbox string (settings hub);
+// 261123_0001 Unit-C: 93 now = the previous 92 + the one context string above;
+// 261123_0001: 92 = the previous 91 + the one hint string;
 // 261122_0002 Phase-3 micro-pass: 91 = the previous 72 + the
 // nineteen micro-pass strings;
 // 261122_0002 Phase-3: 72 = the previous 65 + the seven settings
@@ -537,7 +551,7 @@ static_assert(kLocalizedStringsFieldCount == 156,
 // actual struct layout against StringId::EnumCount (the Get() switch's case
 // count, i18n.hpp): one member per pointer-sized slot means
 // sizeof / sizeof(const wchar_t*) IS the member count. Every LocalizedStrings
-// member is a const wchar_t* (X-macro fields + the 92 trailing), so the divisor
+// member is a const wchar_t* (X-macro fields + the 93 trailing), so the divisor
 // is exact; adding a member of another type would change the quotient and trip
 // this assert, which is the intended signal to revisit both sides.
 // Fires when: a member is added/removed without a StringId, or a StringId is
@@ -860,6 +874,8 @@ const LocalizedStrings kStringsKorean = {
     .cheat_sheet_esc_cancel = L"번역 취소 / 카드 닫기",
     // 261123_0001: the user-model load-failure tooltip hint (KO authored).
     .user_model_load_failed_hint = L"사용자 모델을 불러오지 못했습니다. 모델 관리에서 파일과 호환성을 확인하세요.",
+    // 261123_0001 Unit-C: the local-context checkbox label (KO authored).
+    .settings_local_context = L"이전 문장 문맥과 함께 번역",
     .language_search_auto_chip = L"자동 - 지원 언어는 로컬, 나머지는 클라우드",
 };
 // 2. Japanese (ja)
@@ -1171,6 +1187,8 @@ const LocalizedStrings kStringsJapanese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"自動 - 対応言語はローカル、それ以外はクラウド",
 };
 // 3. Chinese Simplified (zh-CN)
@@ -1482,6 +1500,8 @@ const LocalizedStrings kStringsChineseSimp = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"自动 - 支持的语言使用本地引擎，其余使用云端",
 };
 // 4. Chinese Traditional (zh-TW)
@@ -1793,6 +1813,8 @@ const LocalizedStrings kStringsChineseTrad = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"自動 - 支援的語言使用本機引擎，其餘使用雲端",
 };
 // 5. Vietnamese (vi)
@@ -2104,6 +2126,8 @@ const LocalizedStrings kStringsVietnamese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Tự động - ngôn ngữ được hỗ trợ dùng cục bộ, còn lại dùng đám mây",
 };
 // 6. Spanish (es)
@@ -2412,6 +2436,8 @@ const LocalizedStrings kStringsSpanish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local para los idiomas compatibles, la nube para el resto",
 };
 // 7. English (en) - Default Fallback
@@ -2831,6 +2857,10 @@ const LocalizedStrings kStringsEnglish = {
     // user-model load-failure tooltip hint (positional, same MSVC C7556 rule
     // as every other tail block).
     L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C (local context pilot): slot 248 - the
+    // settings-hub local-context checkbox label (positional, same MSVC C7556
+    // rule as every other tail block).
+    L"Translate with previous-sentence context",
     L"Auto - local for supported languages, cloud for the rest",
 };
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -3154,6 +3184,8 @@ const LocalizedStrings kStringsFrench = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local pour les langues prises en charge, le cloud pour les autres",
 };
 // 9. German (de)
@@ -3465,6 +3497,8 @@ const LocalizedStrings kStringsGerman = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokal für unterstützte Sprachen, die Cloud für den Rest",
 };
 // 10. Russian (ru)
@@ -3776,6 +3810,8 @@ const LocalizedStrings kStringsRussian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто - локально для поддерживаемых языков, облако для остальных",
 };
 // 11. Portuguese (pt)
@@ -4087,6 +4123,8 @@ const LocalizedStrings kStringsPortuguese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local para os idiomas compatíveis, a nuvem para os restantes",
 };
 // 12. Italian (it)
@@ -4398,6 +4436,8 @@ const LocalizedStrings kStringsItalian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - locale per le lingue supportate, il cloud per le altre",
 };
 // 13. Dutch (nl)
@@ -4709,6 +4749,8 @@ const LocalizedStrings kStringsDutch = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokaal voor ondersteunde talen, de cloud voor de rest",
 };
 // 14. Polish (pl)
@@ -5020,6 +5062,8 @@ const LocalizedStrings kStringsPolish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokalnie dla obsługiwanych języków, chmura dla pozostałych",
 };
 // 15. Czech (cs)
@@ -5331,6 +5375,8 @@ const LocalizedStrings kStringsCzech = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokálně pro podporované jazyky, cloud pro ostatní",
 };
 // 16. Hungarian (hu)
@@ -5642,6 +5688,8 @@ const LocalizedStrings kStringsHungarian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - helyi a támogatott nyelvekhez, felhő a többihez",
 };
 // 17. Romanian (ro)
@@ -5953,6 +6001,8 @@ const LocalizedStrings kStringsRomanian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local pentru limbile acceptate, cloud pentru restul",
 };
 // 18. Swedish (sv)
@@ -6264,6 +6314,8 @@ const LocalizedStrings kStringsSwedish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokalt för språk som stöds, molnet för resten",
 };
 // 19. Danish (da)
@@ -6575,6 +6627,8 @@ const LocalizedStrings kStringsDanish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokalt for understøttede sprog, skyen for resten",
 };
 // 20. Finnish (fi)
@@ -6886,6 +6940,8 @@ const LocalizedStrings kStringsFinnish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - paikallinen tuetuille kielille, pilvi muille",
 };
 // 21. Norwegian (no / nb)
@@ -7197,6 +7253,8 @@ const LocalizedStrings kStringsNorwegian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokal for støttede språk, skyen for resten",
 };
 // 22. Greek (el)
@@ -7508,6 +7566,8 @@ const LocalizedStrings kStringsGreek = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Αυτόματο - τοπικά για τις υποστηριζόμενες γλώσσες, σύννεφο για τις υπόλοιπες",
 };
 // 23. Turkish (tr)
@@ -7819,6 +7879,8 @@ const LocalizedStrings kStringsTurkish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Otomatik - desteklenen diller yerel, geri kalanı bulut",
 };
 // 24. Ukrainian (uk)
@@ -8130,6 +8192,8 @@ const LocalizedStrings kStringsUkrainian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто - локально для підтримуваних мов, хмара для решти",
 };
 // 25. Thai (th)
@@ -8441,6 +8505,8 @@ const LocalizedStrings kStringsThai = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"อัตโนมัติ - ภาษาที่รองรับใช้โลคัล ที่เหลือใช้คลาวด์",
 };
 // 26. Indonesian (id)
@@ -8752,6 +8818,8 @@ const LocalizedStrings kStringsIndonesian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokal untuk bahasa yang didukung, cloud untuk sisanya",
 };
 // 27. Malay (ms)
@@ -9063,6 +9131,8 @@ const LocalizedStrings kStringsMalay = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - setempat untuk bahasa yang disokong, cloud untuk selebihnya",
 };
 // 28. Filipino (fil)
@@ -9376,6 +9446,8 @@ const LocalizedStrings kStringsFilipino = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Awtomatik - lokal para sa mga sinusuportahang wika, cloud para sa iba",
 };
 // 29. Hindi (hi)
@@ -9687,6 +9759,8 @@ const LocalizedStrings kStringsHindi = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 30. Bengali (bn)
@@ -9998,6 +10072,8 @@ const LocalizedStrings kStringsBengali = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -10310,6 +10386,8 @@ const LocalizedStrings kStringsArabic = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 32. Persian (fa) — RTL
@@ -10621,6 +10699,8 @@ const LocalizedStrings kStringsPersian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 33. Urdu (ur) — RTL
@@ -10932,6 +11012,8 @@ const LocalizedStrings kStringsUrdu = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 34. Hebrew (he) — RTL
@@ -11243,6 +11325,8 @@ const LocalizedStrings kStringsHebrew = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 35. Khmer (km)
@@ -11554,6 +11638,8 @@ const LocalizedStrings kStringsKhmer = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 36. Lao (lo)
@@ -11865,6 +11951,8 @@ const LocalizedStrings kStringsLao = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 37. Burmese (my)
@@ -12176,6 +12264,8 @@ const LocalizedStrings kStringsBurmese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 38. Gujarati (gu)
@@ -12459,6 +12549,8 @@ const LocalizedStrings kStringsGujarati = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ઓટો - સપોર્ટેડ ભાષાઓ માટે લોકલ, બાકીના માટે ક્લાઉડ",
 };
 // 39. Telugu (te)
@@ -12742,6 +12834,8 @@ const LocalizedStrings kStringsTelugu = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ఆటో - మద్దతు ఉన్న భాషలకు లోకల్, మిగిలినవాటికి క్లౌడ్",
 };
 // 40. Marathi (mr)
@@ -13025,6 +13119,8 @@ const LocalizedStrings kStringsMarathi = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ऑटो - सपोर्टेड भाषांसाठी लोकल, बाकीसाठी क्लाउड",
 };
 // 41. Tamil (ta)
@@ -13308,6 +13404,8 @@ const LocalizedStrings kStringsTamil = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ஆட்டோ - ஆதரிக்கப்படும் மொழிகளுக்கு லோக்கல், மீதமுள்ளவற்றுக்கு கிளவுட்",
 };
 // 42. Tibetan (bo)
@@ -13591,6 +13689,8 @@ const LocalizedStrings kStringsTibetan = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"རང་ཤེས - རྒྱབ་སྐྱོར་སྐད་ནང་ཐོག ལྷག་མ་སྦག",
 };
 // 43. Kazakh (kk)
@@ -13873,6 +13973,8 @@ const LocalizedStrings kStringsKazakh = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто - қолдау бар тілдерге жергілікті, қалғандарына бұлт",
 };
 // 44. Mongolian (mn)
@@ -14156,6 +14258,8 @@ const LocalizedStrings kStringsMongolian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто - дэмжигддэг хэлд локал, үлдсэнд үүл",
 };
 // 45. Uyghur (ug)
@@ -14439,6 +14543,8 @@ const LocalizedStrings kStringsUyghur = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ئاپتوماتىك - قوللانىدىغان تىللاردا يەرلىك، قالغىنىدا بۇلۇت",
 };
 // 46. Cantonese (yue)
@@ -14722,6 +14828,8 @@ const LocalizedStrings kStringsCantonese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"自動 - 支援嘅語言用本機，其餘用雲端",
 };
 // 47. Bosnian (bs)
@@ -15005,6 +15113,8 @@ const LocalizedStrings kStringsBosnian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokalno za podržane jezike, oblak za ostale",
 };
 // 48. Serbian (sr)
@@ -15288,6 +15398,8 @@ const LocalizedStrings kStringsSerbian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Ауто - локално за подржане језике, облак за остале",
 };
 // 49. Croatian (hr)
@@ -15571,6 +15683,8 @@ const LocalizedStrings kStringsCroatian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto - lokalno za podržane jezike, oblak za ostale",
 };
 // 50. Slovenian (sl)
@@ -15854,6 +15968,8 @@ const LocalizedStrings kStringsSlovenian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Samodejno - lokalno za podprte jezike, oblak za ostale",
 };
 // 51. Slovak (sk)
@@ -16137,6 +16253,8 @@ const LocalizedStrings kStringsSlovak = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automaticky: lokálne pre podporované jazyky, cloud pre ostatné",
 };
 // 52. Bulgarian (bg)
@@ -16420,6 +16538,8 @@ const LocalizedStrings kStringsBulgarian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Автоматично: локално за поддържаните езици, облак за останалите",
 };
 // 53. Lithuanian (lt)
@@ -16703,6 +16823,8 @@ const LocalizedStrings kStringsLithuanian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automatiškai: vietinis palaikomoms kalboms, debesis kitoms",
 };
 // 54. Latvian (lv)
@@ -16986,6 +17108,8 @@ const LocalizedStrings kStringsLatvian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automātiski: vietēji atbalstītajām valodām, mākonis pārējām",
 };
 // 55. Estonian (et)
@@ -17269,6 +17393,8 @@ const LocalizedStrings kStringsEstonian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automaatne: toetatud keeltele kohalik, ülejäänutele pilv",
 };
 // 56. Afrikaans (af)
@@ -17552,6 +17678,8 @@ const LocalizedStrings kStringsAfrikaans = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Outomaties: plaaslik vir ondersteunde tale, wolk vir die res",
 };
 // 57. Catalan (ca)
@@ -17835,6 +17963,8 @@ const LocalizedStrings kStringsCatalan = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automàtic: local per a les llengües compatibles, núvol per a la resta",
 };
 // 58. Icelandic (is)
@@ -18118,6 +18248,8 @@ const LocalizedStrings kStringsIcelandic = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Sjálfvirkt: staðbundið fyrir studd tungumál, ský fyrir hin",
 };
 // 59. Albanian (sq)
@@ -18401,6 +18533,8 @@ const LocalizedStrings kStringsAlbanian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automatike: lokale për gjuhët e mbështetura, re për të tjerat",
 };
 // 60. Macedonian (mk)
@@ -18684,6 +18818,8 @@ const LocalizedStrings kStringsMacedonian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Автоматски: локално за поддржаните јазици, облак за останатите",
 };
 // 61. Welsh (cy)
@@ -18967,6 +19103,8 @@ const LocalizedStrings kStringsWelsh = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Awtomatig: lleol ar gyfer ieithoedd â chefnogaeth, cwmwl ar gyfer y gweddill",
 };
 // 62. Irish (ga)
@@ -19250,6 +19388,8 @@ const LocalizedStrings kStringsIrish = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Uathoibríoch: áitiúil do na teangacha tacaithe, néal don chuid eile",
 };
 // 63. Basque (eu)
@@ -19533,6 +19673,8 @@ const LocalizedStrings kStringsBasque = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Automatikoa: onartutako hizkuntzetarako tokikoa, gainerakoetarako hodeia",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -19816,6 +19958,8 @@ const LocalizedStrings kStringsGalician = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Auto: local para as linguas admitidas, nube para as demais",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20099,6 +20243,8 @@ const LocalizedStrings kStringsSwahili = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Otomatiki: ndani kwa lugha zinazotumika, wingu kwa zilizobaki",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20382,6 +20528,8 @@ const LocalizedStrings kStringsHaitianCreole = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Otomatik: lokal pou lang ki sipòte yo, nwaj pou rès yo",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20665,6 +20813,8 @@ const LocalizedStrings kStringsUzbek = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Avto: qoʻllab-quvvatlanadigan tillarda mahalliy, qolganlarida bulut",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20948,6 +21098,8 @@ const LocalizedStrings kStringsAzerbaijani = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Avto: dəstəklənən dillərdə yerli, qalanlarda bulud",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21231,6 +21383,8 @@ const LocalizedStrings kStringsBelarusian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Аўта: лакальны для падтрымліваных моў, воблака для астатніх",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21514,6 +21668,8 @@ const LocalizedStrings kStringsKyrgyz = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто: колдоого алынган тилдерде жергиликтүү, калгандарында булут",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21797,6 +21953,8 @@ const LocalizedStrings kStringsTajik = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Авто: маҳаллӣ барои забонҳои дастгиршуда, абр барои боқимонда",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22080,6 +22238,8 @@ const LocalizedStrings kStringsEsperanto = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Aŭto: loka por subtenataj lingvoj, nubo por la ceteraj",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22363,6 +22523,8 @@ const LocalizedStrings kStringsArmenian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"Ինքնավար՝ տեղային աջակցվող լեզուների համար, ամպ՝ մնացածի համար",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22646,6 +22808,8 @@ const LocalizedStrings kStringsGeorgian = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ავტო: მხარდაჭერილი ენებისთვის ლოკალური, დანარჩენისთვის ღრუბელი",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22929,6 +23093,8 @@ const LocalizedStrings kStringsSinhala = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ස්වයං: සහාය වන භාෂාවලදී දේශීය, අනෙකුත්වලදී වලාකුළු",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -23212,6 +23378,8 @@ const LocalizedStrings kStringsMalayalam = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ഓട്ടോ: പിന്തുണയ്ക്കുന്ന ഭാഷകൾക്ക് ലോക്കൽ, ബാക്കി ക്ലൗഡ്",
 };
 // 261119_0001 phase-3 batch 4 (FINAL): UI-language-89 Kannada (kn) locale table
@@ -23505,6 +23673,8 @@ const LocalizedStrings kStringsKannada = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ಸ್ವಯಂ: ಬೆಂಬಲಿತ ಭಾಷೆಗಳಿಗೆ ಸ್ಥಳೀಯ, ಉಳಿದವಕ್ಕೆ ಕ್ಲೌಡ್",
 };
 
@@ -23799,6 +23969,8 @@ const LocalizedStrings kStringsPunjabi = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ਆਟੋ: ਸਮਰਥਿਤ ਭਾਸ਼ਾਵਾਂ ਲਈ ਸਥਾਨਕ, ਬਾਕੀ ਲਈ ਕਲਾਊਡ",
 };
 
@@ -24093,6 +24265,8 @@ const LocalizedStrings kStringsOdia = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ସ୍ୱଚାଳିତ: ସମର୍ଥିତ ଭାଷା ପାଇଁ ସ୍ଥାନୀୟ, ଅନ୍ୟ ପାଇଁ କ୍ଲାଉଡ୍",
 };
 
@@ -24387,6 +24561,8 @@ const LocalizedStrings kStringsAmharic = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ራስ-ሰር: ለሚደገፉ ቋንቋዎች በአካባቢ, ለቀሪዎቹ በደመና",
 };
 
@@ -24681,6 +24857,8 @@ const LocalizedStrings kStringsTigrinya = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"ብኡንብኡ: ንዝድገፉ ቋንቋታት ከባቢ, ንተረፍቲ ደመና",
 };
 
@@ -24975,6 +25153,8 @@ const LocalizedStrings kStringsPashto = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"اتومات: د ملاتړ شوو ژبو لپاره ځایي، د نورو لپاره کلاوډ",
 };
 
@@ -25269,6 +25449,8 @@ const LocalizedStrings kStringsSindhi = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"خودڪار: حمايتي ٻولين لاءِ مقامي، باقي لاءِ ڪلائوڊ",
 };
 
@@ -25563,6 +25745,8 @@ const LocalizedStrings kStringsNepali = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"स्वतः: समर्थित भाषाका लागि स्थानीय, बाँकीका लागि क्लाउड",
 };
 
@@ -25857,6 +26041,8 @@ const LocalizedStrings kStringsAssamese = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"চালিত: সমৰ্থিত ভাষাৰ বাবে স্থানীয়, বাকীৰ বাবে ক্লাউড",
 };
 
@@ -26151,6 +26337,8 @@ const LocalizedStrings kStringsDzongkha = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"རང་བཞིན: རྒྱབ་སྐྱོར་ཡོད་པའི་སྐད་ཡིག་ལ་ས་གནས། ལྷག་མ་ལ་སྤྲིན",
 };
 
@@ -26445,6 +26633,8 @@ const LocalizedStrings kStringsSanskrit = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"स्वयम्: समर्थितासु भाषासु स्थानीयम्, शेषासु मेघः",
 };
 
@@ -26739,6 +26929,8 @@ const LocalizedStrings kStringsMaithili = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"स्वतः: समर्थित भाषाक लेल स्थानीय, बाँकीक लेल क्लाउड",
 };
 
@@ -27033,6 +27225,8 @@ const LocalizedStrings kStringsKonkaniGoan = {
     .cheat_sheet_esc_cancel = L"Cancel the translation / close the card",
     // 261123_0001: the user-model load-failure tooltip hint (EN draft).
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
+    // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
+    .settings_local_context = L"Translate with previous-sentence context",
     .language_search_auto_chip = L"स्वयंचलित: आदार दिल्ल्या भासांक थळावें, उरिल्ल्यांक क्लाउड",
 };
 
@@ -27722,6 +27916,12 @@ std::wstring I18n::Get(StringId id) {
         // before EnumCount, while this member sits ahead of the AUTO chip;
         // the switch order is irrelevant, only completeness matters).
         case StringId::UserModelLoadFailedHint:      return s.user_model_load_failed_hint;
+
+        // 261123_0001 Unit-C (local context pilot): the settings-hub
+        // local-context checkbox (the enum id sits at the enum tail right
+        // before EnumCount, while this member sits ahead of the AUTO chip;
+        // the switch order is irrelevant, only completeness matters).
+        case StringId::SettingsLocalContext:        return s.settings_local_context;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

@@ -3741,6 +3741,7 @@ AppConfig::Snapshot AppConfig::GetSnapshot() const {
     s.back_translation_enabled = back_translation_enabled.load(std::memory_order_relaxed);
     s.drag_to_translate = drag_to_translate;
     s.user_model_id = user_model_id; // 261123_0001: Bug A worker-thread routing
+    s.local_context_enabled = local_context_enabled; // 261123_0001 ctx-pilot
     return s;
 }
 
@@ -3874,7 +3875,8 @@ EngineHostConfig AppConfig::GetEngineHostConfig() const {
 
 // ---- V10F-R1 F-02 BEGIN hub-applied field write surface -------------------
 // The locked write surface for the settings-hub-applied hotkey_*/sampling/
-// diag_log_* fields. Same mutex_ ToJsonStringLocked()/SaveToFile() hold while
+// diag_log_* fields and the 261123_0001 ctx-pilot local-context switch. Same
+// mutex_ ToJsonStringLocked()/SaveToFile() hold while
 // they serialise these fields, so the GUI-thread hub writes can never
 // interleave with an off-thread save iteration (the BUG-08 / fix-E class the
 // R4 call sites now route through). The FromJsonString load path remains the
@@ -3928,6 +3930,15 @@ void AppConfig::SetDiagLogEnabled(bool enabled) {
 void AppConfig::SetDiagLogContent(bool content) {
     std::lock_guard<std::mutex> lock(mutex_);
     diag_log_content = content;
+}
+
+// 261123_0001 ctx-pilot: locked write of the local translate-context switch
+// (the F-02 surface above: same mutex_ the whole-config serialiser holds, so
+// the settings-hub checkbox write can never interleave with an off-thread
+// save iteration).
+void AppConfig::SetLocalContextEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    local_context_enabled = enabled;
 }
 // ---- V10F-R1 F-02 END hub-applied field write surface ---------------------
 
@@ -4208,6 +4219,10 @@ std::string AppConfig::ToJsonStringLocked() const {
     ss << "  \"back_translation_enabled\": " << (back_translation_enabled.load(std::memory_order_relaxed) ? "true" : "false") << ",\n";
     ss << "  \"drag_to_translate\": " << (drag_to_translate ? "true" : "false") << ",\n";
     ss << "  \"cloud_fallback_enabled\": " << (cloud_fallback_enabled ? "true" : "false") << ",\n";
+    // 261123_0001 ctx-pilot: ALWAYS serialized (same sticky-key policy as the
+    // other toggles) so a round trip preserves the user's choice; the key is
+    // absent on every pre-261123 config.json and then reads as false.
+    ss << "  \"local_context_enabled\": " << (local_context_enabled ? "true" : "false") << ",\n";
     // REQ-043 (plan §5.1-2): the engine_host block is ALWAYS serialized so a
     // round trip preserves the values (same sticky-key policy as the Phase 3
     // language keys).
@@ -4365,6 +4380,12 @@ bool AppConfig::FromJsonString(std::string_view json) {
             drag_to_translate = (v == "true");
         } else if (k == "cloud_fallback_enabled") {
             cloud_fallback_enabled = (v == "true");
+        } else if (k == "local_context_enabled") {
+            // 261123_0001 ctx-pilot: key absent on every pre-261123 config.json
+            // => the field keeps its compile-time default false (the pilot
+            // starts disabled). The same tolerant bool discipline as the
+            // sibling bools: only the exact string "true" reads as true.
+            local_context_enabled = (v == "true");
         } else if (k == "engine_host") {
             // REQ-043: nested block captured verbatim by the reader; absent
             // on every pre-REQ-043 config.json => the defaults survive.

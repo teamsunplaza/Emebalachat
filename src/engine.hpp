@@ -392,6 +392,15 @@ inline const EngineHostClientIdentity kChatEngineHostIdentity{"emebala-chat", "0
 // read — so the local leg's cancel forwarder learns WHICH id to abort mid-
 // flight (see CancelTranslateRequest below). Pure publish slot: never
 // written on any path that never reached the wire.
+// 261123_0001 ctx-pilot: OPTIONAL trailing `context`, DEFAULTED so every
+// existing call site compiles unchanged with no fragment. A non-empty
+// fragment is the pre-rendered Emebala Reader <context>/<context_translation>
+// block built by src/translation_context.hpp from the same-window history
+// ring. The CLIENT owns the second half of the gate: the member is emitted
+// only when THIS connection's welcome advertised "context_v1", so a legacy or
+// restarted host that no longer advertises it gets the frozen v1 frame and the
+// fragment is dropped (never truncated, never negotiated). Empty is the
+// byte-identical pre-pilot path.
 bool TryTranslate(const EngineHostClientIdentity& identity,
                   const EngineHostConfig& cfg,
                   const std::string& src,
@@ -401,7 +410,8 @@ bool TryTranslate(const EngineHostClientIdentity& identity,
                   std::string& out,
                   std::string& err_code,
                   std::string& served_model,
-                  std::atomic<std::uint64_t>* out_request_id = nullptr);
+                  std::atomic<std::uint64_t>* out_request_id = nullptr,
+                  std::wstring_view context = {});
 
 // 261122_0001 A2: the mid-flight local cancel seam — sends the frozen
 // {"op":"cancel","id":N} frame for an in-flight request of THIS process so a

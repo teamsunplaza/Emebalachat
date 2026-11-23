@@ -1280,6 +1280,17 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     std::string request_error_detail;
     ctx.out_error_detail = &request_error_detail;
     ctx.cancel = cancel_token.get();
+    // 261123_0001 ctx-pilot: the two inputs of the LOCAL context gate, both
+    // taken from state this task already carries: target_hwnd is the same HWND
+    // this task's paste and the history ring use (so a fragment can only hold
+    // pairs from THIS window), and local_context_enabled is the user's config
+    // flag read from the I4 snapshot above (never a live config re-read here).
+    // Both default off, so a config without the key keeps every request on the
+    // pre-pilot, context-free wire shape.
+    // DEPENDENCY (ctx-pilot): AppConfig::Snapshot::local_context_enabled is
+    // added by the config unit with default false.
+    ctx.target_hwnd = task.target_hwnd;
+    ctx.local_context_enabled = snap.local_context_enabled;
     ctx.on_chunk = [this](std::size_t index, std::size_t total) {
         badge_.SetProgress(index, total);
         OnFirstMultiChunkTick(total);
@@ -1949,6 +1960,13 @@ void PipelineWorker::ExecuteSelectionReplaceTask(const PipelineTask& task,
     CancelTokenGuard cancel_guard{cancel_mutex_, cancel_token_};
     TranslationTaskContext ctx;
     ctx.cancel = cancel_token.get();
+    // 261123_0001 ctx-pilot: the selection-replace flow deliberately does NOT
+    // join the context pilot. Its history entries are pushed with no target
+    // window (main.cpp records this path with target_hwnd = nullptr), so it
+    // neither contributes pairs to the ring nor consumes a window's Enter-path
+    // pairs for a deliberate selection replacement. ctx.target_hwnd and
+    // ctx.local_context_enabled stay at their defaults: no fragment is built
+    // and the local frame keeps the pre-pilot shape.
     ctx.on_chunk = [this](std::size_t index, std::size_t total) {
         badge_.SetProgress(index, total);
         OnFirstMultiChunkTick(total);

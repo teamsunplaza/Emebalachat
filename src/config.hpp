@@ -1127,6 +1127,15 @@ struct AppConfig {
     // nor as the auto engine when no local model is installed. Translation returns
     // empty instead (the worker already handles empty gracefully). Default false.
     bool cloud_fallback_enabled = false;
+    // 261123_0001 ctx-pilot: optional local-engine translate-context switch
+    // (engine capability "context_v1"). When true, the app sends the previous
+    // translated lines of the same window to the local engine as translation
+    // context. Default OFF: the feature is a pilot; existing installs (key
+    // absent) and fresh installs both start disabled. Runtime-mutated from
+    // the settings hub and read by the pipeline worker through GetSnapshot(),
+    // so it follows the I4 drag_target_pinned discipline: locked write verb +
+    // Snapshot copy; the plain bool is never read raw off the GUI thread.
+    bool local_context_enabled = false;
     // REQ-043 (plan §5.1-2): shared-inference-host routing block, persisted
     // as the nested "engine_host" object in config.json:
     //   "engine_host": { "enabled": true, "spawn": true, "idle_exit_ms": 600000,
@@ -1397,6 +1406,9 @@ struct AppConfig {
         // load-failure from this id; GUI-thread sites may still read the member
         // directly (config.hpp contract at the user_model_id declaration).
         std::string user_model_id;
+        // 261123_0001 ctx-pilot: the local translate-context switch (the
+        // pipeline worker's gate), copied under mutex_ like the rest.
+        bool local_context_enabled = false;
     };
 
     // I4: thread-safe snapshot of shared fields (takes mutex_).
@@ -1489,6 +1501,13 @@ struct AppConfig {
                            float repetition_penalty);
     void SetDiagLogEnabled(bool enabled);
     void SetDiagLogContent(bool content);
+    // 261123_0001 ctx-pilot: locked write of the local translate-context
+    // switch (same F-02 discipline as the diag_log_* verbs: the same mutex_
+    // ToJsonStringLocked()/SaveToFile() hold while they serialise the field,
+    // so the settings-hub checkbox write can never interleave with an
+    // off-thread save iteration). Off-thread readers use
+    // GetSnapshot().local_context_enabled.
+    void SetLocalContextEnabled(bool enabled);
 
     // V10F (BUG-08, 261122_0002 P1-U4): locked write/read of the "engine_host"
     // block (same I4 discipline as SetOpenAiConfig — see the member contract).

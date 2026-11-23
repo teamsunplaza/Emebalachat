@@ -15,6 +15,11 @@
 // partial-result preservation, between-frame cancel). Header-only by design —
 // no new link edge, no CMake change.
 #include "translation_coordinator.hpp"
+// 261123_0001 ctx-pilot: the OPTIONAL local translate-context fragment builder
+// (same-window history pairs rendered in the Emebala Reader block format).
+// Header-inline over translation_history.hpp; used ONLY on the local serving
+// leg below, never on a cloud leg.
+#include "translation_context.hpp"
 // REQ-057: served-vs-expected model-id diagnosis at the local-host seam.
 #include "engine_host_registry.hpp"      // ResolveBundledModelId (the bundled registry id)
 #include "engine_host_config_reader.hpp" // LoadUserModelIdFromConfigLive (the C1-gated live user pin)
@@ -846,13 +851,21 @@ struct LocalFrameOutcome {
 // regular TryTranslate request (the REQ-051 transient retry rides along per
 // frame with the same warrant and backoff), so the wire shape of every
 // individual request is exactly the shape a single-frame request has today.
+// 261123_0001 ctx-pilot: `context_fragment` ("" = none) is the request-level
+// Emebala Reader context block built ONCE by the caller from the same-window
+// history ring. It rides EVERY frame: the fragment describes the conversation
+// BEFORE this request, which is equally true for all of its frames, and the
+// rolling (prev_source, prev_target) pair is unrelated to it. The client drops
+// it when the connected host did not advertise "context_v1", so a legacy host
+// sees the frozen v1 frame for every frame.
 LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
                                        std::string_view src_code,
                                        const std::string& tgt_name,
                                        const std::vector<CoordinatorChunk>& frames,
                                        const std::string& request_model_id,
                                        EngineType preferred,
-                                       const TranslationTaskContext& req_ctx) {
+                                       const TranslationTaskContext& req_ctx,
+                                       std::wstring_view context_fragment) {
     LocalFrameOutcome out;
 
     // One forwarder for the whole run: it watches the user token AND the
@@ -895,7 +908,7 @@ LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
             const bool frame_ok = engine_host::TryTranslate(
                 engine_host::kChatEngineHostIdentity, host_cfg, std::string(src_code), tgt_name,
                 ToUtf8(source_chunk), request_model_id, frame_out, frame_err, frame_served,
-                frame_id_slot);
+                frame_id_slot, context_fragment);
             if (frame_id_slot) {
                 // The attempt has fully returned: retire its published id so a
                 // cancel can never fire a stale frame during the backoff.
@@ -1362,6 +1375,37 @@ std::wstring TranslationManager::Translate(
         const std::string request_model_id = LocalSeamRequestModelId();
         DIAG_F("ENGINE/Translate/060: local seam request model_id resolved (pin_len=%zu)\n",
                request_model_id.size());
+        // 261123_0001 ctx-pilot: the OPTIONAL translate-context fragment.
+        // Built ONCE per request and ONLY inside this leg: the router has
+        // already decided the request is served locally, so the fragment can
+        // never reach a cloud client. The Google / OpenAI legs above and below
+        // are different code paths by construction and never see this
+        // variable (that separation IS the privacy contract: the cloud legs
+        // must never be wired to translation_context.hpp).
+        // The USER half of the gate is the per-request flag PLUS the route: the
+        // user_gguf route (a user-supplied .gguf served by this same local
+        // host) is EXCLUDED by product decision. A user model carries an
+        // arbitrary chat template, so the built-in Hy-MT2 <context> block
+        // contract says nothing about it; the pilot stays scoped to the
+        // bundled engine. The CAPABILITY half of the gate lives inside the
+        // client, which is the only place that knows the current connection's
+        // welcome and drops the fragment when the host did not advertise
+        // "context_v1" (frozen v1 frame, hard interop rule).
+        // An empty result means "no context": no same-window pair, an unknown
+        // window, or the flag off, and the frame keeps the pre-pilot shape.
+        const bool local_context_eligible = req_ctx.local_context_enabled && !user_gguf_route;
+        const std::wstring context_fragment =
+            local_context_eligible
+                ? translation_context::BuildFragment(static_cast<HWND>(req_ctx.target_hwnd))
+                : std::wstring();
+        if (local_context_eligible) {
+            // Shape only: the fragment's TEXT is user content and is never
+            // logged (diag_log_content governs content logging globally; this
+            // line stays lengths-only by construction).
+            DIAG_LOG("ENGINE",
+                     "Translate/049: local context fragment built (pairs_budget=%zu units=%zu)",
+                     translation_context::kDefaultMaxPairs, context_fragment.size());
+        }
         const auto t_local_attempt = std::chrono::steady_clock::now();
         // 261121_0002 (design-pick "Plumbing — Manager"): the local leg's
         // predicted chunk plan, split with the SAME 1200-UTF-16-unit cap the
@@ -1428,10 +1472,33 @@ std::wstring TranslationManager::Translate(
         // the strict-local failure modal). Every observable behavior of the
         // legacy single-request path is untouched: this branch is entered
         // before the forwarder/pipe block and RETURNS on every path.
+        //
+        // 261123_0001 ctx-pilot FRAME-BUDGET VERDICT (multi-frame coordinator):
+        // HOLDS, with no change to the frame planning. kCoordinatorMaxFrameBytes
+        // (768 KiB of JSON-ESCAPED source) is planned from the SOURCE TEXT
+        // only, so the context fragment is NOT part of the plan: it is attached
+        // ON TOP of every planned frame by TryTranslate. The frozen wire cap is
+        // 1 MiB (engine-repo kMaxFrameBytes) and the plan already reserves the
+        // remaining 256 KiB for the request envelope, src/tgt/model_id and
+        // unmodelled escaping (translation_coordinator.hpp kCoordinatorMaxFrameBytes
+        // comment). The fragment cannot cross that reserve: BuildFragment caps
+        // the RENDERED fragment (pair text PLUS the 63 units of block literals
+        // each translated pair costs, plus the 1-unit pair separator) at 2000
+        // UTF-16 units, the same budget the engine worker re-enforces. Its
+        // worst-case JSON-ESCAPED cost is 6 bytes per unit (an
+        // all-control-character fragment) = 12,000 bytes; real prose is
+        // <= 6 KiB because UTF-8 CJK escapes 1:1. 768 KiB + 11.7 KiB + ~200 B
+        // envelope is under 781 KiB, leaving >= 244 KiB of headroom under the
+        // 1 MiB cap. A single-frame request cannot fare worse: it only runs
+        // when the source is <= kCoordinatorMaxFrameBytes / kCoordinatorMaxEscapeFactor
+        // UTF-16 units (~131k), whose worst-case escaped form is exactly
+        // 768 KiB. Nothing here can slice a frame AT the fragment boundary
+        // either: the fragment is a separate wire member the planner never
+        // sees.
         if (!coordinator_frames.empty()) {
             const LocalFrameOutcome frame_run = TranslateLocalFrames(
                 host_cfg, src_code_or_name, tgt_name, coordinator_frames, request_model_id,
-                preferred, req_ctx);
+                preferred, req_ctx, context_fragment);
             DIAG_F("ENGINE/Translate/048: local frame coordinator finished (frames=%zu completed=%zu failed=%zu canceled=%d partial=%d host_failed=%d code=%s)\n",
                    frame_run.run.total_frames, frame_run.run.completed_frames,
                    frame_run.run.failed_index == kCoordinatorNoFrame
@@ -1544,7 +1611,7 @@ std::wstring TranslationManager::Translate(
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
                                       host_out, host_err, served_model,
-                                      cancel_id_slot)) {
+                                      cancel_id_slot, context_fragment)) {
             // 261121_0002: the user token outranks a completed pipe response
             // — a cancel posted while the request was in flight DISCARDS
             // host_out and reports Canceled BEFORE NoteHostSuccess / the
@@ -1662,7 +1729,7 @@ std::wstring TranslationManager::Translate(
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
                                           host_out, host_err, served_model,
-                                          cancel_id_slot)) {
+                                          cancel_id_slot, context_fragment)) {
                 // 261121_0002: same discard rule as the first attempt — a
                 // user cancel posted while the retry was in flight discards
                 // the result BEFORE NoteHostSuccess / the REQ-057 diagnosis.
