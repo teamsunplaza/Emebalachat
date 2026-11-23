@@ -181,11 +181,14 @@ void TestReqCpT4PromptTemplates() {
                        src.find("BuildCompletionPrompt(u8, tgt_name, src_name)") != std::string::npos,
                    "REQ-CP T4 (c): rung-1 BuildPrompt gets the ref; rung-2 completion form stays "
                    "template-independent (A2)");
-        // No-llama stub parity: the stub signature also carries the tail param.
+        // No-llama stub parity: the stub signature carries the template_ref
+        // and the R2-P0-03 (261123_0002) optional context_prefix tail params
+        // (unnamed in the stub, named with defaults in the .hpp declaration).
         const size_t stub_pos = src.find("#else // !HAVE_LLAMA_CPP");
         TEST_CHECK(stub_pos != std::string::npos &&
-                       src.find("std::string_view)", stub_pos) != std::string::npos,
-                   "REQ-CP T4 (c): the no-llama Translate stub carries the template_ref tail param (parity)");
+                       src.find("std::string_view, std::wstring_view)", stub_pos) != std::string::npos,
+                   "REQ-CP T4 (c): the no-llama Translate stub carries the template_ref and "
+                   "context_prefix tail params (parity)");
     }
 
     const std::filesystem::path worker_cpp = ResolveRepoFile(L"src\\ggml_translate_worker.cpp");
