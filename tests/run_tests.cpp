@@ -18306,7 +18306,11 @@ struct Req044LstrMirror {
     // (user_model_load_failed_hint) takes the struct slot right AFTER
     // cheat_sheet_esc_cancel and right BEFORE language_search_auto_chip
     // (247 -> 248), same Get() switch mapping rule.
-    const wchar_t* f[248];
+    // 261123_0001 Unit-C: the 1 local-context checkbox string
+    // (settings_local_context) takes the struct slot right AFTER
+    // user_model_load_failed_hint and right BEFORE language_search_auto_chip
+    // (248 -> 249), same Get() switch mapping rule.
+    const wchar_t* f[249];
 };
 
 } // namespace
@@ -18319,9 +18323,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 248
-    static_assert(kExpectedFieldCount == 248,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 249
+    static_assert(kExpectedFieldCount == 249,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18329,11 +18333,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 248,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: LocalizedStrings field count is 248 "
+    TEST_CHECK(observed_field_count == 249,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: LocalizedStrings field count is 249 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 248,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: StringId::EnumCount is 248 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint id)");
+    TEST_CHECK(observed_enum_count == 249,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: StringId::EnumCount is 249 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint id + the 1 261123_0001 Unit-C local-context checkbox id)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -22481,6 +22485,9 @@ void TestP7LanguageSearchCountStrings() {
     // 261123_0001 appended the 1 user-model load-failure hint id
     // (UserModelLoadFailedHint) right after CheatSheetEscCancel, so the pin
     // reads sentinel-36 now and the 261123 id closes the tail.
+    // 261123_0001 Unit-C appended the 1 local-context checkbox id
+    // (SettingsLocalContext) right after UserModelLoadFailedHint, so the pin
+    // reads sentinel-37 now and the Unit-C id closes the tail.
     volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
     volatile int count_id = static_cast<int>(StringId::LanguageSearchCount);
     volatile int cue = static_cast<int>(StringId::LanguageSearchCue);
@@ -22499,21 +22506,27 @@ void TestP7LanguageSearchCountStrings() {
     // 261123_0001 witness: the user-model load-failure hint id closes the tail
     // immediately before EnumCount.
     volatile int u_hint = static_cast<int>(StringId::UserModelLoadFailedHint);
+    // 261123_0001 Unit-C witness: the local-context checkbox id closes the
+    // tail immediately before EnumCount.
+    volatile int ctx_id = static_cast<int>(StringId::SettingsLocalContext);
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(count_id == menu_search + 1 && count_id + 1 == cue &&
                    count_id + 2 == no_match && no_match + 1 == phase2_first &&
                    phase2_last + 1 == phase3_first && phase3_last + 1 == mp_first &&
-                   mp_last + 1 == u_hint && u_hint + 1 == sentinel &&
-                   sentinel - 36 == no_match,
+                   mp_last + 1 == u_hint && u_hint + 1 == ctx_id &&
+                   ctx_id + 1 == sentinel &&
+                   sentinel - 37 == no_match,
                "P7: the count id sits between MenuSearchLangs and the P5 pair, the "
                "261122_0002 Phase-2 block closes into the Phase-3 block "
                "(KeepTranslatedPart + 1 == SettingsTabGeneral), the Phase-3 block "
                "closes into the micro-pass block (RecentLanguagesHeader + 1 == "
                "MenuSettings), the micro-pass block closes into the 261123 id "
                "(CheatSheetEscCancel + 1 == UserModelLoadFailedHint), the 261123 id "
-               "closes the enum tail (UserModelLoadFailedHint + 1 == EnumCount), "
+               "closes into the Unit-C id (UserModelLoadFailedHint + 1 == "
+               "SettingsLocalContext), the Unit-C id closes the enum tail "
+               "(SettingsLocalContext + 1 == EnumCount), "
                "and the P5 tail-order pin "
-               "(EnumCount - 36 == LanguageSearchNoMatch) holds");
+               "(EnumCount - 37 == LanguageSearchNoMatch) holds");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P7 LanguageSearchCount per-locale pins completed."
                   << std::endl;
@@ -22768,8 +22781,9 @@ void TestP9b1UserLanguageStrings() {
     // (SettingsTabGeneral .. RecentLanguagesHeader) land right after
     // KeepTranslatedPart, and 261123_0001 appended the 1 user-model
     // load-failure hint id (UserModelLoadFailedHint) after the micro-pass
-    // block, so the P5 sentinel pin reads EnumCount - 36 now
-    // (the Phase-3 micro-pass block of 19 ids + the 261123 id close the tail).
+    // block, so the P5 sentinel pin reads EnumCount - 37 now
+    // (the Phase-3 micro-pass block of 19 ids + the 261123 hint id + the
+    // 261123 Unit-C local-context checkbox id close the tail).
     volatile int prev_tail = static_cast<int>(StringId::GgufManagerActivated);
     volatile int first_new = static_cast<int>(StringId::UserLangsGroup);
     volatile int last_new = static_cast<int>(StringId::OpenAiDeclaredHint);
@@ -22780,12 +22794,13 @@ void TestP9b1UserLanguageStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(first_new == prev_tail + 1 && last_new - first_new == 25 &&
                    last_new + 1 == menu_search && count_id == menu_search + 1 &&
-                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 36 == no_match,
+                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 37 == no_match,
                "P9b-1/P9b-3 U5/P9c-1b: the 26 ids are contiguous between the pre-P6a enum tail "
                "(GgufManagerActivated) and MenuSearchLangs, keeping the P6a/P7 adjacency "
-               "and the P5 tail pin (EnumCount - 36 == LanguageSearchNoMatch, the 8 "
+               "and the P5 tail pin (EnumCount - 37 == LanguageSearchNoMatch, the 8 "
                "261122_0002 Phase-2 ids + the 7 Phase-3 ids + the 19 Phase-3 micro-pass "
-               "ids + the 1 261123_0001 user-model load-failure hint id now close the "
+               "ids + the 1 261123_0001 user-model load-failure hint id + the 1 "
+               "261123_0001 Unit-C local-context checkbox id now close the "
                "enum tail)");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P9b-1 user-language string pins completed." << std::endl;
@@ -22904,10 +22919,10 @@ void TestP9b3AutoChipStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(auto_chip == script_none + 1 && auto_chip + 1 == decl_title &&
                    decl_title + 1 == decl_hint && decl_hint + 1 == menu_search &&
-                   sentinel - 36 == no_match,
+                   sentinel - 37 == no_match,
                "P9b-3 U5/P9c-1b: the AUTO chip still follows UserLangScriptNone and the "
                "P9c-1b ids close the pre-MenuSearchLangs block; the P5 tail "
-               "pin (EnumCount - 36 == LanguageSearchNoMatch) still holds");
+               "pin (EnumCount - 37 == LanguageSearchNoMatch) still holds");
 
     // ---- palette wiring (source scan; the window is Win32-only) -------------
     std::string palette_src;
@@ -25596,6 +25611,17 @@ int main() {
     // src/main.cpp: one arm site, in the file-present arm, after the post; the
     // drain handler never clears it). Read-only, so registration order is free.
     Test261123BugATwoLatchSourcePins();
+
+    // 261123_0001 ctx-pilot (Unit-Tests wave): the translation-context builder
+    // behavior, the local_context_enabled round trip, the SettingsLocalContext
+    // i18n wiring, and the hub row pins. Registered LAST: the builder suite
+    // drives the shared translation-history ring and clears it on entry AND
+    // exit (the same residue discipline that put R4 last), and the other three
+    // suites are self-contained.
+    Test261123LocalContextBuilder();
+    Test261123LocalContextConfigRoundtrip();
+    Test261123LocalContextI18nWiring();
+    Test261123HubLocalContextRowPins();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

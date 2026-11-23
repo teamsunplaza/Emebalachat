@@ -1016,19 +1016,22 @@ void TestOpenAiProfileI18nStrings() {
     // 221 -> 228 after the 261122_0002 Phase-3 i18n worker appended the 7
     // settings-window redesign ids; 228 -> 247 after the 261122_0002 Phase-3
     // micro-pass appended the 19 settings-hub / cheat-sheet ids; 247 -> 248
-    // after 261123_0001 appended the 1 user-model load-failure hint id --
+    // after 261123_0001 appended the 1 user-model load-failure hint id;
+    // 248 -> 249 after 261123_0001 Unit-C appended the 1 local-context
+    // checkbox id --
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 248,
-               "B-U2: StringId::EnumCount is 248 (207 + the six OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass ids + the 1 261123_0001 user-model load-failure hint id)");
+    TEST_CHECK(enum_count == 249,
+               "B-U2: StringId::EnumCount is 249 (207 + the six OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass ids + the 1 261123_0001 user-model load-failure hint id + the 1 261123_0001 Unit-C local-context checkbox id)");
 
     // ---- (b) insertion order ----------------------------------------------
     // BackTransSectionOriginal + 1 == the first profile id, the six ids are a
     // contiguous run, and the run ENDS where the pre-existing progress/cancel
     // run begins. The P5 sentinel witness is that every LATER id shifted by
     // the same +6 instead of drifting; since 261122_0002 it sits at
-    // EnumCount - 35, and at EnumCount - 36 since 261123_0001 (the 8 Phase-2
-    // + the 7 Phase-3 + the 19 Phase-3 micro-pass + the 1 261123_0001 ids now
-    // close the enum tail).
+    // EnumCount - 35, at EnumCount - 36 since 261123_0001, and at EnumCount
+    // - 37 since 261123_0001 Unit-C (the 8 Phase-2 + the 7 Phase-3 + the 19
+    // Phase-3 micro-pass + the 1 261123_0001 hint + the 1 261123_0001 Unit-C
+    // ids now close the enum tail).
     volatile int back_original = static_cast<int>(StringId::BackTransSectionOriginal);
     volatile int profile_label = static_cast<int>(StringId::OpenAiProfileLabel);
     volatile int profile_save = static_cast<int>(StringId::OpenAiProfileSave);
@@ -1045,10 +1048,10 @@ void TestOpenAiProfileI18nStrings() {
                    profile_confirm == profile_template + 1 &&
                    profile_limit == profile_confirm + 1 &&
                    progress_after == profile_limit + 1 &&
-                   p5_sentinel == enum_count - 36,
+                   p5_sentinel == enum_count - 37,
                "B-U2: the six profile ids are contiguous right after "
                "BackTransSectionOriginal and right before the 261121_0002 "
-               "progress/cancel run, so the P5 sentinel witness (EnumCount - 36) "
+               "progress/cancel run, so the P5 sentinel witness (EnumCount - 37) "
                "and every relative adjacency pin still hold");
 
     // ---- (c) the designed English and Korean values, verbatim --------------

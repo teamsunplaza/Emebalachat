@@ -601,6 +601,11 @@ void TestReq048OpenAiTemplateSerialization() {
             // micro-pass block and the AUTO chip line, with its own
             // provenance comment in between; the chip still stays the LAST
             // initializer.
+            // 261123_0001 Unit-C: the local-context checkbox literal
+            // (L"Translate with previous-sentence context") lands between the
+            // 261123 hint literal and the AUTO chip line, with its own
+            // provenance comment in between; the chip still stays the LAST
+            // initializer.
             TEST_CHECK(i18n_src.find(
                            "    L\"Languages this model supports\",\n"
                            "    L\"Only the languages you select are shown in the language "
@@ -661,20 +666,26 @@ void TestReq048OpenAiTemplateSerialization() {
                                "    // as every other tail block).\n"
                                "    L\"Could not load the user model. Check the file and "
                                "compatibility in Model Manager.\",\n"
+                               "    // 261123_0001 Unit-C (local context pilot): slot 248 - the\n"
+                               "    // settings-hub local-context checkbox label (positional, same MSVC C7556\n"
+                               "    // rule as every other tail block).\n"
+                               "    L\"Translate with previous-sentence context\",\n"
                                "    L\"Auto - local for supported languages, cloud for the "
                                "rest\",\n"
                                "};") != std::string::npos,
                        "P9c-1b (ii): the English positional table carries the two literals "
                        "immediately before the 261122_0002 Phase-2 block, the 7 Phase-3 "
                        "literals and the 19 Phase-3 micro-pass literals and the 1 "
-                       "261123_0001 literal between the Phase-2 tail and the AUTO chip "
+                       "261123_0001 literal and the 1 261123_0001 Unit-C literal between "
+                       "the Phase-2 tail and the AUTO chip "
                        "line, and the AUTO chip line (which "
                        "stays its last initializer per the P9b-3 U5 tail pin)");
         }
         // Enum placement: the two ids close the pre-MenuSearchLangs block
         // (the 261122_0002 Phase-2 + Phase-3 + micro-pass blocks + the
-        // 261123_0001 id now own the enum tail, so the P5 sentinel pin reads
-        // EnumCount - 36), same rule
+        // 261123_0001 hint id + the 261123_0001 Unit-C id now own the enum
+        // tail, so the P5 sentinel pin reads
+        // EnumCount - 37), same rule
         // as P9b-1/U5.
         {
             volatile int auto_chip = static_cast<int>(StringId::LanguageSearchAutoChip);

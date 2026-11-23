@@ -466,7 +466,7 @@ void TestA2LocalCancelSeam() {
             TEST_CHECK(engine_cpp.find("cancel_forwarder.Start(ctx.cancel)") != std::string::npos,
                        "261122_0001 A2 pin: the forwarder arms only when the request carries "
                        "a cancel token");
-            TEST_CHECK(count_of(engine_cpp, "cancel_id_slot))") == 2,
+            TEST_CHECK(count_of(engine_cpp, "cancel_id_slot, context_fragment))") == 2,
                        "261122_0001 A2 pin: the id slot reaches BOTH TryTranslate call sites "
                        "(first attempt + transient retry)");
             // 261122_0001 fix-B (R1-05/R1-09): the slot is PER ATTEMPT —
@@ -478,8 +478,8 @@ void TestA2LocalCancelSeam() {
                        "pipe attempt (first + retry) — the slot is non-zero only in flight");
             {
                 const size_t rearm = engine_cpp.find("cancel_forwarder.RearmForAttempt()");
-                const size_t first_call = engine_cpp.find("cancel_id_slot))");
-                const size_t retry_call = engine_cpp.find("cancel_id_slot))",
+                const size_t first_call = engine_cpp.find("cancel_id_slot, context_fragment))");
+                const size_t retry_call = engine_cpp.find("cancel_id_slot, context_fragment))",
                                                          first_call + 1);
                 TEST_CHECK(rearm != std::string::npos && retry_call != std::string::npos &&
                                rearm < retry_call,

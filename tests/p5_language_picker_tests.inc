@@ -775,18 +775,20 @@ void TestP5LanguagePicker() {
         // EnumCount, so the P5 pair is no longer the tail: the sentinel-1 pin
         // becomes sentinel-35, PinTooltipCard still follows
         // LanguageSearchNoMatch, and the 8 Phase-2 + 7 Phase-3 + 19
-        // Phase-3-micro-pass ids + the 1 261123_0001 id close the enum tail.
+        // Phase-3-micro-pass ids + the 1 261123_0001 hint id + the 1
+        // 261123_0001 Unit-C id close the enum tail.
         volatile int theme_tail = static_cast<int>(StringId::ThemeMonolith);
         volatile int first_new = static_cast<int>(StringId::LanguageSearchCue);
         volatile int last_new = static_cast<int>(StringId::LanguageSearchNoMatch);
         volatile int phase2_first = static_cast<int>(StringId::PinTooltipCard);
         volatile int sentinel = static_cast<int>(StringId::EnumCount);
         TEST_CHECK(first_new > theme_tail && last_new > first_new && last_new < sentinel &&
-                       phase2_first == last_new + 1 && sentinel - 36 == last_new,
+                       phase2_first == last_new + 1 && sentinel - 37 == last_new,
                    "P5 (11): the two ids are contiguous; the 8 261122_0002 Phase-2 ids "
                    "and the 7 261122_0002 Phase-3 ids and the 19 261122_0002 Phase-3 "
-                   "micro-pass ids and the 1 261123_0001 id close the enum tail "
-                   "(EnumCount - 36 == LanguageSearchNoMatch)");
+                   "micro-pass ids and the 1 261123_0001 hint id and the 1 261123_0001 "
+                   "Unit-C id close the enum tail "
+                   "(EnumCount - 37 == LanguageSearchNoMatch)");
     }
 
     if (g_failed_count == failures_before) {

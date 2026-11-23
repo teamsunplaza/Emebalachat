@@ -96,7 +96,7 @@ void TestP3C3TabStripAndPageMapping() {
     // Page band boundaries (the enum is contiguous per band).
     TEST_CHECK(settings_hub::HubControlTab(settings_hub::kIdAutoSend) == 0 &&
                    settings_hub::HubControlTab(settings_hub::kIdHotkeySelection) == 0,
-               "P3-C3 UX-2: the General band (4801..4823) maps to page 0");
+               "P3-C3 UX-2: the General band (4801..4824) maps to page 0");
     TEST_CHECK(settings_hub::HubControlTab(settings_hub::kIdWarmupLabel) == 1 &&
                    settings_hub::HubControlTab(settings_hub::kIdDeclaredSummary) == 1,
                "P3-C3 UX-2: the Engines band (4830..4837) maps to page 1");
@@ -112,9 +112,9 @@ void TestP3C3TabStripAndPageMapping() {
                    settings_hub::HubControlTab(IDCANCEL) == -1,
                "P3-C3 UX-2: the tab strip and the footer buttons map to -1");
 
-    // The table the ShowPage loop walks: 56 page controls, every one owned.
-    TEST_CHECK(settings_hub::kHubPageControlCount == 56,
-               "P3-C3 UX-2: kHubPageControlIds carries exactly 56 page controls");
+    // The table the ShowPage loop walks: 57 page controls, every one owned.
+    TEST_CHECK(settings_hub::kHubPageControlCount == 57,
+               "P3-C3 UX-2: kHubPageControlIds carries exactly 57 page controls");
     bool all_mapped = true;
     for (std::size_t i = 0; i < settings_hub::kHubPageControlCount; ++i) {
         if (settings_hub::HubControlTab(settings_hub::kHubPageControlIds[i]) < 0) {
@@ -488,9 +488,9 @@ void TestP3C3TemplateShapes() {
                    "P3-C3 UX-2: the hub dialog style carries WS_VISIBLE");
         const unsigned int cdit = static_cast<unsigned int>(hub_bytes[8]) |
                                   (static_cast<unsigned int>(hub_bytes[9]) << 8);
-        TEST_CHECK(cdit == settings_hub::kHubItemCount && cdit == 58,
-                   "P3-C3 UX-2: the hub template emits exactly 58 items "
-                   "(56 page controls + OK + Cancel)");
+        TEST_CHECK(cdit == settings_hub::kHubItemCount && cdit == 59,
+                   "P3-C3 UX-2: the hub template emits exactly 59 items "
+                   "(57 page controls + OK + Cancel)");
     }
 
     // The manager dialog: the UX-4 CRUD pair is a RUNTIME row, so the template
