@@ -1156,13 +1156,17 @@ void TestReq047P5F2DragPathsStatusWiring() {
         const int k4ArgSites =
             static_cast<int>(std::count(main_src.begin(), main_src.end(), '&'));
         (void)k4ArgSites; // informational only; the per-site pins below are precise
-        TEST_CHECK(main_src.find("engine.Translate(selected, eff_src, tgt_lang, &drag_status)") !=
+        // 261122_0002 P2-F appended the per-request TranslationTaskContext as
+        // the FIFTH argument on all four reading paths, so the needle stops at
+        // the status out-pointer: what this pin guards (no path regressed to
+        // the status-discarding 3-arg form) is unchanged.
+        TEST_CHECK(main_src.find("engine.Translate(selected, eff_src, tgt_lang, &drag_status") !=
                        std::string::npos,
                    "REQ-047 P5-F2 (a): drag-icon path uses the status-out overload");
-        TEST_CHECK(main_src.find("engine.Translate(job.src, eff_src, tgt_lang, &rt_status)") !=
+        TEST_CHECK(main_src.find("engine.Translate(job.src, eff_src, tgt_lang, &rt_status") !=
                        std::string::npos,
                    "REQ-047 P5-F2 (a): tooltip F9 re-translation path uses the status-out overload");
-        TEST_CHECK(main_src.find("engine.Translate(copied, eff_src, tgt_lang, &dbl_status)") !=
+        TEST_CHECK(main_src.find("engine.Translate(copied, eff_src, tgt_lang, &dbl_status") !=
                        std::string::npos,
                    "REQ-047 P5-F2 (a): double Ctrl+C path uses the status-out overload");
     }

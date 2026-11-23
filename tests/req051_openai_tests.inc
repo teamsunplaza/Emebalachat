@@ -266,8 +266,8 @@ void TestReq051I18nCountAndCoverage() {
     // the runtime
     // comparison (avoids C4127 on the constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 213,
-               "REQ-051: StringId::EnumCount is 213 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 4 261121_0001 v0.10.9 U-C ids (2 OpenAI reasoning-effort ids + 2 back-translation section ids) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids");
+    TEST_CHECK(enum_count == 248,
+               "REQ-051: StringId::EnumCount is 248 after the OpenAiDeleteSettings + REQ-UC + REQ-MD + REQ-060 + v0.10.5 theme appends + the 5 261108_0002 WS3 back-translation ids (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model ids + the 2 261116_0003 P5 language-picker ids + the 1 261116_0003 P6a flat-menu search-row id + the 1 261116_0003 P7 engine-chip count id + the 23 261116_0003 P9b-1 user-language surface ids + the 1 261116_0003 P9b-3 U5 picker AUTO chip id + the 2 261116_0003 P9c-1b OpenAI declaration checklist ids + the 4 261121_0001 v0.10.9 U-C ids (2 OpenAI reasoning-effort ids + 2 back-translation section ids) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass ids + the 1 261123_0001 user-model load-failure hint id");
 
     // The new caption resolves non-empty in all 37 authored tables, and no
     // non-English locale falls back to the English text (real translations
@@ -684,7 +684,10 @@ void TestReq052OpenAiAsyncFetchPins() {
     TEST_CHECK(destroy_pos != std::string::npos,
                "REQ-052 pin: the dialog proc handles WM_DESTROY");
     if (destroy_pos != std::string::npos) {
-        const std::string destroy_branch = osw_src.substr(destroy_pos, 1400);
+        // V10F-R1 F-18 grew the branch (the generation-bump block + comment
+        // before the drain), so the drain now sits ~1.6 KB into the branch:
+        // the window widened 1400 -> 2400 to keep covering it.
+        const std::string destroy_branch = osw_src.substr(destroy_pos, 2400);
         TEST_CHECK(destroy_branch.find("fetch_alive->store(false") != std::string::npos,
                    "REQ-052 pin: WM_DESTROY flips the worker liveness flag");
         TEST_CHECK(destroy_branch.find("DrainOpenAiFetchQueue();") != std::string::npos,

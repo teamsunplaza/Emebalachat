@@ -681,8 +681,8 @@ void TestReq045OpenAiI18nPresent() {
     // through a volatile to keep the runtime comparison (avoids C4127 on the
     // constant expression).
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 213,
-                "StringId::EnumCount is 213 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + the 5 261121_0002 progress/cancel strings + the 6 261122_0001 B-U2 OpenAI profile strings");
+    TEST_CHECK(enum_count == 248,
+                "StringId::EnumCount is 248 after the 13+6+1+1+17+4+8+2+1+25+9+13 field appends + the 4 v0.10.5 theme strings + the 5 261108_0002 WS3 back-translation strings (FIX-WS3B added BackTranslateReference) + the 3 261111_0001 U6 user-model strings + the 2 261116_0003 P5 language-picker strings + the 1 261116_0003 P6a flat-menu search-row string + the 1 261116_0003 P7 picker engine-chip count string + the 23 261116_0003 P9b-1 user-language surface strings + the 1 261116_0003 P9b-3 U5 picker AUTO chip string + the 2 261116_0003 P9c-1b OpenAI declaration checklist strings + the 4 261121_0001 v0.10.9 U-C strings (2 OpenAI reasoning-effort strings + 2 back-translation section headers) - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + the 5 261121_0002 progress/cancel strings + the 6 261122_0001 B-U2 OpenAI profile strings + the 8 261122_0002 Phase-2 translation-card editor strings + the 7 261122_0002 Phase-3 settings-window redesign strings + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint string");
     for (StringId id : ids) {
         TEST_CHECK(!I18n::Get(id).empty(), "OpenAI StringId returns non-empty");
     }
@@ -692,11 +692,13 @@ void TestReq045OpenAiI18nPresent() {
 // 261121_0001 U-F (v0.10.9): this suite ALSO hosts the pure client-hardening
 // pins (2A-1/2A-2/2A-4/2A-5, the §3.2 chunk loop, C2/C4) — the only existing
 // req045 entry the runner calls that already owns client-TU structural pins.
-// DecomposeBaseUrl lives in an anonymous namespace inside
-// openai_compatible_client.cpp, so the unit suite cannot call it directly;
-// the live path-shape proof rides the env-var-gated mock round-trip in
-// TestReq046OpenAiLocalhostConsent (extended for REQ-050) and the exact-path
-// mock probe under tools_tmp_req050/. This suite pins the fix STRUCTURALLY
+// DecomposeBaseUrl NOW lives at namespace scope in
+// openai_compatible_client.cpp (exported via the header by V10F BUG-07,
+// 261122_0002 P1-U4), so its grammar is pinned behaviorally in the P1-U4
+// suite; the live path-shape proof here still rides the env-var-gated mock
+// round-trip in TestReq046OpenAiLocalhostConsent (extended for REQ-050) and
+// the exact-path mock probe under tools_tmp_req050/. This suite pins the fix
+// STRUCTURALLY
 // (source-text differential, the TestReq044VerbatimSync / REQ-048 R2-D (e)
 // precedent): the endpoint must be appended DIRECTLY onto the base path, and
 // "/v1" assumed only when the base has no path. That single join rule is what
@@ -804,21 +806,32 @@ void TestReq050OpenAiEndpointJoin() {
         // path. 261121_0001 U-H split the NETWORK half onto the detached
         // worker (FetchOpenAiModelCatalog + OpenAiFetchWorker), so the anchor
         // is now DoFetchModels(dlg, st) — the GUI-thread half this pin covers.
+        // V10F BUG-05 (261122_0002 P1-U3): the consent QUESTION itself moved
+        // into the shared ResolveHttpConsent gate (origin-scoped, one call site
+        // per action), so the slice starts at the gate definition; the fetch
+        // body now carries the gate's verdict into the probe instead of asking
+        // its own copy of the question.
+        const std::string::size_type consent_at =
+            src.find("bool ResolveHttpConsent(HWND dlg, OpenAiDialogState* st");
         const std::string::size_type dofetch_at =
             src.find("bool DoFetchModels(HWND dlg, OpenAiDialogState* st)");
         const std::string::size_type proc_at = src.find("INT_PTR CALLBACK OpenAiSettingsProc");
-        TEST_CHECK(dofetch_at != std::string::npos && proc_at != std::string::npos &&
+        TEST_CHECK(consent_at != std::string::npos && dofetch_at != std::string::npos &&
+                   proc_at != std::string::npos && consent_at < dofetch_at &&
                    dofetch_at < proc_at,
-                   "REQ-050: DoFetchModels (consent + probe compose + worker spawn) "
-                   "precedes the dialog proc");
-        if (dofetch_at != std::string::npos && proc_at != std::string::npos &&
-            dofetch_at < proc_at) {
-            const std::string dofetch_src = src.substr(dofetch_at, proc_at - dofetch_at);
-            TEST_CHECK(dofetch_src.find("OpenAiUrlSecurity::Http && !st->cfg->http_consent_given")
-                           != std::string::npos,
-                       "REQ-050 (B): the fetch probe re-checks http consent before the fetch");
-            TEST_CHECK(dofetch_src.find("probe.http_consent_given = true") != std::string::npos,
-                       "REQ-050 (B): a YES answer sets probe.http_consent_given");
+                   "REQ-050: ResolveHttpConsent + DoFetchModels (consent + probe compose "
+                   "+ worker spawn) precede the dialog proc");
+        if (consent_at != std::string::npos && dofetch_at != std::string::npos &&
+            proc_at != std::string::npos && consent_at < dofetch_at && dofetch_at < proc_at) {
+            const std::string dofetch_src = src.substr(consent_at, proc_at - consent_at);
+            TEST_CHECK(dofetch_src.find("OpenAiHttpConsentCarries(base_url, "
+                                        "st->cfg->http_consent_given") != std::string::npos &&
+                           dofetch_src.find("if (rc != IDYES) return false;") !=
+                               std::string::npos,
+                       "REQ-050 (B): the shared gate re-checks http consent before the fetch");
+            TEST_CHECK(dofetch_src.find("probe.http_consent_given = "
+                                        "st->cfg->http_consent_given;") != std::string::npos,
+                       "REQ-050 (B): a YES answer reaches the fetch probe");
             TEST_CHECK(dofetch_src.find("StringId::OpenAiHttpWarningTitle") != std::string::npos,
                        "REQ-050 (B): the fetch probe reuses the IDOK consent MessageBox strings");
             // The shared helper keeps the digest-BEFORE-protect order (it

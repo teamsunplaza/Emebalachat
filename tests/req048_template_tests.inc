@@ -580,18 +580,102 @@ void TestReq048OpenAiTemplateSerialization() {
                            i18n_src.find("return s.openai_declared_hint;", hint_at) <
                                hint_end,
                        "P9c-1b (ii): the Get() switch maps both ids to their members");
+            // 261122_0002 Phase-2 i18n worker: the 8 translation-card editor +
+            // pin surface literals land between the P9c-1b pair and the AUTO
+            // chip line (their own provenance comment sits just before
+            // L"Pin"), and the chip stays the LAST initializer (the P9b-3 U5
+            // tail pin). The block is pinned as the two contiguous runs the
+            // source actually carries.
+            // 261122_0002 Phase-3 i18n worker: the 7 settings-window redesign
+            // literals (L"General" .. L"Recent languages") land between the
+            // Phase-2 tail (L"Keep translated part") and the AUTO chip line,
+            // with their own provenance comment in between, and the chip
+            // still stays the LAST initializer.
+            // 261122_0002 Phase-3 micro-pass: the 19 settings-hub / cheat-sheet
+            // literals (L"Settings" .. L"Cancel the translation / close the
+            // card") land between L"Recent languages" and the AUTO chip line,
+            // with their own provenance comment in between; the chip still
+            // stays the LAST initializer.
+            // 261123_0001: the user-model load-failure hint literal
+            // (L"Could not load the user model. ...") lands between the
+            // micro-pass block and the AUTO chip line, with its own
+            // provenance comment in between; the chip still stays the LAST
+            // initializer.
             TEST_CHECK(i18n_src.find(
                            "    L\"Languages this model supports\",\n"
                            "    L\"Only the languages you select are shown in the language "
-                           "menus. When none are selected, all languages are shown.\",\n"
-                           "    L\"Auto - local for supported languages, cloud for the rest\",\n"
-                           "};") != std::string::npos,
+                           "menus. When none are selected, all languages are shown.\",\n") !=
+                               std::string::npos &&
+                           i18n_src.find(
+                               "    L\"Pin\",\n"
+                               "    L\"Unpin\",\n"
+                               "    L\"Open in window\",\n"
+                               "    L\"Edit / retranslate\",\n"
+                               "    L\"Apply to original window\",\n"
+                               "    L\"Translation editor\",\n"
+                               "    L\"Cancelling...\",\n"
+                               "    L\"Keep translated part\",\n"
+                               "    // 261122_0002 (v0.10.10 phased fixes, Phase-3 i18n): slots "
+                               "221..227 - the\n"
+                               "    // settings window redesign's seven strings (positional, same "
+                               "MSVC C7556\n"
+                               "    // rule as every other tail block).\n"
+                               "    L\"General\",\n"
+                               "    L\"Translation engines\",\n"
+                               "    L\"Languages\",\n"
+                               "    L\"Advanced\",\n"
+                               "    L\"Open config folder\",\n"
+                               "    L\"Reset selection (support all)\",\n"
+                               "    L\"Recent languages\",\n"
+                               "    // 261122_0002 (v0.10.10 phased fixes, Phase-3 i18n "
+                               "micro-pass): slots\n"
+                               "    // 228..246 - the menu settings label, the settings hub "
+                               "caption/copy, and\n"
+                               "    // the cheat-sheet appendix (positional, same MSVC C7556 rule "
+                               "as every\n"
+                               "    // other tail block).\n"
+                               "    L\"Settings\",\n"
+                               "    L\"Settings\",\n"
+                               "    L\"Drag to translate\",\n"
+                               "    L\"Allow cloud fallback\",\n"
+                               "    L\"Toggle on/off\",\n"
+                               "    L\"Cycle language\",\n"
+                               "    L\"Toggle auto-send\",\n"
+                               "    L\"Translate selection\",\n"
+                               "    L\"Diagnostic log\",\n"
+                               "    L\"Log user content (typed text, window titles)\",\n"
+                               "    L\"Only for troubleshooting: the log can then contain what "
+                               "you type and the titles of your windows.\",\n"
+                               "    L\"Temperature\",\n"
+                               "    L\"Top-p\",\n"
+                               "    L\"Top-k\",\n"
+                               "    L\"Repetition penalty\",\n"
+                               "    L\"More gestures:\",\n"
+                               "    L\"Translate the selected text\",\n"
+                               "    L\"Copy selected text (Ctrl+C) to see its translation\",\n"
+                               "    L\"Cancel the translation / close the card\",\n"
+                               "    // 261123_0001 (v0.10.10 rebuild-2 follow-ups, Bug A): "
+                               "slot 247 - the\n"
+                               "    // user-model load-failure tooltip hint (positional, "
+                               "same MSVC C7556 rule\n"
+                               "    // as every other tail block).\n"
+                               "    L\"Could not load the user model. Check the file and "
+                               "compatibility in Model Manager.\",\n"
+                               "    L\"Auto - local for supported languages, cloud for the "
+                               "rest\",\n"
+                               "};") != std::string::npos,
                        "P9c-1b (ii): the English positional table carries the two literals "
-                       "immediately before the AUTO chip line (which stays its last "
-                       "initializer per the P9b-3 U5 tail pin)");
+                       "immediately before the 261122_0002 Phase-2 block, the 7 Phase-3 "
+                       "literals and the 19 Phase-3 micro-pass literals and the 1 "
+                       "261123_0001 literal between the Phase-2 tail and the AUTO chip "
+                       "line, and the AUTO chip line (which "
+                       "stays its last initializer per the P9b-3 U5 tail pin)");
         }
         // Enum placement: the two ids close the pre-MenuSearchLangs block
-        // (the P5 sentinel pin owns the enum tail), same rule as P9b-1/U5.
+        // (the 261122_0002 Phase-2 + Phase-3 + micro-pass blocks + the
+        // 261123_0001 id now own the enum tail, so the P5 sentinel pin reads
+        // EnumCount - 36), same rule
+        // as P9b-1/U5.
         {
             volatile int auto_chip = static_cast<int>(StringId::LanguageSearchAutoChip);
             volatile int title_id = static_cast<int>(StringId::OpenAiDeclaredTitle);
@@ -865,12 +949,14 @@ void TestReq048OpenAiTemplateSerialization() {
                                "declaration.edited ? &declaration.declared_languages : nullptr") !=
                                    std::string::npos &&
                                main_src.find(
-                                   "/*parent=*/emebalachat::g_hControllerWnd, edited, declaration, profiles_fold);") !=
+                                   "/*parent=*/emebalachat::g_hControllerWnd, edited, declaration, "
+                                   "profiles_fold,\n"
+                                   "                &consent_origin_scope);") !=
                                    std::string::npos,
                            "P9c-1c (a): the WndProc passes the folded set into the seam on the Save "
                            "outcome (and only when the dialog actually folded it) — 261122_0001 "
-                           "B-U5: through the library-aware 4-arg entry, which also hands the "
-                           "profile fold out");
+                           "B-U5: through the library-aware entry (V10F-R1 F-17: plus the "
+                           "consent-origin channel), which also hands the profile fold out");
                 TEST_CHECK(main_src.find(
                                "g_apply_openai_settings(edited, /*saved=*/false, nullptr, nullptr);") !=
                                std::string::npos,
@@ -1158,9 +1244,15 @@ void TestReq048OpenAiTemplateSerialization() {
             // A model change repopulates the list for the newly selected model;
             // the init/repopulate sites and the IDOK read share one helper, so
             // the combo and the saved value cannot drift.
-            TEST_CHECK(osw_src.find("if (st && LOWORD(wp) == IDC_MODEL_COMBO &&") !=
+            // V10F BUG-03 (261122_0002 P1-U3): the WM_COMMAND branch now nests
+            // the two notifications under the IDC_MODEL_COMBO test (CBN_SELCHANGE
+            // reads CB_GETCURSEL/CB_GETLBTEXT; CBN_EDITCHANGE keeps the
+            // control-text read), so the pin asserts the nested shape.
+            TEST_CHECK(osw_src.find("if (st && LOWORD(wp) == IDC_MODEL_COMBO) {") !=
                                std::string::npos &&
-                           osw_src.find("HIWORD(wp) == CBN_SELCHANGE") !=
+                           osw_src.find("if (HIWORD(wp) == CBN_SELCHANGE) {") !=
+                               std::string::npos &&
+                           osw_src.find("if (HIWORD(wp) == CBN_EDITCHANGE) {") !=
                                std::string::npos,
                        "U-H (iii): IDC_MODEL_COMBO CBN_SELCHANGE repopulates the reasoning "
                        "combo");

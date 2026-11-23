@@ -941,8 +941,9 @@ void TestWs2WorkerWiringPins() {
 
     // The workstream adds no new send-through terminal and no new release
     // site: every pre-existing structural pin keeps its count.
-    TEST_CHECK(Ws2CountOcc(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 8,
-               "WS2 (e): still 8 send-through helper call sites (the workstream adds none)");
+    TEST_CHECK(Ws2CountOcc(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 9,
+               "WS2 (e): still the workstream's 8 send-through helper call sites + the "
+               "261122_0002 P2-D FUP-04 rescue-raw terminal");
     TEST_CHECK(Ws2CountOcc(src, "ReleaseSelectionOnce();") == 5,
                "WS2 (e): still 5 ReleaseSelectionOnce sites (the workstream adds none)");
     TEST_CHECK(Ws2CountOcc(src, "if (SelectionReleaseRequired(pasted)) {") == 1,

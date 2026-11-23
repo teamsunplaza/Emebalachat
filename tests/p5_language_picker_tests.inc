@@ -709,12 +709,18 @@ void TestP5LanguagePicker() {
                        self_src.find(deferred_entry) == std::string::npos,
                    "P5 (10): the suite never calls the window/deferred-open entries");
 
-        // (d) runtime: no window of the picker class exists now. The class name
-        // is duplicated here ON PURPOSE (the .cpp keeps it in an anonymous
-        // namespace); the pin above fails loudly if the .cpp ever renames it.
+        // (d) runtime: no window of the picker class exists now. V10F FUP-02
+        // (261122_0002 P1-U5) moved the ONE class-name definition into SECTION A
+        // of the header (language_palette::kLanguagePaletteWindowClass) so the
+        // .cpp registration and the pure exemption predicate cannot drift; the
+        // .cpp aliases it and no longer carries its own literal. The pin fails
+        // loudly if the literal moves or the .cpp stops consuming it.
         const wchar_t* kPaletteClass = L"Emebalachat_LanguageSearchPalette";
-        TEST_CHECK(cpp_src.find("Emebalachat_LanguageSearchPalette") != std::string::npos,
-                   "P5 (10): the pinned class name matches the .cpp's registered class");
+        TEST_CHECK(header_src.find("Emebalachat_LanguageSearchPalette") != std::string::npos &&
+                       cpp_src.find("language_palette::kLanguagePaletteWindowClass") !=
+                           std::string::npos,
+                   "P5 (10): the pinned class name matches the .cpp's registered class "
+                   "(shared header constant, V10F FUP-02)");
         TEST_CHECK(::FindWindowW(kPaletteClass, nullptr) == nullptr,
                    "P5 (10): no picker window exists during the headless suite");
     }
@@ -764,14 +770,23 @@ void TestP5LanguagePicker() {
                    "P5 (11): no non-English locale falls back to the English text");
 
         // Enum placement: appended after the user-model block, below the
-        // sentinel — the completeness loop therefore covers them.
+        // sentinel (the completeness loop therefore covers them). 261122_0002
+        // Phase-2 appended 8 translation-card editor ids right before
+        // EnumCount, so the P5 pair is no longer the tail: the sentinel-1 pin
+        // becomes sentinel-35, PinTooltipCard still follows
+        // LanguageSearchNoMatch, and the 8 Phase-2 + 7 Phase-3 + 19
+        // Phase-3-micro-pass ids + the 1 261123_0001 id close the enum tail.
         volatile int theme_tail = static_cast<int>(StringId::ThemeMonolith);
         volatile int first_new = static_cast<int>(StringId::LanguageSearchCue);
         volatile int last_new = static_cast<int>(StringId::LanguageSearchNoMatch);
+        volatile int phase2_first = static_cast<int>(StringId::PinTooltipCard);
         volatile int sentinel = static_cast<int>(StringId::EnumCount);
         TEST_CHECK(first_new > theme_tail && last_new > first_new && last_new < sentinel &&
-                       sentinel - 1 == last_new,
-                   "P5 (11): the two ids are contiguous and sit at the enum tail");
+                       phase2_first == last_new + 1 && sentinel - 36 == last_new,
+                   "P5 (11): the two ids are contiguous; the 8 261122_0002 Phase-2 ids "
+                   "and the 7 261122_0002 Phase-3 ids and the 19 261122_0002 Phase-3 "
+                   "micro-pass ids and the 1 261123_0001 id close the enum tail "
+                   "(EnumCount - 36 == LanguageSearchNoMatch)");
     }
 
     if (g_failed_count == failures_before) {

@@ -707,8 +707,14 @@ void TestP6UiLanguagePicker() {
                    "(UpdateHeader + SyncList) only when `changed`");
 
         // ---- (e) the p5 section (10) landmarks survive verbatim -------------
-        TEST_CHECK(cpp_src.find("Emebalachat_LanguageSearchPalette") != std::string::npos,
-                   "P6-U3 (B): the pinned palette class name survives (p5 (10) idiom)");
+        // V10F FUP-02 (261122_0002 P1-U5): the class literal now lives in ONE
+        // place (the header's language_palette::kLanguagePaletteWindowClass);
+        // the .cpp registration consumes that shared constant.
+        TEST_CHECK(header_src.find("Emebalachat_LanguageSearchPalette") != std::string::npos &&
+                       cpp_src.find("language_palette::kLanguagePaletteWindowClass") !=
+                           std::string::npos,
+                   "P6-U3 (B): the pinned palette class name survives (p5 (10) idiom, "
+                   "shared header constant)");
         TEST_CHECK(cpp_src.find("CreateWindowExW") != std::string::npos &&
                        cpp_src.find("GetMessageW") != std::string::npos,
                    "P6-U3 (B): the WS_POPUP CreateWindowExW path and the hand-rolled "

@@ -1637,15 +1637,17 @@ void TestWorkerB1SendThroughPins() {
         return n;
     };
 
-    // (1) Exactly 8 helper call sites, and the site-5 pre-sampled-caret form
+    // (1) Exactly 9 helper call sites, and the site-5 pre-sampled-caret form
     //     appears exactly once (REQ-F5 promote branch keeps its earlier sample).
     //     REQ-042 (session 260917_0002) added the 8th terminal: the
     //     tail-unchanged short-circuit hands the Enter through with zero
-    //     editor transactions (same helper, plain two-arg form).
-    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 8,
-               "B1: exactly 8 send-through helper call sites in worker.cpp (7 legacy + REQ-042 short-circuit)");
-    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter)") == 7,
-               "B1: seven sampling call sites (helper owns SampleCaret; REQ-042 samples too)");
+    //     editor transactions (same helper, plain two-arg form). 261122_0002
+    //     P2-D FUP-04 added the 9th: the out-of-band raw rescue payload's
+    //     identity-paste consume (same helper, plain two-arg form).
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 9,
+               "B1: exactly 9 send-through helper call sites in worker.cpp (7 legacy + REQ-042 short-circuit + FUP-04 rescue-raw)");
+    TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter)") == 8,
+               "B1: eight sampling call sites (helper owns SampleCaret; REQ-042 and FUP-04 sample too)");
     TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter, now_caret)") == 1,
                "B1: site 5 passes its pre-sampled caret (no re-sample, /039 baseline preserved)");
 
@@ -1777,10 +1779,17 @@ void TestW5C1C2BrushMeasurePins() {
                "C1: no CreateSolidColorBrush inside TooltipWindow::Render");
     TEST_CHECK(count_occ(abtRender, "CreateSolidColorBrush(") == 0,
                "C1: no CreateSolidColorBrush inside AboutWindow::Render");
-    TEST_CHECK(count_occ(tipRender, "scratch_brush_->SetColor(") == 26,
-               "C1: tooltip Render drives 26 SetColor-just-before-use draw groups");
-    TEST_CHECK(count_occ(abtRender, "scratch_brush_->SetColor(") == 68,
-               "C1: about Render drives 68 SetColor-just-before-use draw groups");
+    // 261122_0002 P2-C added the header action cluster (pin box on both cards,
+    // the edit / open-in-window buttons and the chunk-preview progress line),
+    // so the exact group count moved 26 -> 29 (re-derived from the Render body).
+    TEST_CHECK(count_occ(tipRender, "scratch_brush_->SetColor(") == 29,
+               "C1: tooltip Render drives 29 SetColor-just-before-use draw groups");
+    // 261122_0002 P3-C6 (ABT-U2(3)) removed the Downloading zone's duplicate
+    // progress-label draw group (one SetColor + DrawText pair gone), so the
+    // about count moved 68 -> 67 (re-derived from the Render body: 67
+    // scratch_brush_->SetColor( occurrences, 0 outside Render).
+    TEST_CHECK(count_occ(abtRender, "scratch_brush_->SetColor(") == 67,
+               "C1: about Render drives 67 SetColor-just-before-use draw groups");
     TEST_CHECK(count_occ(tipRender, "ID2D1SolidColorBrush*") == 0,
                "C1: no local brush pointer declarations remain in TooltipWindow::Render");
     TEST_CHECK(count_occ(abtRender, "ID2D1SolidColorBrush*") == 0,
@@ -1846,8 +1855,11 @@ void TestW5C1C2BrushMeasurePins() {
                "C2: no CreateTextLayout inside TooltipWindow::Render (steady-state frames shape zero labels)");
     const std::string tipMeasure = func_body(tip, "void TooltipWindow::EnsureMeasuredLayouts() {");
     TEST_CHECK(!tipMeasure.empty(), "C2: EnsureMeasuredLayouts located");
-    TEST_CHECK(count_occ(tipMeasure, "CreateTextLayout(") == 5,
-               "C2: cache owns exactly 5 measurements (src-tag + copy + copied + tts + target pill labels)");
+    // 261122_0002 P2-C: the 6th measurement is the header action cluster's
+    // label width cache (the [EditRetranslate] / [OpenInWindow] labels are
+    // measured once per label change, not per frame).
+    TEST_CHECK(count_occ(tipMeasure, "CreateTextLayout(") == 6,
+               "C2: cache owns exactly 6 measurements (src-tag + copy + copied + tts + target pill labels + the P2-C header action labels)");
     const std::string tipShow = func_body(tip, "void TooltipWindow::ShowTranslation(");
     TEST_CHECK(count_occ(tipShow, "CreateTextLayout(") == 2,
                "C2: ShowTranslation content-path body measures stay at content granularity (2 calls)");
@@ -8617,7 +8629,15 @@ void TestPhase3LanguageContexts() {
     // 22:10 "APPROVED OVERRIDE: remove EN-OS->Korean special case;
     // system-language 1:1 mapping". Translation-time src==tgt handling is
     // the ADR-A1-7 pivot/ResolveEffectiveTarget layer, NOT this default).
-    const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    // 261123_0001 (Bug B): the derivation source moved WITH the production
+    // ResolveDragDefaultTarget from the app-UI-locale seam
+    // (I18n::GetSystemLanguageCode, Initialize-dependent) to the TRUE OS
+    // language (DetectSystemLocale + LocaleToString, Initialize-independent):
+    // wWinMain runs LoadFromFile BEFORE I18n::Initialize, so the old seam
+    // read the static English default at fresh-create seeding time. The F2
+    // 1:1 mirror note above stays valid; only the source seam changed.
+    const std::string sys_code =
+        NormalizeLanguageCode(I18n::LocaleToString(I18n::DetectSystemLocale()));
     const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
     std::string expected_drag_default;
     if (!sys_info || sys_info->code == "AUTO") {
@@ -8839,7 +8859,12 @@ void TestPhase4SystemDefaults() {
     // Korean pivot with the 1:1 system-language mirror (decisions.md
     // 2026-09-08 22:10 APPROVED OVERRIDE): unsupported/unknown -> English,
     // every supported language (incl. EN) -> its own name_en).
-    const std::string sys_code = NormalizeLanguageCode(I18n::GetSystemLanguageCode());
+    // 261123_0001 (Bug B): same source move as TestPhase3LanguageContexts -
+    // the OS language now comes from DetectSystemLocale + LocaleToString
+    // (Initialize-independent), matching the production
+    // ResolveDragDefaultTarget seam.
+    const std::string sys_code =
+        NormalizeLanguageCode(I18n::LocaleToString(I18n::DetectSystemLocale()));
     const LanguageInfo* sys_info = FindLanguageByCode(sys_code);
     std::string expected_drag_default;
     if (!sys_info || sys_info->code == "AUTO") {
@@ -10743,10 +10768,13 @@ void TestPhase5AppClassifier() {
         TEST_CHECK(ClassifyAppWindow(console_hwnd) == AppCategory::CategoryB,
                    "ClassifyAppWindow classifies own console window (run_tests.exe, not in table) as CategoryB");
         // F4 (A2): the editor-exclusion probe fails open (false) on the self
-        // process too - run_tests.exe is in neither table, so it must NOT be
-        // treated as an editor/IDE excluded from Enter translation.
-        TEST_CHECK(!IsEnterTranslateExcludedApp(console_hwnd),
-                   "IsEnterTranslateExcludedApp fails open (false) for own console window (run_tests.exe)");
+        // process too - run_tests.exe is in neither table. FUP-01 (261122_0002
+        // P1-U1) intentionally inverted the console polarity: the console-class
+        // exclusion now takes precedence over the exe-table fail-open, so the
+        // own console window IS excluded from the Enter translate pipeline.
+        TEST_CHECK(IsEnterTranslateExcludedApp(console_hwnd),
+                   "FUP-01: consoles are excluded from the Enter translate pipeline "
+                   "(run_tests.exe's own console window)");
         TEST_CHECK(IsEnterTranslateExcludedApp(nullptr) == false,
                    "IsEnterTranslateExcludedApp returns false (fail-open) for null HWND");
         TEST_CHECK(IsEnterTranslateExcludedApp(bogus_hwnd) == false,
@@ -12922,8 +12950,8 @@ void TestBug005RescueSendThroughConsumeGate() {
             }
             return n;
         };
-        TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 8,
-                   "BUG-005: B1 8-site single-sourcing preserved (consume guards added in front, calls rewired nowhere; REQ-042 site 8)");
+        TEST_CHECK(count_occ(src, "SendThroughWithNewlineTracking(task.target_hwnd") == 9,
+                   "BUG-005: B1 single-sourcing preserved (consume guards added in front, calls rewired nowhere; REQ-042 site 8, FUP-04 site 9)");
     }
 
     if (g_failed_count == failures_before) {
@@ -13684,10 +13712,17 @@ void TestBug005S0GoldenDecisionTables() {
         // SEMANTIC claim survives: the consume helper body still contains no
         // ledger access (asserted separately below), and the re-anchor only
         // ever EXTENDS the ledger over a capture that still starts with it.
-        TEST_CHECK(n == 2,
-                   "S0 G6-4: exactly TWO last_paste_text_ stores - the main paste-success block "
-                   "AND the 261108_0002 WS2 smart-bypass re-anchor (which only ever extends the "
-                   "ledger over a capture that still starts with it); the consume never refreshes it");
+        // 261122_0002 P2-D: the L4-C selection-replace flow adds the THIRD
+        // store site (its paste-success block refreshes the ledger exactly like
+        // the Enter paste branch, so the next Enter sees live text). The pin's
+        // SEMANTIC claim is untouched: the rescue consume helper still contains
+        // no ledger access (asserted separately below), and the re-anchor only
+        // ever EXTENDS the ledger over a capture that still starts with it.
+        TEST_CHECK(n == 3,
+                   "S0 G6-4: exactly THREE last_paste_text_ stores - the main paste-success block, "
+                   "the 261108_0002 WS2 smart-bypass re-anchor (which only ever extends the "
+                   "ledger over a capture that still starts with it) and the 261122_0002 P2-D "
+                   "selection-replace paste-success block; the consume never refreshes it");
     }
     {
         size_t n = 0, pos = 0;
@@ -15407,13 +15442,17 @@ void TestReq038B5AboutRtl() {
 // P4 Batch B-6 (session 260907_0002, design §4.1 "TestReq040SystemDefaults37"
 // row + §2.3.3 C1-C10 proof map): the REQ-040 rule-convenience proof suite.
 // Proves the documented default/sticky/reset rules hold for ALL 37 locales
-// with zero gaming: the C2 parametric leg drives the REAL production function
-// (ResolveDragDefaultTarget) through its only input seam - the I18n locale
-// GetLocaleCode reads - once per LocaleMapping row; the oracle is the
+// with zero gaming. 261123_0001 (Bug B) moved the C2 seam: the parametric leg
+// used to drive the REAL production function (ResolveDragDefaultTarget)
+// through its only input seam - the I18n locale GetLocaleCode reads - once per
+// LocaleMapping row; the function now sources the TRUE OS language
+// (DetectSystemLocale + LocaleToString), so the same leg asserts the inverse
+// contract (Initialize-independence across every row). The oracle is the
 // design §2.6 mapping derived independently from each row's registry data.
 // Gate decisions pinned here are user-approved (decisions.md 2026-09-07):
 //   G-1 reset also restores ui_language = "auto"  (C7-unit half)
-//   G-2 EN-pivot stays "Korean"                   (EN row of the C2 loop)
+//   G-2 EN-pivot stays "Korean"                   (SUPERSEDED 2026-09-08; the
+//                                                  1:1 EN row, now host-derived)
 //   G-4 Hebrew detection                          (pinned in TestSmartBypassModule 8b)
 void TestReq040SystemDefaults37() {
     std::cout << "[RUN] Testing REQ-040 system defaults over all 37 locales (B-6)..." << std::endl;
@@ -15437,25 +15476,36 @@ void TestReq040SystemDefaults37() {
         return info->name_en;                                 // 1:1 mirror (incl. EN -> English)
     };
 
-    // ---- C2 parametric: every one of the 37 LocaleMapping rows drives the
-    // REAL ResolveDragDefaultTarget through its input seam (I18n::SetLocale ->
-    // GetSystemLanguageCode/GetLocaleCode). Each row's expectation is its
-    // registry name_en; the EN row is the G-2 "Korean" pivot pin.
+    // ---- C2 parametric: every one of the 89 LocaleMapping rows USED to drive
+    // the REAL ResolveDragDefaultTarget through its input seam (I18n::SetLocale ->
+    // GetSystemLanguageCode/GetLocaleCode), each row's expectation being its
+    // registry name_en (the EN row was the G-2 pivot pin). 261123_0001 (Bug B)
+    // MOVED that seam: the production function now sources the TRUE OS
+    // language (I18n::DetectSystemLocale + I18n::LocaleToString,
+    // Initialize-independent), so no SetLocale state can influence it anymore.
+    // The loop's job inverts: across ALL 89 rows the production result must
+    // stay pinned to the host-OS expectation (the fresh-create seed can never
+    // follow the app UI locale - the exact Bug B scenario), and each row's
+    // registry oracle remains the 1:1-mapping coverage reference for the
+    // host row.
     {
         const auto& maps = GetLocaleMappings();
         // 89 rows since UI-language-89 phase 1A. The 52 gated rows participate
-        // like any other: GetLocaleCode resolves their config_code and the
-        // 1:1 registry oracle (name_en) matches through the same seam.
+        // like any other: every app-locale state must leave the drag default at
+        // the OS language (Initialize-independence is row-agnostic).
         TEST_CHECK(maps.size() == 89,
-                   "B6/C2: parametric loop covers exactly 89 mapping rows (52 gated rows resolve through the same GetLocaleCode seam)");
+                   "B6/C2: parametric loop covers exactly 89 mapping rows (every app-locale state "
+                   "leaves the drag default OS-pinned)");
+        const std::string host_want = expected_for_sys_code(NormalizeLanguageCode(
+            std::string(I18n::LocaleToString(I18n::DetectSystemLocale()))));
         for (const auto& m : maps) {
-            I18n::SetLocale(m.locale); // simulate "OS reports this language"
-            const std::string sys_code = NormalizeLanguageCode(std::string(I18n::GetSystemLanguageCode()));
-            const std::string want = expected_for_sys_code(sys_code);
+            I18n::SetLocale(m.locale); // MUST NOT influence the drag default anymore
             const std::string got = ResolveDragDefaultTarget(); // production function
-            TEST_CHECK(got == want,
-                       ("B6/C2: system language " + std::string(m.config_code) +
-                        " -> drag default " + got + " (want " + want + ")").c_str());
+            TEST_CHECK(got == host_want,
+                       ("B6/C2: app locale " + std::string(m.config_code) +
+                        " leaves the drag default at the OS language " + got + " (want " +
+                        host_want + ")")
+                           .c_str());
         }
     }
 
@@ -15465,10 +15515,19 @@ void TestReq040SystemDefaults37() {
     // 기본값은 시스템언어" - target default is the SYSTEM language). An EN
     // system language now mirrors 1:1 to "English". EN-OS + EN text dragged
     // hits the ADR-A1-7 rank-3 skip (source shown as-is), NOT corruption.
+    // 261123_0001 (Bug B): the production input seam moved to the TRUE OS
+    // language, so with the app UI locale forced to English (the exact
+    // fresh-install shape: wWinMain's LoadFromFile runs BEFORE
+    // I18n::Initialize, leaving the static English default) the value must
+    // still be the OS-language expectation - "English" on an EN OS (the G-2
+    // row), the host's own language otherwise.
     {
+        const std::string os_want = expected_for_sys_code(NormalizeLanguageCode(
+            std::string(I18n::LocaleToString(I18n::DetectSystemLocale()))));
         I18n::SetLocale(UiLocale::English);
-        TEST_CHECK(ResolveDragDefaultTarget() == "English",
-                   "B6/G-2(F2): EN-OS drag default mirrors 1:1 to 'English' (2026-09-08 APPROVED OVERRIDE of the 2026-09-07 pin)");
+        TEST_CHECK(ResolveDragDefaultTarget() == os_want,
+                   "B6/G-2(F2, 261123): app locale English (the fresh-install shape) still "
+                   "seeds the OS language");
     }
 
     // ---- AUTO/unknown-OS half of the mapping (design §2.3.3 "AUTO ->
@@ -15509,7 +15568,7 @@ void TestReq040SystemDefaults37() {
         TEST_CHECK(s.drag_target_language == ResolveDragDefaultTarget(),
                    "B6/C2-host: fresh-config drag TARGET default = OS-resolved (REQ-007)");
         TEST_CHECK(s.drag_target_language == expected_for_sys_code(
-                       NormalizeLanguageCode(std::string(I18n::GetSystemLanguageCode()))),
+                       NormalizeLanguageCode(std::string(I18n::LocaleToString(I18n::DetectSystemLocale())))),
                    "B6/C2-host: fresh-config drag target matches the §2.6 mapping for the host OS");
         TEST_CHECK(s.type_source_language == "Auto Detect",
                    "B6/C3: fresh-config typing SOURCE default is Auto Detect (REQ-015)");
@@ -18133,6 +18192,10 @@ void TestR107PeerIdentityGate() {
 // and the PlanOpenAiProfileUpsert identity planner. Zero network, zero UI.
 #include "openai_profile_tests.inc"
 
+// 261122_0002 P1-U3 (v0.10.10 phased fixes): BUG-03..06 — the origin-scoped
+// http consent pure seams + the dialog wiring source pins.
+#include "p1_u3_tests.inc"
+
 // REQ-044 (P3 item 4, option b — Tech Gate E-3a/E-3c): i18n field-order
 // structural defense. Complements the runtime EnumCount completeness loop in
 // TestR6P5P6I18n (run_tests.cpp#L7128-7145) by pinning the LocalizedStrings
@@ -18216,7 +18279,34 @@ struct Req044LstrMirror {
     // progress/cancel run (207 -> 213: openai_profile_label/save/delete/
     // name_template/delete_confirm/limit), with their ENUM ids in the same
     // slot - same Get() switch mapping rule.
-    const wchar_t* f[213];
+    // 261122_0002 Phase-2 i18n worker: the 8 translation-card editor + pin
+    // surface strings (pin_tooltip_card/unpin_tooltip_card/open_in_window/
+    // edit_retranslate/apply_to_original_window/translation_editor_title/
+    // cancelling_progress/keep_translated_part) take the struct slots right
+    // AFTER openai_declared_hint and right BEFORE language_search_auto_chip
+    // (213 -> 221), while their ENUM ids sit at the enum tail immediately
+    // before EnumCount - same Get() switch mapping rule.
+    // 261122_0002 Phase-3 i18n worker: the 7 settings-window redesign strings
+    // (settings_tab_general/settings_tab_engines/settings_tab_languages/
+    // settings_tab_advanced/open_config_folder/reset_declared_languages/
+    // recent_languages_header) take the struct slots right AFTER
+    // keep_translated_part and right BEFORE language_search_auto_chip
+    // (221 -> 228), same Get() switch mapping rule.
+    // 261122_0002 Phase-3 i18n micro-pass: the 19 settings-hub/cheat-sheet
+    // strings (menu_settings/settings_hub_title/settings_drag_to_translate/
+    // settings_cloud_fallback/settings_hotkey_toggle/settings_hotkey_lang/
+    // settings_hotkey_mode/settings_hotkey_selection/settings_diag_log_enabled/
+    // settings_diag_log_content/settings_diag_content_warning/settings_temperature/
+    // settings_top_p/settings_top_k/settings_repetition_penalty/
+    // cheat_sheet_more_gestures/cheat_sheet_selection_translate/
+    // cheat_sheet_double_ctrl_c/cheat_sheet_esc_cancel) take the struct slots
+    // right AFTER recent_languages_header and right BEFORE
+    // language_search_auto_chip (228 -> 247), same Get() switch mapping rule.
+    // 261123_0001: the 1 user-model load-failure hint string
+    // (user_model_load_failed_hint) takes the struct slot right AFTER
+    // cheat_sheet_esc_cancel and right BEFORE language_search_auto_chip
+    // (247 -> 248), same Get() switch mapping rule.
+    const wchar_t* f[248];
 };
 
 } // namespace
@@ -18229,9 +18319,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 213
-    static_assert(kExpectedFieldCount == 213,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 248
+    static_assert(kExpectedFieldCount == 248,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18239,11 +18329,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 213,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: LocalizedStrings field count is 213 "
+    TEST_CHECK(observed_field_count == 248,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: LocalizedStrings field count is 248 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 213,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2: StringId::EnumCount is 213 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids)");
+    TEST_CHECK(observed_enum_count == 248,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001: StringId::EnumCount is 248 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint id)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -20612,6 +20702,80 @@ void TestS261029UaOutputGate() {
 // above), per the end-of-file .inc pattern.
 #include "mutex_family_pin_tests.inc"
 
+// V10F P1-U5: tray debounce/palette exemption/AUTO-carry pure pins + main.cpp
+// structural pins.
+#include "p1_u5_tests.inc"
+
+// 261122_0002 P1-U1: FUP-01 console Enter exclusion + FUP-07 epoch-guarded K
+// + D3 terminal classes.
+#include "p1_u1_tests.inc"
+
+// V10F P1-U2: badge single-click timer arm (BUG-01) + DPI-aware double-click
+// tolerance (D2) source pins.
+#include "p1_u2_tests.inc"
+
+// 261122_0002 P1-U4: BUG-07 base-URL grammar, BUG-08 locked engine-host
+// config, E1 cancel latch gates, E3 non-empty model-id cache, BUG-09 probe
+// cancel token.
+#include "p1_u4_tests.inc"
+
+// 261122_0002 P2-A: RISK-02 abortable HINTERNET slots (OpenAI/Google/download),
+// RISK-03 per-request error detail, L3-B SSE streaming + cumulative preview.
+#include "p2_a_tests.inc"
+
+// 261122_0002 P2-B: TranslationTaskContext abort/preview carriers, the pure
+// L5-B chunk coordinator, and the engine cancel-bridge wiring pins.
+#include "p2_b_tests.inc"
+
+// V10F P2-C: tooltip width tiers / LCID / preview / view-toggle pins.
+#include "p2_c_tests.inc"
+
+// 261122_0002 P2-D: RISK-03 typing-error detail seam, L4-C selection-replace
+// flow, FUP-04 raw rescue payload consume.
+#include "p2_d_tests.inc"
+
+// 261122_0002 round-1 FIX-UNIT R3: worker/hook/config fixes (F-03, F-05,
+// F-14, F-17 config half) + the F-17 origin-match matrix.
+#include "r3_fix_tests.inc"
+
+// 261122_0002 P2-E: BUG-10 model-download dialog cancel route + RISK-02
+// About-window download abort/label pins.
+#include "p2_e_tests.inc"
+
+// V10F P2-F: main.cpp reading-path unification pins.
+#include "p2_f_tests.inc"
+
+// 261122_0002 P2-G: L2-B history ring + editor window plan + RISK-04 poll
+// refresh pins.
+#include "p2_g_tests.inc"
+
+// 261122_0002 P3-C1: tray slim menu (F0..F9 ten-row top level), the
+// recent-language MRU + the 2870..2885 command band pins.
+#include "p3_c1_tests.inc"
+
+// 261122_0002 P3-C2: badge 3-zone planner/dispatch + chip geometry pins.
+#include "p3_c2_tests.inc"
+
+// 261122_0002 P3-C3: settings-hub tabs/folds + manager CRUD wiring pins.
+#include "p3_c3_tests.inc"
+
+// 261122_0002 P3-C4: gguf-manager G1/G2/G3 fixes + E2 mapping + FUP-09 pins.
+#include "p3_c4_tests.inc"
+
+// 261122_0002 P3-C6: About-window ABT-U1/U2/U3 pure decisions + updater early
+// hash gate pins.
+#include "p3_c6_tests.inc"
+
+// 261122_0002 round-1 FIX-UNIT R4: app-surface fixes (F-02 call sites, F-04,
+// F-06, F-07, F-08, F-09, F-15, F-17 dialog half, F-18).
+#include "r4_fix_tests.inc"
+
+// 261123_0001 (v0.10.10 rebuild-2 follow-ups): the user_gguf model-missing
+// route decision table (Bug A), the fresh-create OS-language seeding through
+// the real temp dir (Bug B), and the UserModelLoadFailedHint / policy-caption
+// i18n wiring pins (Bug C).
+#include "261123_followup_tests.inc"
+
 // ---------------------------------------------------------------------------
 // R1-3 + R1-23 (session 261029_0001, v0.10.4 sweep, unit U-B): served-model
 // truth and probe parity.
@@ -22305,17 +22469,51 @@ void TestP7LanguageSearchCountStrings() {
                    "STATIC like the role label (DPI-scaled by ApplyFont, clipped by the control)");
     }
 
-    // Enum placement: between MenuSearchLangs and the P5 pair, which stays at
-    // the enum tail (the P5 suite's sentinel-1 pin depends on it).
+    // Enum placement: between MenuSearchLangs and the P5 pair. The P5 pair is
+    // no longer the enum tail: 261122_0002 Phase-2 appended the 8
+    // translation-card editor ids right before EnumCount, so the P5 suite's
+    // sentinel-1 pin became sentinel-16 after the Phase-3 i18n worker appended
+    // the 7 settings-hub ids (SettingsTabGeneral .. RecentLanguagesHeader)
+    // right after KeepTranslatedPart, and sentinel-35 after the Phase-3
+    // micro-pass appended the 19 settings-hub / cheat-sheet ids
+    // (MenuSettings .. CheatSheetEscCancel) right after RecentLanguagesHeader
+    // (the micro-pass block now closes the tail).
+    // 261123_0001 appended the 1 user-model load-failure hint id
+    // (UserModelLoadFailedHint) right after CheatSheetEscCancel, so the pin
+    // reads sentinel-36 now and the 261123 id closes the tail.
     volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
     volatile int count_id = static_cast<int>(StringId::LanguageSearchCount);
     volatile int cue = static_cast<int>(StringId::LanguageSearchCue);
     volatile int no_match = static_cast<int>(StringId::LanguageSearchNoMatch);
+    volatile int phase2_first = static_cast<int>(StringId::PinTooltipCard);
+    volatile int phase2_last = static_cast<int>(StringId::KeepTranslatedPart);
+    // 261122_0002 Phase-3 witness: the 7 settings-hub ids take the tail right
+    // after KeepTranslatedPart and close into the micro-pass block.
+    volatile int phase3_first = static_cast<int>(StringId::SettingsTabGeneral);
+    volatile int phase3_last = static_cast<int>(StringId::RecentLanguagesHeader);
+    // 261122_0002 Phase-3 micro-pass witness: the 19 settings-hub / cheat-sheet
+    // ids take the tail right after RecentLanguagesHeader and close into the
+    // 261123 id.
+    volatile int mp_first = static_cast<int>(StringId::MenuSettings);
+    volatile int mp_last = static_cast<int>(StringId::CheatSheetEscCancel);
+    // 261123_0001 witness: the user-model load-failure hint id closes the tail
+    // immediately before EnumCount.
+    volatile int u_hint = static_cast<int>(StringId::UserModelLoadFailedHint);
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(count_id == menu_search + 1 && count_id + 1 == cue &&
-                   count_id + 2 == no_match && sentinel - 1 == no_match,
-               "P7: the count id sits between MenuSearchLangs and the P5 pair, and "
-               "the P5 tail-order pin (EnumCount - 1 == LanguageSearchNoMatch) holds");
+                   count_id + 2 == no_match && no_match + 1 == phase2_first &&
+                   phase2_last + 1 == phase3_first && phase3_last + 1 == mp_first &&
+                   mp_last + 1 == u_hint && u_hint + 1 == sentinel &&
+                   sentinel - 36 == no_match,
+               "P7: the count id sits between MenuSearchLangs and the P5 pair, the "
+               "261122_0002 Phase-2 block closes into the Phase-3 block "
+               "(KeepTranslatedPart + 1 == SettingsTabGeneral), the Phase-3 block "
+               "closes into the micro-pass block (RecentLanguagesHeader + 1 == "
+               "MenuSettings), the micro-pass block closes into the 261123 id "
+               "(CheatSheetEscCancel + 1 == UserModelLoadFailedHint), the 261123 id "
+               "closes the enum tail (UserModelLoadFailedHint + 1 == EnumCount), "
+               "and the P5 tail-order pin "
+               "(EnumCount - 36 == LanguageSearchNoMatch) holds");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P7 LanguageSearchCount per-locale pins completed."
                   << std::endl;
@@ -22566,6 +22764,12 @@ void TestP9b1UserLanguageStrings() {
     // OpenAiDeclaredHint close the block now, the OpenAI declaration
     // checklist), so "last_new" moved to OpenAiDeclaredHint and the span
     // check grew 23 -> 25; the adjacency halves are still unchanged.
+    // 261122_0002 Phase-3 i18n worker: the 7 settings-hub ids
+    // (SettingsTabGeneral .. RecentLanguagesHeader) land right after
+    // KeepTranslatedPart, and 261123_0001 appended the 1 user-model
+    // load-failure hint id (UserModelLoadFailedHint) after the micro-pass
+    // block, so the P5 sentinel pin reads EnumCount - 36 now
+    // (the Phase-3 micro-pass block of 19 ids + the 261123 id close the tail).
     volatile int prev_tail = static_cast<int>(StringId::GgufManagerActivated);
     volatile int first_new = static_cast<int>(StringId::UserLangsGroup);
     volatile int last_new = static_cast<int>(StringId::OpenAiDeclaredHint);
@@ -22576,10 +22780,13 @@ void TestP9b1UserLanguageStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(first_new == prev_tail + 1 && last_new - first_new == 25 &&
                    last_new + 1 == menu_search && count_id == menu_search + 1 &&
-                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 1 == no_match,
+                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 36 == no_match,
                "P9b-1/P9b-3 U5/P9c-1b: the 26 ids are contiguous between the pre-P6a enum tail "
                "(GgufManagerActivated) and MenuSearchLangs, keeping the P6a/P7 adjacency "
-               "and the P5 tail pin (EnumCount - 1 == LanguageSearchNoMatch)");
+               "and the P5 tail pin (EnumCount - 36 == LanguageSearchNoMatch, the 8 "
+               "261122_0002 Phase-2 ids + the 7 Phase-3 ids + the 19 Phase-3 micro-pass "
+               "ids + the 1 261123_0001 user-model load-failure hint id now close the "
+               "enum tail)");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P9b-1 user-language string pins completed." << std::endl;
     } else {
@@ -22697,10 +22904,10 @@ void TestP9b3AutoChipStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(auto_chip == script_none + 1 && auto_chip + 1 == decl_title &&
                    decl_title + 1 == decl_hint && decl_hint + 1 == menu_search &&
-                   sentinel - 1 == no_match,
+                   sentinel - 36 == no_match,
                "P9b-3 U5/P9c-1b: the AUTO chip still follows UserLangScriptNone and the "
                "P9c-1b ids close the pre-MenuSearchLangs block; the P5 tail "
-               "pin (EnumCount - 1 == LanguageSearchNoMatch) still holds");
+               "pin (EnumCount - 36 == LanguageSearchNoMatch) still holds");
 
     // ---- palette wiring (source scan; the window is Win32-only) -------------
     std::string palette_src;
@@ -23548,7 +23755,15 @@ void TestUJQuickWins() {
                            count_of(tooltip_src_head_flat, tooltip_call_flat.c_str()) == 1 &&
                            count_of(tooltip_src_tail_flat, tooltip_call_flat.c_str()) == 1 &&
                            count_of(tooltip_src_flat, pref_equiv_flat.c_str()) == 2 &&
-                           tooltip_src_flat.find("?1:0;") == std::string::npos,
+                           // 261122_0002 P2-C: the ban is narrowed to the
+                           // INVERTED pref_equiv ternary (M-H) because the
+                           // tooltip now legitimately carries other boolean
+                           // ternaries (`...right_to_left) ? 1 : 0;` for the
+                           // DWrite reading direction), which the previous
+                           // file-wide "?1:0;" needle could not tell apart.
+                           tooltip_src_flat.find(
+                               "constintpref_equiv=(menu_engine.engine==LanguageEngine::"
+                               "Google)?1:0;") == std::string::npos,
                        "P6bfix: the tray and BOTH tooltip dropdowns pass the shared predicate's "
                        "four arguments in order, and pref_equiv maps Google->0 / concrete->1 "
                        "at both sites (M-A/M-B fail here; M-F/M-G/M-H fail on the argument "
@@ -25307,6 +25522,80 @@ int main() {
     // remains (R1-02 caller half). Registered last, per the end-of-file
     // pattern.
     openai_profile_tests::TestOpenAiProfileFixA2();
+
+    // 261122_0002 P1-U3: BUG-03..06 — consent scope/parse + dialog seam pins.
+    p1_u3_tests::P1U3RegisterTests();
+
+    // V10F P1-U5: tray/palette/integrator guards.
+    TestP1U5TrayPaletteGuards();
+
+    // 261122_0002 P1-U1: FUP-01 console Enter exclusion + FUP-07 epoch-guarded
+    // K + D3 terminal classes.
+    TestP1U1V10FHotfixes();
+
+    // V10F P1-U2: BUG-01 badge single-click timer arm + D2 double-click DPI.
+    TestP1U2BadgeSingleClickTimerArm();
+    TestP1U2MouseDoubleClickDpiTolerance();
+
+    // 261122_0002 P1-U4: BUG-07/08 + E1 + E3 + BUG-09 backend fixes.
+    TestP1U4BackendFixes();
+
+    // 261122_0002 P2-A: abortable cloud/download transport + SSE streaming.
+    p2_a_tests::P2ARegisterTests();
+
+    // 261122_0002 P2-B: chunk coordinator + cancel bridge.
+    TestP2BCoordinatorAndCancelBridge();
+
+    // V10F P2-C: tooltip surface (width tiers / pin / preview / RTL / LCID).
+    TestP2CTooltipSurface();
+
+    // 261122_0002 P2-D: worker/input pipeline fixes.
+    TestP2DV10FWorkerPipeline();
+
+    // 261122_0002 round-1 FIX-UNIT R3: worker/hook/config fix pins.
+    r3_fix_tests::R3RegisterTests();
+
+    // 261122_0002 P2-E: download dialog + About updater cancel.
+    p2_e_tests::P2ERegisterTests();
+
+    // V10F P2-F: unified cancel / ctx / history / L4.
+    TestP2FV10FMainReadingUnification();
+
+    // 261122_0002 P2-G: L2-B history ring + editor window plan + RISK-04 poll
+    // refresh.
+    p2_g_tests::P2GRegisterTests();
+
+    // 261122_0002 P3-C1: tray slim menu + recent-language MRU pins.
+    p3_c1_tests::P3C1RegisterTests();
+
+    // 261122_0002 P3-C2: badge 3-zone planner/dispatch/chip pins.
+    p3_c2_tests::P3C2RegisterTests();
+
+    // 261122_0002 P3-C3: settings-hub folds + manager CRUD pins.
+    p3_c3_tests::P3C3RegisterTests();
+
+    // 261122_0002 P3-C4: gguf-manager fixes + E2 mapping + FUP-09 pins.
+    p3_c4_tests::P3C4RegisterTests();
+
+    // 261122_0002 P3-C6: About ABT-U* pure decisions + updater hash gate pins.
+    p3_c6_tests::P3C6RegisterTests();
+
+    // 261122_0002 round-1 FIX-UNIT R4: app-surface fix pins. Registered LAST:
+    // the suite leaves the shared translation-history ring EMPTY, so no later
+    // suite sees residue.
+    r4_fix_tests::R4RegisterTests();
+
+    // 261123_0001 (v0.10.10 rebuild-2 follow-ups): the Bug A route decision
+    // table, the Bug B fresh-create OS-seed temp-dir pins, and the Bug C i18n
+    // wiring pins. Registered after R4: the suite is self-contained (its own
+    // temp dir, locale save/restore) and touches no shared translation state.
+    Test261123UserGgufMissingRoute();
+    Test261123FreshCreateOsSeed();
+    Test261123I18nWiringPins();
+    // 261123_0001 R2 (fix F-06): the Bug A two-latch WIRING pin (source scan of
+    // src/main.cpp: one arm site, in the file-present arm, after the post; the
+    // drain handler never clears it). Read-only, so registration order is free.
+    Test261123BugATwoLatchSourcePins();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

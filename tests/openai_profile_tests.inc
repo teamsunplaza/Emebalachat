@@ -1011,16 +1011,24 @@ void TestOpenAiProfileI18nStrings() {
     TEST_CHECK(kIdCount == 6 && kEnCount == kIdCount && kKoCount == kIdCount,
                "B-U2: the inventory is the six profile ids with one English and one Korean expectation each");
 
-    // ---- (a) EnumCount: 207 -> 213 at this unit's boundary -----------------
+    // ---- (a) EnumCount: 207 -> 213 at this unit's boundary; 213 -> 221 after
+    // the 261122_0002 Phase-2 i18n worker appended the 8 translation-card ids;
+    // 221 -> 228 after the 261122_0002 Phase-3 i18n worker appended the 7
+    // settings-window redesign ids; 228 -> 247 after the 261122_0002 Phase-3
+    // micro-pass appended the 19 settings-hub / cheat-sheet ids; 247 -> 248
+    // after 261123_0001 appended the 1 user-model load-failure hint id --
     volatile int enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(enum_count == 213,
-               "B-U2: StringId::EnumCount is 213 (207 + the six OpenAI profile ids)");
+    TEST_CHECK(enum_count == 248,
+               "B-U2: StringId::EnumCount is 248 (207 + the six OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass ids + the 1 261123_0001 user-model load-failure hint id)");
 
     // ---- (b) insertion order ----------------------------------------------
     // BackTransSectionOriginal + 1 == the first profile id, the six ids are a
     // contiguous run, and the run ENDS where the pre-existing progress/cancel
-    // run begins. The P5 tail sentinel is the witness that every later id
-    // shifted by the same +6 instead of drifting.
+    // run begins. The P5 sentinel witness is that every LATER id shifted by
+    // the same +6 instead of drifting; since 261122_0002 it sits at
+    // EnumCount - 35, and at EnumCount - 36 since 261123_0001 (the 8 Phase-2
+    // + the 7 Phase-3 + the 19 Phase-3 micro-pass + the 1 261123_0001 ids now
+    // close the enum tail).
     volatile int back_original = static_cast<int>(StringId::BackTransSectionOriginal);
     volatile int profile_label = static_cast<int>(StringId::OpenAiProfileLabel);
     volatile int profile_save = static_cast<int>(StringId::OpenAiProfileSave);
@@ -1037,11 +1045,11 @@ void TestOpenAiProfileI18nStrings() {
                    profile_confirm == profile_template + 1 &&
                    profile_limit == profile_confirm + 1 &&
                    progress_after == profile_limit + 1 &&
-                   p5_sentinel == enum_count - 1,
+                   p5_sentinel == enum_count - 36,
                "B-U2: the six profile ids are contiguous right after "
                "BackTransSectionOriginal and right before the 261121_0002 "
-               "progress/cancel run, so the P5 tail sentinel and every relative "
-               "adjacency pin still hold");
+               "progress/cancel run, so the P5 sentinel witness (EnumCount - 36) "
+               "and every relative adjacency pin still hold");
 
     // ---- (c) the designed English and Korean values, verbatim --------------
     I18n::SetLocale(UiLocale::English);
@@ -2034,8 +2042,14 @@ void TestOpenAiProfileDialogBehavior() {
         }
 
         // (B5) the fold contract in the dialog entry.
-        TEST_CHECK(osw_src.find("OpenAiProfilesFold& profiles) {") != std::string::npos,
-                   "B-U4 fold: the library-aware overload is defined");
+        // V10F-R1 F-17: the library-aware overload gained the trailing
+        // consent-origin channel parameter (defaulted at every deprecated
+        // wrapper), so the needle pins the full landed signature.
+        TEST_CHECK(osw_src.find("OpenAiProfilesFold& profiles,\n"
+                                "                                                 std::string* "
+                                "http_consent_origin) {") != std::string::npos,
+                   "B-U4 fold: the library-aware overload is defined (V10F-R1 F-17: with "
+                   "the consent-origin channel)");
         TEST_CHECK(osw_src.find("st.profiles = profiles.profiles;") != std::string::npos,
                    "B-U4 fold: the working copy is seeded from the fold's INPUT half");
         {
@@ -2067,9 +2081,10 @@ void TestOpenAiProfileDialogBehavior() {
                        "profile fold, so that path can never carry the staged library");
         }
         TEST_CHECK(osw_src.find("return ShowOpenAiSettingsDialogEx(parent, cfg, declaration, "
-                                "profiles);") != std::string::npos,
+                                "profiles, nullptr);") != std::string::npos,
                    "B-U4 fold: the declaration-only overload forwards to the library-aware "
-                   "one (existing callers keep their contract)");
+                   "one (existing callers keep their contract; V10F-R1 F-17 passes no "
+                   "consent-origin channel)");
         TEST_CHECK(osw_src.find("ShowOpenAiSettingsDialogEx(parent, cfg) == "
                                 "OpenAiSettingsOutcome::kSaved") != std::string::npos,
                    "B-U4 fold: the bool wrapper still reports only kSaved");
@@ -2222,14 +2237,19 @@ void TestOpenAiProfileCallerWiring() {
                                             ? std::string::npos
                                             : handler_end - handler_at);
 
-        // (c) the dialog opens through the library-aware 4-arg entry, fed by
+        // (c) the dialog opens through the library-aware entry, fed by
         // the snapshot seed chain (tray copy -> handler move -> dialog copy).
+        // V10F-R1 F-17: the entry gained the trailing consent-origin channel
+        // (out-param), so the needle pins the full landed call shape.
         TEST_CHECK(handler.find("emebalachat::ShowOpenAiSettingsDialogEx(") !=
                        std::string::npos &&
                        handler.find("/*parent=*/emebalachat::g_hControllerWnd, edited, "
-                                    "declaration, profiles_fold);") != std::string::npos,
-                   "B-U5 (c): the dialog is invoked with the 4-arg library-aware overload "
-                   "(parent, edited cfg, declaration fold, profile fold)");
+                                    "declaration, profiles_fold,\n"
+                                    "                &consent_origin_scope);") !=
+                           std::string::npos,
+                   "B-U5 (c): the dialog is invoked with the library-aware overload "
+                   "(parent, edited cfg, declaration fold, profile fold, consent-origin "
+                   "channel)");
         TEST_CHECK(handler.find("profiles_fold.profiles = std::move(*emebalachat::"
                                 "s_pending_openai_profiles);") != std::string::npos &&
                        handler.find("emebalachat::s_pending_openai_profiles.reset();") !=
@@ -2241,9 +2261,11 @@ void TestOpenAiProfileCallerWiring() {
                                  "config.openai_profiles;") != std::string::npos,
                    "B-U5 (c): the tray dispatch snapshots the library next to the openai "
                    "block (a copy — the AppConfig vector never aliases the fold)");
-        TEST_CHECK(count_in(main_src, "s_pending_openai_profiles.reset();") == 2,
-                   "B-U5 (c): the snapshot slot is dropped at BOTH consumption sites (the "
-                   "handler + the PostMessage-failure rollback), never left armed");
+        TEST_CHECK(count_in(main_src, "s_pending_openai_profiles.reset();") == 3,
+                   "B-U5 (c): the snapshot slot is dropped at ALL THREE consumption sites "
+                   "(the handler + the PostMessage-failure rollback in "
+                   "open_openai_settings_deferred + the REQ-047 D3-mandated inline copy in "
+                   "the engine_idx==2 no-profile branch), never left armed");
 
         // (b) kCancelled: nothing adopted, nothing persisted.
         const std::size_t cancel_at = handler.find("OpenAiSettingsOutcome::kCancelled");

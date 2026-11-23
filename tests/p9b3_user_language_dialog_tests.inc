@@ -2606,7 +2606,9 @@ void TestP9b3UserLanguageManagerDialog() {
                        "P9b-3 U4b (e): no tray/tooltip surface is touched (the wiring "
                        "unit owns those)");
             // No new StringIds: every id referenced anywhere in the module belongs to
-            // the landed P9b-1 / generic set.
+            // the landed P9b-1 / generic set. 261122_0002 Phase-3 (UX-4 CRUD pair):
+            // the [추가…]/[삭제] runtime buttons reuse the landed REQ-048 gguf-manager
+            // captions (zero new ids invented), so the whitelist carries them.
             const std::string landed[] = {
                 "UserLangsGroup",
                 "UserLangProbeChecking",
@@ -2619,6 +2621,8 @@ void TestP9b3UserLanguageManagerDialog() {
                 "UserLangOverrideActive",
                 "UserLangSupportNotQuality",
                 "GgufManagerClose",
+                "GgufManagerAddFile",
+                "GgufManagerDelete",
             };
             std::size_t foreign_ids = 0;
             const std::string combined = cpp_src + hpp_src;
