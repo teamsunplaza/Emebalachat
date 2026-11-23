@@ -408,6 +408,108 @@ LanguageSwapPlan PlanLanguageSwap(std::string_view cur_source,
                                   std::string_view cur_target,
                                   std::string_view system_language_code);
 
+// ---- V10F (261122_0002 P3-C1): the slim tray's recent-language MRU --------
+//
+// UX-1 Option B replaces the 18-row, three-deep tray menu with ten top rows.
+// Two of them (F1 keyboard typing, F2 번역툴팁) carry a "최근 사용 언어" block
+// (StringId::RecentLanguagesHeader) between the pair's Swap row and its
+// "검색…" escape hatch, so the pair switch a user actually repeats is one
+// click away instead of a walk through the 89-row language submenus.
+//
+// ONE list, TWO pair surfaces, ONE meaning. The list holds the TARGET
+// languages the user most recently APPLIED through this surface, newest
+// first, each stored as a normalized registry code (config.cpp
+// NormalizeLanguageCode), capped at kTrayRecentLanguageCapacity. A recent row
+// always applies to ITS OWN pair's target role, and it is drawn only while
+// that pair's live target view offers the language
+// (BuildRecentLanguageRows), so:
+//   * a recent row can never dispatch to a role the menu did not advertise.
+//     The alternative the brief left open - one role-less list serving both
+//     roles - would have to GUESS which role a bare language name means, and
+//     a guess here silently retargets a user's pair;
+//   * a row can never be a dead command after an engine switch drops the
+//     language from the view: it simply stops being drawn;
+//   * source picks are not tracked. The source role keeps its own one-level
+//     submenu whose FIRST row is the search palette, and AUTO - the source
+//     menu's default - is not a target at all, so a mixed list would be
+//     either half-dead or ambiguous.
+// LIMITATION, stated rather than implied: the list covers target languages
+// switched through THIS surface. Palette-driven changes arrive through
+// NoteRecentLanguage (main.cpp forwards them) and are recorded as target
+// recents by the same rule.
+inline constexpr std::size_t kTrayRecentLanguageCapacity = 8;
+
+enum class TrayRecentPair : unsigned char {
+    Typing = 0, // the keyboard-typing pair (menu row F1)
+    Drag = 1,   // the 번역툴팁 pair (menu row F2)
+};
+
+// Command band for the recent rows: one kTrayRecentLanguageCapacity slot per
+// pair, contiguous, in the free window between the P9b-3 user-language dialog
+// rows (2865/2866) and the tooltip's own user band (2900). tray.cpp asserts
+// both directions, the same discipline as the P9b-2 user band.
+inline constexpr UINT kTrayRecentLangBase = 2870;
+inline constexpr UINT kTrayRecentLangPairCount = 2;
+inline constexpr UINT kTrayRecentLangBandEnd =
+    kTrayRecentLangBase + kTrayRecentLangPairCount *
+                             static_cast<UINT>(kTrayRecentLanguageCapacity); // 2886
+
+// Command id of one recent row. Callers keep index < the number of rows the
+// menu build actually rendered, which is bounded by kTrayRecentLanguageCapacity.
+inline constexpr UINT TrayRecentLangCommand(TrayRecentPair pair, std::size_t index) {
+    return kTrayRecentLangBase +
+           static_cast<UINT>(pair) * static_cast<UINT>(kTrayRecentLanguageCapacity) +
+           static_cast<UINT>(index);
+}
+
+struct TrayRecentLangCommandRef {
+    TrayRecentPair pair = TrayRecentPair::Typing;
+    std::size_t index = 0;
+    bool decoded = false;
+};
+
+// Decodes a dispatch command back to (pair, row index). decoded == false for
+// every id outside [kTrayRecentLangBase, kTrayRecentLangBandEnd), so no other
+// menu command can ever be read as a recent row.
+inline TrayRecentLangCommandRef DecodeTrayRecentLangCommand(UINT cmd) {
+    TrayRecentLangCommandRef ref;
+    if (cmd < kTrayRecentLangBase || cmd >= kTrayRecentLangBandEnd) {
+        return ref;
+    }
+    const UINT offset = cmd - kTrayRecentLangBase;
+    const UINT stride = static_cast<UINT>(kTrayRecentLanguageCapacity);
+    ref.pair = static_cast<TrayRecentPair>(offset / stride);
+    ref.index = static_cast<std::size_t>(offset % stride);
+    ref.decoded = true;
+    return ref;
+}
+
+// One rendered recent row. `code` is the normalized registry code (the row's
+// "CODE - display name" prefix, exactly the registry rows' form) and
+// `payload` is that row's name_en - the SAME payload every language command on
+// this surface dispatches, so main.cpp's handler cannot tell a recent pick
+// from a registry pick.
+struct TrayRecentLanguageRow {
+    std::string code;
+    std::string payload;
+};
+
+// Records one language into the MRU: normalized through
+// NormalizeLanguageCode (so "Korean" and "KO" collapse to one entry), moved to
+// the front, deduped, capped at kTrayRecentLanguageCapacity. Tokens that
+// normalize to AUTO (unknown names, code-less user languages, AUTO itself) are
+// DROPPED - AUTO is a source-only setting and never a target row. Pure, so the
+// dedupe/cap/order rules are unit-testable without a window.
+void RememberRecentLanguage(std::vector<std::string>& list, std::string_view code);
+
+// The rows a pair submenu draws: the MRU filtered against the pair's live
+// TARGET view (a language the active engine cannot serve as a target is
+// skipped, never a dead row), deduped by code, capped at `capacity`. Pure.
+std::vector<TrayRecentLanguageRow> BuildRecentLanguageRows(
+    const std::vector<std::string>& recent_codes,
+    const std::vector<const LanguageInfo*>& target_view,
+    std::size_t capacity = kTrayRecentLanguageCapacity);
+
 class SystemTray {
 public:
     using ThemeSelectCallback = std::function<void(const std::string&)>;
@@ -474,6 +576,28 @@ public:
         // AppConfig::back_translation_enabled, persists it, and refreshes the
         // check mark through SetBackTranslationEnabled.
         std::function<void()> on_toggle_back_translate;
+        // V10F (261122_0002 P3-C1, UX-1 Option B): the two ADDITIVE command
+        // entries the slim menu introduces. Appended (never reordered) so
+        // every existing main.cpp assignment keeps its meaning.
+        //   on_open_settings_hub     the settings container's first row
+        //                            ("일반…"). SetOpenSettingsHubCallback is
+        //                            the alternative seam; the callback wins
+        //                            when both are set. Unset = the row is
+        //                            still drawn and does nothing, which never
+        //                            touches the OTHER legacy settings
+        //                            commands sitting in the same submenu.
+        //   on_open_openai_settings  the engine submenu's separate
+        //                            "OpenAI 호환 엔진 설정…" row. The 4-way
+        //                            radio entry (ID_TRAY_ENGINE_OPENAI) keeps
+        //                            dispatching on_select_engine(2) and is
+        //                            the INSTANT switch; this row is the
+        //                            dialog. Unset = the row falls back to
+        //                            on_select_engine(2), i.e. exactly
+        //                            today's "picking OpenAI opens the
+        //                            settings dialog" behavior, so the row is
+        //                            live before wave B wires the split.
+        std::function<void()> on_open_settings_hub;
+        std::function<void()> on_open_openai_settings;
     };
 
     SystemTray();
@@ -600,6 +724,26 @@ public:
     // toggle callback's refresh.
     void SetBackTranslationEnabled(bool enabled);
 
+    // V10F (261122_0002 P3-C1, UX-1 Option B): the settings container's first
+    // row ("일반…", StringId::MenuSettings) opens the settings hub.
+    // main.cpp wave B owns that window, so the tray only stores + invokes the
+    // callback (the SetEngineMenuResolver discipline: the tray owns no settings
+    // state of its own). The row is drawn whether or not this is set.
+    void SetOpenSettingsHubCallback(std::function<void()> cb);
+
+    // V10F (P3-C1): record a recent TARGET language from OUTSIDE this surface
+    // (main.cpp's palette commit / its ApplyLanguageChange forwarder). The tray
+    // records its own target picks at dispatch time; this seam extends the same
+    // list to palette-driven changes. Unknown tokens are dropped
+    // (NormalizeLanguageCode maps them to AUTO, which is never a target).
+    void NoteRecentLanguage(const std::string& code);
+
+    // V10F (P3-C1) test seam: the MRU the next menu build reads. Safe on a
+    // non-Created tray (pure state), the TipTextForTest precedent.
+    const std::vector<std::string>& RecentLanguagesForTest() const noexcept {
+        return recent_languages_;
+    }
+
     // Displays popup context menu at current cursor coordinates
     void ShowContextMenu();
 
@@ -634,6 +778,13 @@ private:
     bool back_translation_enabled_ = false; // 261108_0002 (WS3): check state
     std::string ui_language_ = "auto"; // R6 Phase 6: Auto check state + title suffix (U4)
     std::string ui_theme_ = "fluent";
+    // V10F (261122_0002 P3-C1): the settings-hub seam (see
+    // SetOpenSettingsHubCallback) and the recent-TARGET-language MRU the two
+    // pair submenus render (newest first, normalized registry codes, capped at
+    // kTrayRecentLanguageCapacity). GUI-thread only: written by dispatch and by
+    // NoteRecentLanguage, read by ShowContextMenu.
+    std::function<void()> open_settings_hub_;
+    std::vector<std::string> recent_languages_;
 };
 
 } // namespace emebalachat

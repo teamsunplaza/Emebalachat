@@ -64,6 +64,12 @@ add_library(Emebalachat_core STATIC
     src/win32_input.cpp
     src/google_translate.cpp
     src/engine.cpp
+    # V10F-R1 (261122_0002 fix-list round 1, F-12): the translation coordinator
+    # is header-inline (translation_coordinator.hpp, the P2-B/L5-B design); this
+    # TU compiles the header's contract/static-assert block standalone (the
+    # src/update_checker.cpp precedent below) so the contract TU actually
+    # participates in every build.
+    src/translation_coordinator.cpp
     # REQ-045 P4-3 (design §3b, item 3b): OpenAI Compatible cloud engine —
     # WinHTTP client (google_translate pattern) + DPAPI key protect/unprotect
     # + CNG SHA-256 integrity digest + display masking. Chat exe links this
@@ -125,6 +131,15 @@ add_library(Emebalachat_core STATIC
     # suite links but never enters. Applies every change IN MEMORY; the caller
     # persists.
     src/ui/user_language_manager_dialog.cpp
+    # V10F UX-2 (261122_0002 P3-C3, v0.10.10 phased fixes): the four-tab
+    # settings hub (TemplateBuilder + runtime SysTabControl32 strip; General /
+    # Engines / Languages / Advanced). SECTION A (the pure draft / save-plan /
+    # display folds the suite drives) is header-inline in settings_hub_window.hpp;
+    # this TU holds the only window-creating code (CreateDialogIndirectParamW,
+    # modeless single instance). Applies edits through the locked AppConfig
+    # verbs / GUI-thread atomic toggles, then SaveToFile; the lock-free fields
+    # travel to the caller's injected apply_extra callback.
+    src/ui/settings_hub_window.cpp
     # REQ-060 (session 261009_0001): translation-model load-mode settings
     # dialog (engine_host.warmup) — the openai_settings_window pattern
     # (TemplateBuilder + CBS_DROPDOWNLIST combo + OK/Cancel).
@@ -139,6 +154,15 @@ add_library(Emebalachat_core STATIC
     src/mouse_hook.cpp
     src/worker.cpp
     src/hook.cpp
+    # 261122_0002 P2-G (v0.10.10 phased fixes, wave 2 unit P2-G): L2-B the
+    # in-memory translation history ring (in-memory ONLY, never disk/log) and
+    # the translation editor window (single-instance modeless dialog:
+    # RichEdit50W panes with an EDIT fallback, [EditRetranslate] /
+    # [ApplyToOriginalWindow]). The pure layout plan is header-inline in
+    # translation_editor_window.hpp (the suite drives it headlessly); this TU
+    # holds the only window-creating code.
+    src/translation_history.cpp
+    src/ui/translation_editor_window.cpp
 )
 
 target_include_directories(Emebalachat_core PUBLIC

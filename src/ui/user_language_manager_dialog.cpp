@@ -7,6 +7,8 @@
 
 #include "../diag_logger.hpp"
 #include "../unicode_utils.hpp"
+#include "settings_hub_window.hpp"   // V10F UX-4: PlanUserLanguageRemoval (shared guard)
+#include "user_language_dialog.hpp"  // V10F UX-4: the [추가…] entry point main.cpp uses
 
 #include <string>
 #include <utility>
@@ -202,6 +204,20 @@ UserLanguageManagerOutcome FoldUserLanguageManagerOutcome(bool any_applied) {
 
 namespace {
 
+// V10F UX-4 (261122_0002 P3-C3): the CRUD pair. The template stays BYTE-
+// IDENTICAL (the p9b3 suite walks it row by row), so both buttons are created
+// at runtime in WM_INITDIALOG and placed through MapDialogRect (the gguf
+// manager's duplicate-warning / progress-bar precedent). The ids sit past the
+// header's control run (4700-4707) and the WM_TIMER id (4710), so no control
+// and no timer can ever alias.
+enum : WORD {
+    kIdAdd = 4711,    // "파일에서 추가…" copy (GgufManagerAddFile) -> U2's dialog
+    kIdDelete = 4712, // "삭제…" copy (GgufManagerDelete) -> RemoveUserLanguage
+};
+// DLU rects for the runtime row, left of the template's [닫기] button.
+inline constexpr RECT kAddButtonRectDlu{8, 278, 98, 292};
+inline constexpr RECT kDeleteButtonRectDlu{104, 278, 194, 292};
+
 struct ManagerDialogState {
     AppConfig* config = nullptr;
     LanguageEngine engine = LanguageEngine::Auto;
@@ -225,6 +241,47 @@ void SetCtrlText(HWND dlg, int id, std::wstring_view text) {
 void SetCtrlEnabled(HWND dlg, int id, bool enabled) {
     if (HWND c = ::GetDlgItem(dlg, id)) {
         ::EnableWindow(c, enabled ? TRUE : FALSE);
+    }
+}
+
+// V10F UX-4: one runtime push button in a DLU rect (MapDialogRect first -
+// CreateWindowExW takes pixels) that adopts the dialog font.
+HWND EnsureRuntimeButton(HWND dlg, WORD id, const RECT& dlu_rect,
+                         std::wstring_view caption) {
+    if (HWND existing = ::GetDlgItem(dlg, id)) {
+        return existing;
+    }
+    RECT rc = dlu_rect;
+    ::MapDialogRect(dlg, &rc);
+    HWND button = ::CreateWindowExW(
+        0, L"BUTTON", nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP, rc.left,
+        rc.top, rc.right - rc.left, rc.bottom - rc.top, dlg,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        ::GetModuleHandleW(nullptr), nullptr);
+    if (button == nullptr) {
+        return nullptr;
+    }
+    if (HFONT font = reinterpret_cast<HFONT>(
+            ::SendMessageW(dlg, WM_GETFONT, 0, 0))) {
+        ::SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    const std::wstring text(caption);
+    ::SetWindowTextW(button, text.c_str());
+    return button;
+}
+
+// V10F UX-4: the [추가…] / [삭제] pair. The captions are the landed gguf-manager
+// add/delete labels (no new StringId): adding reuses U2's dialog, deleting reuses
+// AppConfig::RemoveUserLanguage.
+void CreateCrudButtons(HWND dlg) {
+    HWND add = EnsureRuntimeButton(dlg, kIdAdd, kAddButtonRectDlu,
+                                   I18n::Get(StringId::GgufManagerAddFile));
+    HWND del = EnsureRuntimeButton(dlg, kIdDelete, kDeleteButtonRectDlu,
+                                   I18n::Get(StringId::GgufManagerDelete));
+    if (add == nullptr || del == nullptr) {
+        DIAG_F("UI/UserLanguageManager/012: CRUD button creation failed "
+               "(add=%p delete=%p)\n",
+               static_cast<void*>(add), static_cast<void*>(del));
     }
 }
 
@@ -273,6 +330,20 @@ void SyncSelection(HWND dlg, ManagerDialogState* st) {
         ::EnableWindow(marker, (row != nullptr && row->clear_override_enabled) ? TRUE
                                                                              : FALSE);
     }
+    // V10F UX-4: [추가…] follows the same carrier write gate as every verb, and
+    // [삭제] additionally needs a resolvable selection (PlanUserLanguageRemoval
+    // is the ONE guard, so the button can never delete a row the user is not
+    // looking at).
+    SetCtrlEnabled(dlg, kIdAdd, st->writes_allowed);
+    bool delete_enabled = false;
+    if (st->config != nullptr) {
+        const settings_hub::UserLanguageRemovalPlan removal =
+            settings_hub::PlanUserLanguageRemoval(
+                st->config->user_languages,
+                row ? row->stored_name : std::string(), st->writes_allowed);
+        delete_enabled = removal.enabled;
+    }
+    SetCtrlEnabled(dlg, kIdDelete, delete_enabled);
     st->selected_name = row ? row->stored_name : std::string();
 }
 
@@ -333,7 +404,8 @@ void StartInFlightPoll(HWND dlg, ManagerDialogState* st) {
 
 // One poll tick: drain (idempotent - the controller's posted wake-up may already
 // have drained the same outcome) so the verdict + the owner's persist callback
-// run, then stop polling and repaint once nothing this dialog shows is in flight.
+// run, repaint whenever anything drained, and stop polling once nothing this
+// dialog shows is in flight (V10F RISK-04).
 void PollInFlight(HWND dlg, ManagerDialogState* st) {
     if (st->service == nullptr) {
         StopInFlightPoll(dlg, st);
@@ -351,8 +423,14 @@ void PollInFlight(HWND dlg, ManagerDialogState* st) {
         // Shape-only: counts and statuses, never a name or a model string.
         DIAG_F("UI/UserLanguageManager/002: probe completions drained=%zu\n", drained);
     }
+    // V10F RISK-04 (261122_0002 P2-G): refresh the moment ANY outcome drained
+    // (a finished probe's row must flip to its verdict while the other rows
+    // are still checking — the old code left it showing 확인 중 until ALL of
+    // them finished), and stop the poll timer as soon as nothing is in flight.
     if (!any_in_flight) {
         StopInFlightPoll(dlg, st);
+    }
+    if (drained > 0) {
         RefreshRows(dlg, st);
     }
 }
@@ -398,6 +476,8 @@ INT_PTR CALLBACK UserLanguageManagerDialogProc(HWND dlg, UINT msg, WPARAM wp,
         if (!::GetDlgItem(dlg, kIdBadge) || !::GetDlgItem(dlg, kIdEvidence)) {
             DIAG_F("UI/UserLanguageManager/005: detail rows missing after dialog init\n");
         }
+        // V10F UX-4: the runtime CRUD row (the template stays byte-identical).
+        CreateCrudButtons(dlg);
         RefreshRows(dlg, st);
         if (!st->writes_allowed) {
             // PR9-12 carrier armed: every verb would refuse, so the actions are
@@ -419,7 +499,8 @@ INT_PTR CALLBACK UserLanguageManagerDialogProc(HWND dlg, UINT msg, WPARAM wp,
         }
         return FALSE; // no control needs the initial focus beyond the default
     }
-    case WM_COMMAND:
+    case WM_COMMAND: {
+        const WORD code = HIWORD(wp); // BN_CLICKED / LBN_SELCHANGE / ...
         switch (LOWORD(wp)) {
         case kIdList:
             if (HIWORD(wp) == LBN_SELCHANGE) {
@@ -479,6 +560,65 @@ INT_PTR CALLBACK UserLanguageManagerDialogProc(HWND dlg, UINT msg, WPARAM wp,
             RefreshRows(dlg, st);
             return TRUE;
         }
+        case kIdAdd: {
+            // V10F UX-4: [추가…] runs the SAME entry point the tray row uses
+            // (U2's ShowUserLanguageDialogEx), on THIS dialog as the owner. U2
+            // writes in memory through the locked mutator and performs no file
+            // I/O, so the kChanged outcome is what makes the caller persist.
+            if (code != BN_CLICKED || !st->writes_allowed || st->config == nullptr) {
+                return TRUE;
+            }
+            const UserLanguageDialogOutcome outcome =
+                user_language_dialog::ShowUserLanguageDialogEx(dlg, *st->config);
+            DIAG_F("UI/UserLanguageManager/013: add dialog outcome=%d\n",
+                   static_cast<int>(outcome));
+            if (outcome == UserLanguageDialogOutcome::kAdded) {
+                st->any_applied = true; // -> kChanged: the caller persists
+                RefreshRows(dlg, st);   // the new row appears immediately
+            }
+            return TRUE;
+        }
+        case kIdDelete: {
+            // V10F UX-4: [삭제] through U1's locked verb. The guard resolves the
+            // SELECTED row to its index (the rows and the config vector share one
+            // order), refuses while the carrier is armed, and never trusts a stale
+            // selection after a refusal.
+            if (code != BN_CLICKED || st->config == nullptr) {
+                return TRUE;
+            }
+            const UserLanguageManagerRow* row = SelectedRow(dlg, st);
+            if (row == nullptr) {
+                SyncSelection(dlg, st);
+                return TRUE;
+            }
+            // Copy the key BY VALUE: RefreshRows replaces st->rows, which would
+            // dangle `row`.
+            const std::string stored_name = row->stored_name;
+            const settings_hub::UserLanguageRemovalPlan plan =
+                settings_hub::PlanUserLanguageRemoval(st->config->user_languages,
+                                                      stored_name,
+                                                      st->writes_allowed);
+            if (!plan.enabled) {
+                DIAG_F("UI/UserLanguageManager/014: delete refused "
+                       "(carrier=%d not_found=%d)\n",
+                       plan.carrier_blocks ? 1 : 0, plan.not_found ? 1 : 0);
+                SyncSelection(dlg, st);
+                return TRUE;
+            }
+            const UserLanguageWriteResult result =
+                st->config->RemoveUserLanguage(plan.index);
+            const UserLanguageManagerActionResult action =
+                FoldUserLanguageManagerVerbResult(result);
+            if (action.changed) {
+                st->any_applied = true;
+            }
+            DIAG_F("UI/UserLanguageManager/015: delete write=%u\n",
+                   static_cast<unsigned>(result));
+            // The removed name can never be re-selected: fall back to row 0.
+            st->selected_name.clear();
+            RefreshRows(dlg, st);
+            return TRUE;
+        }
         case IDCANCEL:
             StopInFlightPoll(dlg, st);
             ::EndDialog(dlg, IDCANCEL);
@@ -486,6 +626,8 @@ INT_PTR CALLBACK UserLanguageManagerDialogProc(HWND dlg, UINT msg, WPARAM wp,
         default:
             return FALSE;
         }
+        return FALSE;
+    }
     case WM_TIMER:
         if (st != nullptr && wp == kInFlightTimerId) {
             PollInFlight(dlg, st);

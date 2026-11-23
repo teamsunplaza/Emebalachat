@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 
 namespace emebalachat {
 
@@ -94,6 +95,35 @@ const wchar_t* const kLinkUrls[AboutWindow::kNumLinks] = {
     L"https://www.emebala.org/contact",
     L"https://www.reddit.com/r/emebala/",
 };
+
+// V10F/RISK-02 (260930_0004 follow-up): the caller-side abort seam over the
+// update checker's DownloadAbortSlot (unit P2-A, src/update_checker.hpp).
+// Closing the in-flight HINTERNET handle from the cancel path is what unblocks
+// a stalled WinHttpQueryDataAvailable/WinHttpReadData in ~ms instead of the
+// 30 s receive timeout; the slot itself owns the mutex-guarded single-owner
+// close (ClearAndClose on the worker side, AbortCurrent here).
+//
+// The slot is heap-owned through a shared_ptr captured by the abort request so
+// it outlives StartDownload's frame AND the options copy handed to the worker:
+// the GUI thread's cancel path and the worker's guard must reach the same
+// object. A fresh slot per transfer keeps the sticky WasAborted flag scoped to
+// one download.
+struct DownloadAbortSeam {
+    std::shared_ptr<updatelogic::DownloadAbortSlot> slot =
+        std::make_shared<updatelogic::DownloadAbortSlot>();
+    std::function<void()> request; // empty only if allocation failed
+};
+
+DownloadAbortSeam WireDownloadAbortSlot(updatelogic::DownloadOptions& opts) {
+    DownloadAbortSeam seam;
+    if (seam.slot) {
+        opts.abort = seam.slot.get();
+        const std::shared_ptr<updatelogic::DownloadAbortSlot> slot = seam.slot;
+        seam.request = [slot]() { slot->AbortCurrent(); };
+    }
+    return seam;
+}
+
 } // namespace
 
 AboutWindow::AboutWindow() = default;
@@ -305,6 +335,10 @@ void AboutWindow::Destroy() {
     // for up to the 30 s receive timeout).
     if (job_) {
         job_->cancel.store(true, std::memory_order_relaxed);
+        // V10F/RISK-02: close the in-flight handle too, so app exit with a
+        // stalled socket does not leave the worker parked on the 30 s receive
+        // timeout (the process may exit first, but a clean unwind is cheaper).
+        if (job_->abort) job_->abort();
         job_.reset();
     }
 
@@ -470,6 +504,15 @@ void AboutWindow::Dismiss() {
     ::KillTimer(hwnd_, kUpToDateReturnTimerId);
     reset_feedback_until_ = 0;
     visible_ = false;
+    // V10F/ABT-U1: the UpToDate zone auto-returns to Idle on the 6 s timer this
+    // function just killed, so dismissing the card inside that window used to
+    // strand the NEXT Show in the expired "up to date" panel (only a click in
+    // the old zone band could clear it). The reset runs after visible_ = false,
+    // so the transition only touches timers and never repaints a window that is
+    // about to hide.
+    if (ShouldResetZoneOnDismiss(zone_state_)) {
+        SetZoneState(UpdateZoneState::Idle);
+    }
     hovered_ctl_ = -1;
     ::ShowWindow(hwnd_, SW_HIDE);
 }
@@ -595,6 +638,44 @@ std::wstring AboutWindow::ReplaceToken(std::wstring text, std::wstring_view toke
     return text;
 }
 
+// V10F/RISK-02: one cancel request per transfer. The zone paints the
+// CancellingProgress label only after this check passes, and the [Cancel]
+// affordance is dropped in the same transition, so a repeated click/Esc can
+// never re-issue the handle-close abort on an already-unwinding job.
+bool AboutWindow::ShouldRequestDownloadCancel(UpdateZoneState state, bool cancelling) {
+    return state == UpdateZoneState::Downloading && !cancelling;
+}
+
+// V10F/RISK-02: the progress-zone label swap. Both ids already exist
+// (UpdateDlProgress on the pinned update flow, CancellingProgress added with
+// the v0.10.10 fix batch) — no new localization surface.
+StringId AboutWindow::DownloadZoneLabelId(bool cancelling) {
+    return cancelling ? StringId::CancellingProgress : StringId::UpdateDlProgress;
+}
+
+// V10F/ABT-U1 (261122_0002 P3-C6): only the UpToDate status is transient
+// enough to lose its meaning on a hide. Dismiss() kills the 6 s auto-return
+// timer, so clearing the state there is what keeps a re-show from rendering an
+// expired "up to date" panel; Snoozed / Cancelled / the retry arms record what
+// the user chose or what the network answered and stay until cleared.
+bool AboutWindow::ShouldResetZoneOnDismiss(UpdateZoneState state) {
+    return state == UpdateZoneState::UpToDate;
+}
+
+// V10F/ABT-U2(1): the Available state's scrim makes the card modal, so the
+// footer reset pill joins theme_rects_ behind the state gate (a click there
+// used to pop the destructive-reset confirm OVER the consent dialog).
+bool AboutWindow::FooterResetInteractive(UpdateZoneState state) {
+    return state != UpdateZoneState::Available;
+}
+
+// V10F/ABT-U2(2): dlg_focus_ mirrors the painted 2 px accent ring (0 = Later,
+// 1 = Download, see the Render focus-ring block). Enter and Space both run the
+// focused button, so the keyboard can never contradict what the ring shows.
+bool AboutWindow::ConsentConfirmIsDownload(int dlg_focus) {
+    return dlg_focus != 0;
+}
+
 float AboutWindow::MeasureTextWidth(IDWriteTextFormat* format, const std::wstring& text) {
     if (!format || !dwrite_factory_ || text.empty()) return 0.0f;
     IDWriteTextLayout* layout = nullptr;
@@ -613,6 +694,9 @@ float AboutWindow::MeasureTextWidth(IDWriteTextFormat* format, const std::wstrin
 // repaint). Callers: the WndProc handlers + the click handlers.
 void AboutWindow::SetZoneState(UpdateZoneState state) {
     zone_state_ = state;
+    // V10F/RISK-02: every transition leaves the cancelling sub-state, so a
+    // new download always starts with a live [Cancel] and the progress label.
+    download_cancelling_ = false;
     if (state == UpdateZoneState::Checking) {
         checking_started_ = ::GetTickCount64();
     }
@@ -711,13 +795,23 @@ void AboutWindow::StartDownload() {
     const std::wstring dest = updatelogic::BuildDownloadTargetPath(temp, pending_release_.tag);
     const std::optional<std::string> expected =
         updatelogic::ExtractSha256FromNotes(pending_release_.body);
+    expected_ = expected; // V10F-R1 F-16: retained for the launch-time re-hash
 
     auto job = std::make_shared<UpdateJob>();
     job_ = job;
     const HWND hwnd = hwnd_;
     const std::string url = asset->download_url;
     const std::uint64_t advertised_size = asset->size; // SEC cap cross-check input
-    std::thread([hwnd, job, url, dest, expected, advertised_size]() {
+    // V10F/RISK-02: wire the P2-A handle-close slot BEFORE the worker starts
+    // and park the close request in the job. The [Cancel] click (and Destroy)
+    // then closes the in-flight HINTERNET handle, so a stalled socket aborts
+    // in ~ms instead of blocking the worker for the 30 s receive timeout. The
+    // request's shared_ptr capture is what keeps the slot alive for both the
+    // GUI cancel path and the worker's SlotHandle guards.
+    updatelogic::DownloadOptions opts;
+    DownloadAbortSeam abort_seam = WireDownloadAbortSlot(opts);
+    job->abort = abort_seam.request;
+    std::thread([hwnd, job, url, dest, expected, advertised_size, opts]() {
         const UpdateDownloadStatus status = DownloadUpdate(
             url, dest, advertised_size, expected,
             [hwnd, job](std::uint64_t received, std::uint64_t total) {
@@ -725,7 +819,7 @@ void AboutWindow::StartDownload() {
                 job->total.store(total, std::memory_order_relaxed);
                 ::PostMessageW(hwnd, AboutWindow::kUpdateProgressMessage, 0, 0);
             },
-            job->cancel);
+            job->cancel, opts);
         {
             std::lock_guard<std::mutex> lk(job->m);
             job->download_status = status;
@@ -735,6 +829,25 @@ void AboutWindow::StartDownload() {
         ::PostMessageW(hwnd, AboutWindow::kUpdateDownloadDoneMessage, 0, 0);
     }).detach();
     SetZoneState(UpdateZoneState::Downloading);
+}
+
+// V10F/RISK-02 (Option A abort + Option C feedback): the Downloading [Cancel]
+// click. Order matters — flip the cancel flag, then fire the handle-close
+// abort (a stalled WinHttpReadData returns immediately instead of waiting out
+// the 30 s receive timeout), then repaint as CancellingProgress. The job keeps
+// running until kUpdateDownloadDoneMessage, which is what moves the zone to
+// Cancelled; the GUI thread never joins the worker, so it cannot block here.
+void AboutWindow::RequestDownloadCancel() {
+    if (!ShouldRequestDownloadCancel(zone_state_, download_cancelling_)) return;
+    const std::shared_ptr<UpdateJob> job = job_;
+    if (!job) return; // parity with the pre-fix `&& pThis->job_` click guard
+    download_cancelling_ = true;
+    job->cancel.store(true, std::memory_order_relaxed);
+    if (job->abort) job->abort();
+    if (visible_.load(std::memory_order_relaxed)) {
+        Render();
+        UpdateLayered();
+    }
 }
 
 void AboutWindow::HandleUpdateDownloadDone() {
@@ -752,6 +865,7 @@ void AboutWindow::HandleUpdateDownloadDone() {
     switch (status) {
         case UpdateDownloadStatus::Ok:
             ready_path_ = std::move(path);
+            ready_sha256_ = expected_;
             SetZoneState(UpdateZoneState::Ready);
             break;
         case UpdateDownloadStatus::HashMismatch:
@@ -767,11 +881,14 @@ void AboutWindow::HandleUpdateDownloadDone() {
 }
 
 // REQ-UC: launch the verified installer, then exit the app (the installer
-// handles the running app). Launch failure keeps the Ready state so the user
-// can retry.
+// handles the running app). V10F-R1 F-16: the launch goes through
+// LaunchVerifiedInstaller — the release-notes digest is re-checked against the
+// on-disk file IMMEDIATELY before ShellExecuteW, so a file swapped during the
+// Ready park is refused (and deleted) instead of launched. Launch failure
+// keeps the Ready state so the user can retry.
 void AboutWindow::EnterInstall() {
     if (ready_path_.empty()) return;
-    if (!LaunchInstaller(ready_path_)) return;
+    if (!LaunchVerifiedInstaller(ready_path_, ready_sha256_)) return;
     ::PostQuitMessage(0);
 }
 
@@ -1246,7 +1363,12 @@ void AboutWindow::Render() {
             const std::uint64_t total = job ? job->total.load(std::memory_order_relaxed) : 0;
             const float top = block_top(89.0f);
             const float x0 = cx - 158.0f; // 316 DIP wrap, centered
-            const std::wstring label = I18n::Get(StringId::UpdateDlProgress);
+            // V10F/RISK-02: the label swaps to CancellingProgress the moment
+            // the abort was requested; the percent/meta rows keep telling the
+            // truth while the worker unwinds. Reuses the same draw group, so
+            // the file's brush budget (1 CreateSolidColorBrush / 67 SetColor in
+            // Render, one fewer than pre-ABT-U2(3)) is untouched.
+            const std::wstring label = I18n::Get(DownloadZoneLabelId(download_cancelling_));
             const float label_left = ui_rtl ? x0 + 56.0f : x0;
             const float pct_left = ui_rtl ? x0 : x0 + 316.0f - 48.0f;
             scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
@@ -1281,28 +1403,36 @@ void AboutWindow::Render() {
                         progress_brush_);
                 }
             }
+            // V10F/ABT-U2(3): ONE label draw only. The pre-fix row painted the
+            // progress label a SECOND time below the bar, into the right-hand
+            // 200 DIP reserve with its own 200 DIP rect, so it physically
+            // overlapped the meta rect in [x0+116, x0+200] and the repeated
+            // "Downloading…" bled into "336 / 700 MB". meta keeps the
+            // inline-start slot; the RTL branch mirrors it into that same
+            // right-hand reserve (the position the old pair occupied), so the
+            // row is a single clean line in both directions.
             const std::wstring meta = updatelogic::FormatProgressMb(received, total);
             const float meta_left_x = ui_rtl ? x0 + 116.0f : x0;
-            const float meta_right_x = ui_rtl ? x0 : x0 + 116.0f;
             scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
             dc_render_target_->DrawText(meta.c_str(), static_cast<UINT32>(meta.size()),
                                         uz_label_format_,
                                         D2D1::RectF(meta_left_x, top + 42.0f,
                                                     meta_left_x + 200.0f, top + 57.0f),
                                         scratch_brush_);
-            scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
-            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
-                                        uz_label_format_,
-                                        D2D1::RectF(meta_right_x, top + 42.0f,
-                                                    meta_right_x + 200.0f, top + 57.0f),
-                                        scratch_brush_);
             const std::wstring cancel = I18n::Get(StringId::UpdateDlCancel);
             const float cw = measure(uz_textbtn_format_, cancel) + 12.0f;
-            dl_cancel_rect_ = D2D1::RectF(cx - cw / 2.0f - 4.0f, top + 66.0f - 4.0f,
-                                          cx + cw / 2.0f + 4.0f, top + 82.0f + 4.0f);
+            // V10F/RISK-02: an already-cancelling zone drops the affordance —
+            // an EMPTY rect is not a hit (IsPointInRect contract), so the
+            // hover hand, the click target and a re-issued abort all go quiet
+            // while the worker unwinds. The paint below keeps its SetColor
+            // group unchanged (Render's SetColor budget stays 67).
+            dl_cancel_rect_ = download_cancelling_
+                                  ? D2D1::RectF(0.0f, 0.0f, 0.0f, 0.0f)
+                                  : D2D1::RectF(cx - cw / 2.0f - 4.0f, top + 66.0f - 4.0f,
+                                                cx + cw / 2.0f + 4.0f, top + 82.0f + 4.0f);
             scratch_brush_->SetColor(ui::ColorFromHex(
                 hover == kHoverDlCancel ? theme.accent_primary : theme.text_secondary, 1.0f));
-            if (uz_textbtn_format_) {
+            if (!download_cancelling_ && uz_textbtn_format_) {
                 dc_render_target_->DrawText(cancel.c_str(), static_cast<UINT32>(cancel.size()),
                                             uz_textbtn_format_,
                                             D2D1::RectF(cx - cw / 2.0f, top + 66.0f,
@@ -1775,8 +1905,12 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             ::ScreenToClient(hwnd, &pt);
             const float x = static_cast<float>(emebalachat::ui::ScalePixelsToDips(pt.x, pThis->dpi_));
             const float y = static_cast<float>(emebalachat::ui::ScalePixelsToDips(pt.y, pThis->dpi_));
+            // V10F/ABT-U2(1): the reset pill is gated exactly like theme_rects_
+            // below — the Available scrim owns the card, so neither the hand
+            // cursor nor a click may reach the intro chrome behind it.
             bool interactive = IsPointInRect(pThis->close_btn_rect_, x, y) ||
-                               IsPointInRect(pThis->reset_rect_, x, y);
+                               (FooterResetInteractive(pThis->zone_state_) &&
+                                IsPointInRect(pThis->reset_rect_, x, y));
             if (!interactive && pThis->zone_state_ != UpdateZoneState::Available) {
                 for (int i = 0; i < 3; ++i) {
                     if (IsPointInRect(pThis->theme_rects_[i], x, y)) {
@@ -1829,7 +1963,9 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             int hover = -1;
             if (IsPointInRect(pThis->close_btn_rect_, x, y)) {
                 hover = kHoverClose;
-            } else if (IsPointInRect(pThis->reset_rect_, x, y)) {
+            } else if (FooterResetInteractive(pThis->zone_state_) &&
+                       IsPointInRect(pThis->reset_rect_, x, y)) {
+                // V10F/ABT-U2(1): no hover paint under the consent scrim.
                 hover = kHoverReset;
             } else if (pThis->zone_state_ != UpdateZoneState::Available) {
                 for (int i = 0; i < 3; ++i) {
@@ -1933,8 +2069,11 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 }
             }
             // Footer reset pill: same REQ-020 callback + REQ-052 confirm gate
-            // as the historical button.
-            if (IsPointInRect(pThis->reset_rect_, x, y)) {
+            // as the historical button. V10F/ABT-U2(1): the Available consent
+            // scrim is modal, so a click behind it must not open the
+            // destructive-reset MessageBox over the dialog.
+            if (FooterResetInteractive(pThis->zone_state_) &&
+                IsPointInRect(pThis->reset_rect_, x, y)) {
                 std::wstring confirm_body = I18n::Get(StringId::AboutResetButton);
                 confirm_body += L'?';
                 pThis->confirm_pending_ = true;
@@ -1981,8 +2120,12 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     break;
                 case UpdateZoneState::Downloading:
-                    if (IsPointInRect(pThis->dl_cancel_rect_, x, y) && pThis->job_) {
-                        pThis->job_->cancel.store(true, std::memory_order_relaxed);
+                    // V10F/RISK-02: one cancel request per transfer (the pure
+                    // gate also drops the rect during the cancelling unwind).
+                    if (AboutWindow::ShouldRequestDownloadCancel(pThis->zone_state_,
+                                                                 pThis->download_cancelling_) &&
+                        IsPointInRect(pThis->dl_cancel_rect_, x, y)) {
+                        pThis->RequestDownloadCancel();
                     }
                     break;
                 case UpdateZoneState::Ready:
@@ -2006,13 +2149,22 @@ LRESULT CALLBACK AboutWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         case WM_KEYDOWN: {
             if (pThis->zone_state_ == UpdateZoneState::Available) {
                 // Spec §8: the dialog is modal within the card — Esc == Later,
-                // Enter == Download, Tab cycles the two buttons.
+                // Enter == the FOCUSED button, Tab cycles the two buttons.
                 if (wParam == VK_ESCAPE) {
                     pThis->SetZoneState(UpdateZoneState::Snoozed);
                     return 0;
                 }
-                if (wParam == VK_RETURN) {
-                    pThis->StartDownload();
+                // V10F/ABT-U2(2): the 2 px accent ring paints from dlg_focus_
+                // (0 = Later, 1 = Download), so the confirm keys dispatch the
+                // same way: pre-fix Enter always downloaded and Space was
+                // swallowed, i.e. Tab+Enter on [Later] started a ~700 MB
+                // transfer while the ring claimed the button was focused.
+                if (wParam == VK_RETURN || wParam == VK_SPACE) {
+                    if (ConsentConfirmIsDownload(pThis->dlg_focus_)) {
+                        pThis->StartDownload();
+                    } else {
+                        pThis->SetZoneState(UpdateZoneState::Snoozed);
+                    }
                     return 0;
                 }
                 if (wParam == VK_TAB) {

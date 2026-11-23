@@ -17,17 +17,23 @@
 namespace emebalachat {
 
 UserLanguageProbeTransport MakeProductionUserLanguageProbeTransport(
-    TranslationManager& engine) {
-    return [&engine](std::string_view sentence, std::string_view engine_id,
-                     std::string_view model, std::string_view target_name) -> std::wstring {
+    TranslationManager& engine, const std::atomic<bool>* shutdown_token) {
+    return [&engine, shutdown_token](std::string_view sentence, std::string_view engine_id,
+                                     std::string_view model, std::string_view target_name) -> std::wstring {
         (void)engine_id; // the engine is latched by the manager's own config;
         (void)model;     // the key halves ride along for the cache, not the call
         TranslationStatus status = TranslationStatus::Ok;
         // Source = the AUTO-style constant (the probe judges TARGET capability,
         // research-report-p9b3-map §5); the status-aware form distinguishes an
         // engine failure from an empty output for the (shape-only) log line.
+        // V10F (BUG-09): the per-service token rides as ctx.cancel so an
+        // in-flight probe unwinds promptly once BeginShutdown() trips it
+        // (a nullptr token — the one-arg factory — is the byte-identical
+        // pre-V10F default context).
+        TranslationTaskContext ctx;
+        ctx.cancel = shutdown_token;
         const std::wstring output =
-            engine.Translate(ToUtf16(sentence), "Auto Detect", target_name, &status);
+            engine.Translate(ToUtf16(sentence), "Auto Detect", target_name, &status, ctx);
         if (status != TranslationStatus::Ok || output.empty()) {
             DIAG_LOG("PROBE", "transport status=%u out_len=%zu (fold -> Unsupported)",
                      static_cast<unsigned>(status), output.size());
@@ -37,11 +43,20 @@ UserLanguageProbeTransport MakeProductionUserLanguageProbeTransport(
     };
 }
 
+UserLanguageProbeTransport MakeProductionUserLanguageProbeTransport(
+    TranslationManager& engine) {
+    return MakeProductionUserLanguageProbeTransport(engine, nullptr);
+}
+
 UserLanguageProbeService::UserLanguageProbeService(AppConfig& config,
                                                    TranslationManager& engine,
                                                    HWND controller)
     : UserLanguageProbeService(config, controller) {
-    state_->transport = MakeProductionUserLanguageProbeTransport(engine);
+    // V10F (BUG-09): hand the transport the service-owned token; BeginShutdown()
+    // trips it so an in-flight probe cancels through the manager's per-request
+    // seam instead of outliving the 2 s shutdown-join bound.
+    state_->transport =
+        MakeProductionUserLanguageProbeTransport(engine, &state_->cancel_token);
 }
 
 UserLanguageProbeService::UserLanguageProbeService(AppConfig& config, HWND controller)
@@ -245,6 +260,13 @@ void UserLanguageProbeService::BeginShutdown() {
     // fix-list-round15 R18 (unit F-4): GUI-thread-only, like every other
     // service mutation. Idempotent - the shutdown block latches once.
     state_->shutdown_intent = true;
+    // V10F (BUG-09, 261122_0002 P1-U4): trip the probe transport's cancel
+    // token — main.cpp latches BeginShutdown() at the top of the shutdown
+    // sweep (before the language-sync drain and the bounded join), so an
+    // in-flight probe Translate() unwinds through ctx.cancel instead of
+    // holding the 2 s join bound, and its in-flight engine call classifies
+    // Canceled rather than racing the manager's REQ-R16 latch alone.
+    state_->cancel_token.store(true, std::memory_order_release);
 }
 
 void UserLanguageProbeService::ReapFinishedWorkers() {

@@ -78,6 +78,17 @@ public:
     //     receives (index_1based, total) immediately BEFORE each chunk's
     //     request. A chunk that needs no request (ChunkNeedsRequest is false:
     //     pure delimiters / whitespace-only) never advances the index.
+    // V10F (RISK-02 / RISK-03, 261122_0002 P2-A) adds the two context fields
+    // this client consumes:
+    //   * ctx.abort (engine shutdown latch bridge) folds into the SAME
+    //     between-chunk gate and is polled between response reads, so a
+    //     shutdown can neither start another GET nor wait out a body read. The
+    //     blocked-call half is RequestAbortCurrent() below.
+    //   * ctx.out_error_detail is CLEARED on entry and never written: Google's
+    //     free endpoints publish no per-request cause (the localized failure
+    //     notice is the message, R2-E's no-English-leak contract), so the slot
+    //     is cleared purely so a stale OpenAI cause can never be attributed to
+    //     a Google request.
     // The default lives HERE only; the .cpp definition carries no default.
     static std::wstring Translate(
         std::wstring_view text,
@@ -85,6 +96,22 @@ public:
         std::string_view tgt_code = "EN",
         const TranslationTaskContext& ctx = {}
     );
+
+    // V10F (RISK-02 Option A, 261122_0002 P2-A): abort the GET that is in
+    // flight RIGHT NOW, from ANY thread. Twin of
+    // OpenAiCompatibleClient::RequestAbortCurrent (both clone the
+    // gguf_model_manager_window.cpp HfClearSlot protocol): the mutex-guarded
+    // single-owner slot is cleared BEFORE the close, so exactly one side calls
+    // WinHttpCloseHandle and the worker never uses a closed handle. Closing a
+    // request handle from another thread is WinHTTP's documented abort for a
+    // pending operation, so a worker blocked in WinHttpReceiveResponse /
+    // WinHttpQueryDataAvailable / WinHttpReadData returns within milliseconds
+    // instead of waiting out the REQ-R05 receive timeout. The chunk then fails
+    // closed ({} — the existing REQ-048 P3 failure arm) and the primary ->
+    // gtx fallback is NOT attempted. Returns true when a request was actually
+    // aborted; a call while idle is a no-op (the caller's cancel token covers
+    // the between-request window).
+    static bool RequestAbortCurrent();
 
     // REQ-043 (M6 T5 debug): test-only cloud-block hook. When engaged,
     // Translate() short-circuits to empty (simulating an unreachable cloud)

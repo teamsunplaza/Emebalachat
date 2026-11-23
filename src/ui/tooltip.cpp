@@ -72,6 +72,12 @@ std::deque<TooltipWindow::TargetLangPayload> g_tt_targetlang_queue;
 std::mutex g_tt_backtrans_mu;
 std::deque<TooltipWindow::BackTranslationPayload> g_tt_backtrans_queue;
 
+// V10F L3-B: the progressive-preview value queue (Begin / Append / End). Own
+// mutex, same SEC-ADJ by-value transport + parameter-less wake-up contract as
+// the four above; the entry carries the cumulative text by value.
+std::mutex g_tt_preview_mu;
+std::deque<TooltipWindow::ChunkPreviewPayload> g_tt_preview_queue;
+
 } // namespace
 
 namespace {
@@ -264,19 +270,67 @@ int MatchTokenLanguage(ISpObjectToken* pToken, DWORD target_lcid) {
     return 0;
 }
 
+// V10F FUP-06: the production side of the injectable ResolveLcidForLanguage
+// seam (tooltip.hpp). The SPECIFIC locale is asked for FIRST: with
+// LOCALE_ALLOW_NEUTRAL_NAMES alone a bare language name answers the NEUTRAL
+// LCID ("en" -> 0x0009, "ko" -> 0x0012) instead of the shipped 0x0409/0x0412,
+// which silently dropped MatchTokenLanguage's exact-LCID bonus for every one of
+// the 36 legacy languages (261122_0002 Wave-C regression, caught by the
+// TestTtsVoiceSelectionModule LCID pins). Neutral-name resolution stays as the
+// FALLBACK for script-only / neutral-only tags that a specific lookup rejects.
+DWORD LocaleNameToLcidAllowNeutral(const wchar_t* bcp47_name) {
+    if (!bcp47_name || !bcp47_name[0]) return 0;
+    const DWORD specific = ::LocaleNameToLCID(bcp47_name, 0);
+    if (specific != 0) return specific;
+    return ::LocaleNameToLCID(bcp47_name, LOCALE_ALLOW_NEUTRAL_NAMES);
+}
+
+// V10F L3-B: {c}/{t}-style token fill for the preview header. Deliberately a
+// file-local 6-liner instead of reaching into badge.hpp: the badge module owns
+// its own copy for the badge's label, and this module must stay linkable
+// without the badge window (the tooltip is created by main.cpp and by
+// run_tests, the badge only by the app).
+void ReplaceAllTokens(std::wstring& text, std::wstring_view token, const std::wstring& value) {
+    if (token.empty()) return;
+    std::size_t pos = 0;
+    while ((pos = text.find(token, pos)) != std::wstring::npos) {
+        text.replace(pos, token.size(), value);
+        pos += value.size();
+    }
+}
+
+// V10F L1-B: physical WORK-AREA height of the monitor under `pt` (taskbar and
+// docked app bars excluded). Feeds MaxCardHeightDipForWorkArea, which is the
+// pure planner the unit suite drives; this is only the Win32 read.
+int WorkAreaHeightPixelsAtPoint(POINT pt) {
+    HMONITOR mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (::GetMonitorInfoW(mon, &mi)) {
+        return static_cast<int>(mi.rcWork.bottom - mi.rcWork.top);
+    }
+    // Defensive fallback: the whole virtual screen is still bounded, and the
+    // card's own 520 DIP cap applies on top, so a failed query can only make
+    // the usable height LARGER than reality (never an unusable card).
+    return static_cast<int>(::GetSystemMetrics(SM_CYVIRTUALSCREEN));
+}
+
 } // namespace
 
-DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code) {
+DWORD GetLcidForLanguageWithResolver(std::string_view target_lang_name_or_code,
+                                     LocaleNameToLcidFn resolve) {
     if (target_lang_name_or_code.empty()) return 0;
 
-    // Direct hex prefix check (e.g. "0x409", "0x0409")
+    // Direct hex prefix check (e.g. "0x409", "0x0409") - unchanged from the
+    // pre-V10F resolver, and it stays first so an explicit hex id always wins.
     if (target_lang_name_or_code.rfind("0x", 0) == 0 || target_lang_name_or_code.rfind("0X", 0) == 0) {
         try {
             return static_cast<DWORD>(std::stoul(std::string(target_lang_name_or_code.substr(2)), nullptr, 16));
         } catch (...) {}
     }
 
-    // Try canonical resolution via config.hpp's NormalizeLanguageCode
+    // Canonical resolution via config.hpp's NormalizeLanguageCode (codes,
+    // English names, native names and the alias matrix).
     std::string code = NormalizeLanguageCode(target_lang_name_or_code);
     if (code == "AUTO") {
         size_t sep = target_lang_name_or_code.find_first_of("-_");
@@ -288,43 +342,28 @@ DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code) {
         }
     }
 
-    if (code == "EN") return 0x0409;
-    if (code == "KO") return 0x0412;
-    if (code == "JA") return 0x0411;
-    if (code == "ZH-CN" || code == "ZH") return 0x0804;
-    if (code == "ZH-TW") return 0x0404;
-    if (code == "ES") return 0x040A;
-    if (code == "FR") return 0x040C;
-    if (code == "DE") return 0x0407;
-    if (code == "RU") return 0x0419;
-    if (code == "VI") return 0x042A;
-    if (code == "PT") return 0x0416;
-    if (code == "IT") return 0x0410;
-    if (code == "TH") return 0x041E;
-    if (code == "AR") return 0x0401;
-    if (code == "ID") return 0x0421;
-    if (code == "MS") return 0x043E;
-    if (code == "FIL") return 0x0464;
-    if (code == "KM") return 0x0453;
-    if (code == "LO") return 0x0454;
-    if (code == "HI") return 0x0439;
-    if (code == "BN") return 0x0445;
-    if (code == "TR") return 0x041F;
-    if (code == "PL") return 0x0415;
-    if (code == "NL") return 0x0413;
-    if (code == "UK") return 0x0422;
-    if (code == "FA") return 0x0429;
-    if (code == "UR") return 0x0420;
-    if (code == "HE") return 0x040D;
-    if (code == "CS") return 0x0405;
-    if (code == "HU") return 0x040E;
-    if (code == "SV") return 0x041D;
-    if (code == "EL") return 0x0408;
-    if (code == "RO") return 0x0418;
-    if (code == "DA") return 0x0406;
-    if (code == "FI") return 0x040B;
-    if (code == "NO") return 0x0414;
-    if (code == "MY") return 0x0455;
+    if (code != "AUTO" && !code.empty()) {
+        // V10F FUP-06 step 1: the explicit overrides (YUE/FIL/ZH-CN/ZH-TW) win
+        // over the registry tag, because those four rows' Windows mapping is
+        // not what bcp47 alone yields.
+        DWORD override_lcid = 0;
+        if (TryLcidOverride(code, override_lcid)) {
+            return override_lcid;
+        }
+        // Step 2: the row's OWN bcp47 column -> LocaleNameToLCID. ONE table
+        // feeds DWrite font fallback (P4 B-2) and voice matching, so the two
+        // can never drift, and every future registry row resolves with no edit
+        // here (the pre-V10F if-chain could not: 53 of the 89 rows answered 0).
+        if (const LanguageInfo* info = FindLanguageByCode(code)) {
+            if (info->bcp47 && info->bcp47[0] && resolve) {
+                const std::wstring tag = ToUtf16(info->bcp47);
+                if (!tag.empty()) {
+                    const DWORD lcid = resolve(tag.c_str());
+                    if (lcid != 0) return lcid;
+                }
+            }
+        }
+    }
 
     // Fallback: Check if string is 3 to 6 hex characters (e.g. "409", "0409", "412")
     bool all_hex = true;
@@ -342,6 +381,12 @@ DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code) {
 
     return 0;
 }
+
+DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code) {
+    return GetLcidForLanguageWithResolver(target_lang_name_or_code,
+                                          &LocaleNameToLcidAllowNeutral);
+}
+
 
 TooltipWindow::TooltipWindow() = default;
 
@@ -587,6 +632,9 @@ void TooltipWindow::Destroy() {
     }
 
     if (logo_bitmap_) { logo_bitmap_->Release(); logo_bitmap_ = nullptr; }
+    // V10F FUP-08: the cached body layout holds the (about to be released)
+    // DirectWrite factory, so it must go before the factory does.
+    ReleaseBodyTextLayout();
     if (backtrans_section_format_) { backtrans_section_format_->Release(); backtrans_section_format_ = nullptr; }
     if (backtrans_header_format_) { backtrans_header_format_->Release(); backtrans_header_format_ = nullptr; }
     if (backtrans_ref_format_) { backtrans_ref_format_->Release(); backtrans_ref_format_ = nullptr; }
@@ -759,6 +807,43 @@ void TooltipWindow::EnsureMeasuredLayouts() {
             }
             tgt_btn_w_ = tgt_w;
             tgt_label_key_ = tgt_label;
+        }
+
+        // --- site 8 (V10F L2): header action labels -------------------------
+        // The three right-anchored header buttons (pin / edit / open) size from
+        // their localized labels. Measured here, once per label change, so the
+        // per-frame Render only does arithmetic (C2 discipline). The pin's
+        // width is the WIDER of the two state labels (Pin/Unpin) so toggling
+        // never reflows the header cluster under the user's pointer.
+        const std::wstring pin_label = I18n::Get(StringId::PinTooltipCard);
+        const std::wstring unpin_label = I18n::Get(StringId::UnpinTooltipCard);
+        const std::wstring edit_label = I18n::Get(StringId::EditRetranslate);
+        const std::wstring open_label = I18n::Get(StringId::OpenInWindow);
+        const std::wstring action_key =
+            pin_label + L'\0' + unpin_label + L'\0' + edit_label + L'\0' + open_label;
+        if (action_key != header_action_key_) {
+            auto measure_label = [&](const std::wstring& label) -> float {
+                if (label.empty()) return 0.0f;
+                IDWriteTextLayout* layout = nullptr;
+                float width = 0.0f;
+                if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                        label.c_str(), static_cast<UINT32>(label.size()),
+                        button_format_, 512.0f, 24.0f, &layout)) && layout) {
+                    DWRITE_TEXT_METRICS metrics = {};
+                    if (SUCCEEDED(layout->GetMetrics(&metrics)) && metrics.width > 0.0f) {
+                        width = metrics.width;
+                    }
+                    layout->Release();
+                }
+                return width;
+            };
+            float pin_w = measure_label(pin_label);
+            const float unpin_w = measure_label(unpin_label);
+            if (unpin_w > pin_w) pin_w = unpin_w;
+            pin_btn_label_w_ = pin_w;
+            edit_btn_label_w_ = measure_label(edit_label);
+            open_btn_label_w_ = measure_label(open_label);
+            header_action_key_ = action_key;
         }
     }
 }
@@ -942,6 +1027,76 @@ void TooltipWindow::ReallocateBuffer(int width, int height) {
     renderer_.ReallocateBuffer(width, height, dpi_);
 }
 
+// ---- V10F FUP-08: cached body text layout --------------------------------
+// Render() used to call DrawText on every repaint, i.e. DirectWrite re-ran the
+// full shaping + line-breaking pipeline for the whole body on every wheel
+// notch, hover change and DPI crossing. The layout is content-shaped exactly
+// once per (content, column width, direction) change now.
+//
+// KEY: content pointer + length + column width + reading direction, plus a
+// content hash. Pointer+length alone would be unsound - std::wstring reuses its
+// SSO/allocated buffer address when a same-length string is assigned over it,
+// so "show A, show B (same length)" would silently keep A's layout. The hash
+// closes that (an O(n) FNV-1a pass at show time, next to a DirectWrite shaping
+// pass that costs orders of magnitude more).
+namespace {
+std::uint64_t BodyLayoutContentHash(const std::wstring& text) {
+    std::uint64_t hash = 1469598103934665603ULL; // FNV-1a 64-bit offset basis
+    for (wchar_t c : text) {
+        hash ^= static_cast<std::uint64_t>(c);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+} // namespace
+
+void TooltipWindow::ReleaseBodyTextLayout() {
+    if (body_text_layout_) {
+        body_text_layout_->Release();
+        body_text_layout_ = nullptr;
+    }
+    body_layout_text_ptr_ = nullptr;
+    body_layout_text_len_ = 0;
+    body_layout_width_dip_ = 0;
+    body_layout_direction_ = 0;
+    body_layout_content_hash_ = 0;
+}
+
+void TooltipWindow::EnsureBodyTextLayout(int width_dip) {
+    if (width_dip < 0) width_dip = 0;
+    const int direction =
+        (body_format_ &&
+         body_format_->GetReadingDirection() == DWRITE_READING_DIRECTION_RIGHT_TO_LEFT)
+            ? 1
+            : 0;
+    const wchar_t* text_ptr = translated_text_.c_str();
+    const std::size_t text_len = translated_text_.size();
+    const std::uint64_t content_hash = BodyLayoutContentHash(translated_text_);
+    if (body_text_layout_ && body_layout_text_ptr_ == text_ptr &&
+        body_layout_text_len_ == text_len && body_layout_width_dip_ == width_dip &&
+        body_layout_direction_ == direction && body_layout_content_hash_ == content_hash) {
+        return; // unchanged key: the cached layout IS this frame's layout
+    }
+    ReleaseBodyTextLayout();
+    if (!dwrite_factory_ || !body_format_ || width_dip <= 0 || translated_text_.empty()) {
+        return; // Render falls back to its DrawText path
+    }
+    IDWriteTextLayout* layout = nullptr;
+    if (FAILED(dwrite_factory_->CreateTextLayout(
+            text_ptr, static_cast<UINT32>(text_len), body_format_,
+            static_cast<float>(width_dip), 100000.0f, &layout)) || !layout) {
+        DIAG_LOG("UI", "tooltip_body_layout_fail width=%d len=%zu", width_dip, text_len);
+        return;
+    }
+    body_text_layout_ = layout;
+    body_layout_text_ptr_ = text_ptr;
+    body_layout_text_len_ = text_len;
+    body_layout_width_dip_ = width_dip;
+    body_layout_direction_ = direction;
+    body_layout_content_hash_ = content_hash;
+}
+
+
 void TooltipWindow::ShowTranslation(
     int x, int y,
     std::wstring_view source_text,
@@ -995,6 +1150,21 @@ void TooltipWindow::ShowTranslation(
     // (the body measured against current_width_ - 28 and the header pill
     // planner both read it), clipping the header and mis-wrapping the body.
     current_width_ = kBackTransCardWidthDip;
+    // V10F L1-B: content-scaled width. The reset above stays the FLOOR (the
+    // narrow tier IS 360 DIP), so this line can only widen the card: a long
+    // translation earns 480/620 DIP instead of wrapping into a narrow ribbon.
+    // Applied BEFORE the body measurement below, which reads current_width_ -
+    // the same ordering rule the 360 reset has always followed.
+    current_width_ = CardWidthDipForContentChars(translated_text.size());
+
+    // REQ-R15 + V10F L1-B: resolve the target monitor's DPI here (the caller's
+    // physical x/y is the monitor the card lands on) so the vertical cap below
+    // can be expressed against that monitor's WORK AREA. The pre-V10F code
+    // resolved it after the height math, which is why the cap had to be the
+    // fixed 520 DIP constant for every display.
+    dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ x, y });
+    const int max_height_dip = MaxCardHeightDipForWorkArea(
+        WorkAreaHeightPixelsAtPoint(POINT{ x, y }), dpi_);
 
     source_text_ = source_text;
     source_lang_code_ = source_lang_code;
@@ -1002,6 +1172,14 @@ void TooltipWindow::ShowTranslation(
     translated_text_ = translated_text;
     copied_feedback_ = false;
     hovered_btn_ = 0;
+    // V10F L1-B + L3-B: a fresh card is UNPINNED and is not a live preview.
+    // Both are per-card state, so "unpinned + no progress line" is the exact
+    // pre-V10F behavior for every existing caller.
+    pinned_.store(false, std::memory_order_relaxed);
+    preview_phase_ = ChunkPreviewPhase::Inactive;
+    preview_text_.clear();
+    preview_index_ = 0;
+    preview_total_ = 0;
 
     // P4 Batch B-2 (REQ-038, design §2-Q2 verdict A / §2.2.2 item 1): the
     // SINGLE body-direction mutation point — right after translated_text_ is
@@ -1084,8 +1262,13 @@ void TooltipWindow::ShowTranslation(
     // (DIP layout units - the DirectWrite metrics above are DPI-independent).
     // REQ-002 (plan §2.1): the 480 cap becomes 520; content taller than the
     // capped body viewport scrolls instead of being clipped.
+    // V10F L1-B: the cap is now the TIGHTER of the fixed 520 DIP ceiling and
+    // 70% of the anchoring monitor's work area, so the card can never cover a
+    // short screen (the pre-V10F fixed cap did on a 1366x768 / 125% display).
     int calculated_height = static_cast<int>(std::ceil(38.0f + 12.0f + text_height + 16.0f + 36.0f));
-    current_height_ = (std::max)(140, (std::min)(calculated_height, kMaxWindowHeightDip));
+    int height_cap = (std::min)(kMaxWindowHeightDip, max_height_dip);
+    if (height_cap < kCardHeightMinDip) height_cap = kCardHeightMinDip;
+    current_height_ = (std::max)(kCardHeightMinDip, (std::min)(calculated_height, height_cap));
 
     // REQ-002: a fresh translation always starts unscrolled (plan edge case 4).
     scroll_offset_dip_ = 0.0f;
@@ -1126,10 +1309,15 @@ void TooltipWindow::ShowTranslation(
         }
     }
 
-    // REQ-R15 (audit §5 latent item 3): capture the target monitor's DPI from
-    // the (physical) cursor coordinates the caller passed, then allocate the
-    // physical buffer and clamp in the same physical units.
-    dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ x, y });
+    // V10F FUP-08: build the cached render layout at the FINAL column width
+    // (w - 32 when the custom scrollbar is reserved, w - 28 otherwise) and with
+    // the direction the show path just wrote into body_format_. Render() then
+    // draws this layout instead of re-shaping the string on every repaint.
+    EnsureBodyTextLayout(scrollable_ ? current_width_ - 32 : current_width_ - 28);
+
+    // REQ-R15 (audit §5 latent item 3): the target monitor's DPI was captured
+    // above (before the work-area height cap); allocate the physical buffer and
+    // clamp in the same physical units.
     ReallocateBuffer(PhysW(), PhysH());
 
     // Multi-monitor aware bounds clamping
@@ -1156,10 +1344,10 @@ void TooltipWindow::ShowTranslation(
 }
 
 void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body,
-                                uint64_t generation) {
+                                uint64_t generation, DWORD autohide_ms) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() != gui_thread_id_) {
-        ShowMessageThreadSafe(x, y, header, body, generation);
+        ShowMessageThreadSafe(x, y, header, body, generation, autohide_ms);
         return;
     }
 
@@ -1194,6 +1382,9 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     target_lang_.clear();
     copied_feedback_ = false;
     hovered_btn_ = 0;
+    // V10F: a notice is a fresh card - unpinned, never a preview.
+    pinned_.store(false, std::memory_order_relaxed);
+    preview_phase_ = ChunkPreviewPhase::Inactive;
 
     // P4 Batch B-2 (REQ-038, design §2.2.2 items 2+3): message bodies are
     // app-authored notices in the UI locale — direction follows the UI
@@ -1271,14 +1462,16 @@ void TooltipWindow::ShowMessage(int x, int y, std::wstring_view header, std::wst
     UpdateLayered();
 
     ::KillTimer(hwnd_, kTimerMessageAutohide);
-    ::SetTimer(hwnd_, kTimerMessageAutohide, kMessageAutohideMs, nullptr);
+    // V10F-R1 F-06: the caller's per-notice budget (kMessageAutohideMs for
+    // every legacy notice; kTypingErrorAutohideMs for the typing-error card).
+    ::SetTimer(hwnd_, kTimerMessageAutohide, autohide_ms, nullptr);
 }
 
 void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body,
-                                          uint64_t generation) {
+                                          uint64_t generation, DWORD autohide_ms) {
     if (!hwnd_) return;
     if (::GetCurrentThreadId() == gui_thread_id_) {
-        ShowMessage(x, y, header, body, generation);
+        ShowMessage(x, y, header, body, generation, autohide_ms);
         return;
     }
     // SEC-ADJ: payload travels BY VALUE through g_tt_message_queue; the posted
@@ -1292,6 +1485,7 @@ void TooltipWindow::ShowMessageThreadSafe(int x, int y, std::wstring_view header
     payload.header = header;
     payload.body = body;
     payload.generation = generation; // R6 B1-H1: travels INSIDE the payload
+    payload.autohide_ms = autohide_ms; // V10F-R1 F-06: the budget rides along
     {
         std::lock_guard<std::mutex> lk(g_tt_message_mu);
         g_tt_message_queue.push_back(std::move(payload));
@@ -1349,6 +1543,381 @@ uint64_t TooltipWindow::BeginTranslationRequest() {
     return gen;
 }
 
+// ---- V10F L3-B: progressive preview seams --------------------------------
+// The transport mirrors the four Show* seams above (SEC-ADJ Blocker-5 class):
+// the payload travels BY VALUE through g_tt_preview_queue and the posted
+// kChunkPreviewMessage is a pure (0, 0) wake-up. The queue is LATEST-WINS with
+// ONE merge exception (V10F-R1 F-08, see CoalesceChunkPreviewPayload): every
+// Append carries the FULL cumulative state, so an older pending entry has no
+// information the newest one lacks — EXCEPT an un-applied Begin, which is the
+// only carrier of total_chunks and must survive until the drain so the
+// Appends posted behind it are not dropped as "preview inactive". An End
+// carries no cumulative of its own; the merge rule adopts the newest pending
+// Append's text into it (V10F-R2 F-29) so the drain's End arm always lands
+// the latest body.
+namespace {
+
+bool PostChunkPreviewPayload(HWND hwnd, TooltipWindow::ChunkPreviewPayload payload) {
+    if (!hwnd) return false;
+    {
+        std::lock_guard<std::mutex> lk(g_tt_preview_mu);
+        TooltipWindow::CoalesceChunkPreviewPayload(g_tt_preview_queue, std::move(payload));
+    }
+    if (::PostMessageW(hwnd, TooltipWindow::kChunkPreviewMessage, 0, 0) == FALSE) {
+        DIAG_F("TT/Marshal/005: PostMessage kChunkPreview failed (GLE %lu); payload left queued\n",
+               ::GetLastError());
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+// V10F-R1 F-08: the production merge rule (declared in the header so the unit
+// suite drives it headlessly). A Begin REPLACES everything queued before it (a
+// new run supersedes the old one). An Append/End MERGES with a pending Begin
+// instead of coalescing it away: the un-applied Begin (the only carrier of
+// total_chunks) stays at the front and the newest Append/End rides behind it,
+// so the drain applies Begin FIRST and the Appends are not dropped as
+// "preview inactive". Older pending Appends/Ends are dropped (latest-wins
+// within the run); the queue never holds more than one Begin + one op.
+// V10F-R2 (fix-list round 2, F-29): an End payload carries no cumulative of
+// its own, so before the latest-wins erase the End ADOPTS the newest pending
+// Append's cumulative — otherwise a run whose last Append is still queued
+// when End arrives would erase that final text and the drain's End arm would
+// freeze the card on the (empty) Begin body.
+void TooltipWindow::CoalesceChunkPreviewPayload(std::deque<ChunkPreviewPayload>& queue,
+                                                ChunkPreviewPayload incoming) {
+    if (incoming.op == ChunkPreviewOp::Begin) {
+        // A new run supersedes whatever is still queued (pending Begin included).
+        queue.clear();
+        queue.push_back(std::move(incoming));
+        return;
+    }
+    // V10F-R2 (F-29): carry the latest cumulative into the End payload.
+    if (incoming.op == ChunkPreviewOp::End && incoming.cumulative.empty()) {
+        for (auto it = queue.rbegin(); it != queue.rend(); ++it) {
+            if (it->op == ChunkPreviewOp::Append && !it->cumulative.empty()) {
+                incoming.cumulative = it->cumulative;
+                break;
+            }
+        }
+    }
+    // Append / End: keep one pending Begin (it carries total_chunks into the
+    // drain), drop every older pending Append/End (latest-wins within the
+    // run), then ride behind the Begin.
+    for (auto it = queue.begin(); it != queue.end();) {
+        if (it->op == ChunkPreviewOp::Begin) {
+            ++it;
+        } else {
+            it = queue.erase(it);
+        }
+    }
+    queue.push_back(std::move(incoming));
+}
+
+void TooltipWindow::BeginChunkPreview(int total_chunks) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ChunkPreviewPayload payload;
+        payload.op = ChunkPreviewOp::Begin;
+        payload.total_chunks = total_chunks;
+        PostChunkPreviewPayload(hwnd_, std::move(payload));
+        return;
+    }
+    ApplyChunkPreviewOp(ChunkPreviewOp::Begin, total_chunks, std::wstring(), false);
+}
+
+void TooltipWindow::AppendChunkPreviewText(const std::wstring& cumulative) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ChunkPreviewPayload payload;
+        payload.op = ChunkPreviewOp::Append;
+        payload.cumulative = cumulative;
+        PostChunkPreviewPayload(hwnd_, std::move(payload));
+        return;
+    }
+    ApplyChunkPreviewOp(ChunkPreviewOp::Append, 0, cumulative, false);
+}
+
+void TooltipWindow::EndChunkPreview(bool success) {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        ChunkPreviewPayload payload;
+        payload.op = ChunkPreviewOp::End;
+        payload.success = success;
+        PostChunkPreviewPayload(hwnd_, std::move(payload));
+        return;
+    }
+    ApplyChunkPreviewOp(ChunkPreviewOp::End, 0, std::wstring(), success);
+}
+
+void TooltipWindow::ApplyChunkPreviewOp(ChunkPreviewOp op, int total_chunks,
+                                        const std::wstring& cumulative, bool success) {
+    if (!hwnd_) return;
+    switch (op) {
+        case ChunkPreviewOp::Begin: {
+            is_message_mode_ = false;
+            no_voice_notice_active_ = false;
+            ::KillTimer(hwnd_, kTimerMessageAutohide);
+            HideBackTranslationCard();
+            // Per-card state: a live preview is never pinned (the pin would
+            // outlive the run and hold a stale partial text on screen).
+            pinned_.store(false, std::memory_order_relaxed);
+            preview_phase_ = ChunkPreviewPhase::Running;
+            preview_total_ = total_chunks > 1 ? total_chunks : 1;
+            preview_index_ = preview_total_ > 1 ? 0 : 1;
+            preview_text_ = cumulative;
+            POINT cursor = {};
+            if (!::GetCursorPos(&cursor)) {
+                cursor = POINT{0, 0};
+            }
+            // Same cursor-relative anchoring main.cpp uses for its notices;
+            // the card then clamps itself inside the monitor's work area.
+            preview_x_ = cursor.x + 16;
+            preview_y_ = cursor.y + 16;
+            DIAG_LOG("UI", "tooltip_preview_begin total=%d", preview_total_);
+            LayoutChunkPreviewCard();
+            break;
+        }
+        case ChunkPreviewOp::Append: {
+            // A late emission from a superseded request must never resurrect a
+            // card the user (or End) already retired.
+            if (preview_phase_ == ChunkPreviewPhase::Inactive) {
+                DIAG_LOG("UI", "tooltip_preview_append_ignored");
+                return;
+            }
+            preview_text_ = cumulative;
+            if (preview_index_ < preview_total_) ++preview_index_;
+            preview_phase_ = ChunkPreviewPhase::Running;
+            LayoutChunkPreviewCard();
+            break;
+        }
+        case ChunkPreviewOp::End: {
+            if (preview_phase_ == ChunkPreviewPhase::Inactive) return;
+            if (!success) {
+                DIAG_LOG("UI", "tooltip_preview_end success=0");
+                DismissExplicit();
+                return;
+            }
+            if (!cumulative.empty()) preview_text_ = cumulative;
+            preview_index_ = preview_total_;
+            preview_phase_ = ChunkPreviewPhase::Finished;
+            DIAG_LOG("UI", "tooltip_preview_end success=1 len=%zu", preview_text_.size());
+            LayoutChunkPreviewCard();
+            break;
+        }
+    }
+}
+
+void TooltipWindow::LayoutChunkPreviewCard() {
+    if (!hwnd_) return;
+    // The body model is the SAME translated_text_ the translation card paints,
+    // so the clip/scroll/hit-test state is shared (no fourth scroll
+    // implementation).
+    translated_text_ = preview_text_;
+    source_text_.clear();
+    source_lang_code_.clear();
+    target_lang_.clear();
+    message_header_.clear();
+    is_message_mode_ = false;
+    is_backtrans_mode_ = false;
+    hovered_btn_ = 0;
+    // Direction follows the text itself: the preview seam carries no target
+    // language, and partial text may not be reliably attributable yet, so the
+    // first-strong heuristic (bidi_utils) is the honest source.
+    if (body_format_) {
+        const bool rtl = GuessBaseDirection(translated_text_) == TextDirection::RTL;
+        body_format_->SetReadingDirection(rtl ? DWRITE_READING_DIRECTION_RIGHT_TO_LEFT
+                                              : DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+    }
+    current_width_ = CardWidthDipForContentChars(translated_text_.size());
+
+    float text_height = 40.0f;
+    UINT32 text_line_count = 0;
+    if (dwrite_factory_ && body_format_ && !translated_text_.empty()) {
+        IDWriteTextLayout* layout = nullptr;
+        if (SUCCEEDED(dwrite_factory_->CreateTextLayout(
+                translated_text_.c_str(), static_cast<UINT32>(translated_text_.size()),
+                body_format_, static_cast<float>(current_width_ - 28), 100000.0f,
+                &layout)) && layout) {
+            DWRITE_TEXT_METRICS m = {};
+            layout->GetMetrics(&m);
+            text_height = (std::max)(20.0f, m.height);
+            text_line_count = m.lineCount;
+            layout->Release();
+        }
+    }
+    dpi_ = emebalachat::ui::MonitorDpiAtPoint(POINT{ preview_x_, preview_y_ });
+    const int max_height_dip = MaxCardHeightDipForWorkArea(
+        WorkAreaHeightPixelsAtPoint(POINT{ preview_x_, preview_y_ }), dpi_);
+    int height_cap = (std::min)(kMaxWindowHeightDip, max_height_dip);
+    if (height_cap < kCardHeightMinDip) height_cap = kCardHeightMinDip;
+    const int wanted = static_cast<int>(
+        std::ceil(kBodyTopDip + text_height + kPreviewFooterReserveDip));
+    current_height_ = (std::max)(kCardHeightMinDip, (std::min)(wanted, height_cap));
+
+    content_height_dip_ = text_height;
+    line_height_dip_ = (text_line_count > 0) ? text_height / static_cast<float>(text_line_count)
+                                             : 18.0f;
+    const float viewport_h = static_cast<float>(current_height_) - kBodyTopDip -
+                             kPreviewFooterReserveDip;
+    scrollable_ = text_height > viewport_h;
+    scroll_offset_dip_ = ClampScrollOffset(scroll_offset_dip_, content_height_dip_,
+                                           viewport_h > 0.0f ? viewport_h : 0.0f);
+    if (!scrollable_) scroll_offset_dip_ = 0.0f;
+    scrollbar_track_rect_ = {};
+    scrollbar_thumb_rect_ = {};
+
+    EnsureBodyTextLayout(scrollable_ ? current_width_ - 32 : current_width_ - 28);
+    ReallocateBuffer(PhysW(), PhysH());
+
+    POINT origin = { preview_x_, preview_y_ };
+    HMONITOR hMon = ::MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(MONITORINFO);
+    if (::GetMonitorInfoW(hMon, &mi)) {
+        origin = emebalachat::ui::ClampWindowOrigin(origin.x, origin.y, PhysW(), PhysH(), 10,
+                                                    mi.rcWork);
+    }
+    ::SetWindowPos(hwnd_, HWND_TOPMOST, origin.x, origin.y, PhysW(), PhysH(),
+                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    card_visibility_.PublishShow();
+    Render();
+    UpdateLayered();
+}
+
+// ---- V10F L3-B: the live preview card ------------------------------------
+// A fourth display mode on the same layered window, deliberately minimal: a
+// progress header (the badge's own localized "Translating… {c}/{t}" string,
+// token-filled in place), the ✕, the cumulative body through the SAME cached
+// layout path the translation card uses, and a thin progress line in the footer
+// band. No new strings, no new fonts, no new window.
+void TooltipWindow::RenderChunkPreview() {
+    if (!dc_render_target_ || !scratch_brush_) return;
+    const auto& theme = ui::GetActiveTheme();
+    const float w = static_cast<float>(current_width_);
+    const float h = static_cast<float>(current_height_);
+
+    // Header label. A single-chunk run keeps the plain "Translating…" copy
+    // (the progress line still moves), which is what the pre-feature badge
+    // showed for non-multi-chunk work.
+    std::wstring title;
+    if (preview_total_ > 1) {
+        title = I18n::Get(StringId::BadgeTranslatingProgress);
+        ReplaceAllTokens(title, L"{c}", std::to_wstring(preview_index_));
+        ReplaceAllTokens(title, L"{t}", std::to_wstring(preview_total_));
+    } else {
+        title = I18n::Get(StringId::BadgeTranslating);
+    }
+    IDWriteTextFormat* title_format =
+        backtrans_header_format_ ? backtrans_header_format_ : header_format_;
+    if (title_format && !title.empty()) {
+        const D2D1_RECT_F title_rect = D2D1::RectF(14.0f, 10.0f, w - 44.0f, 36.0f);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
+        dc_render_target_->DrawText(title.c_str(), static_cast<UINT32>(title.size()),
+                                    title_format, title_rect, scratch_brush_);
+    }
+
+    close_btn_rect_ = D2D1::RectF(w - 32.0f, 8.0f, w - 12.0f, 28.0f);
+    if (header_format_) {
+        scratch_brush_->SetColor((hovered_btn_ == 4) ? ui::ColorFromHex(theme.state_danger, 1.0f)
+                                                     : ui::ColorFromHex(theme.text_muted, 0.85f));
+        dc_render_target_->DrawText(L"✕", 1, header_format_, close_btn_rect_, scratch_brush_);
+    }
+    // No footer buttons and no header tag/pill on this card: clear every rect a
+    // previous mode left behind so no stale zone can answer a click.
+    src_btn_rect_ = {};
+    lang_btn_rect_ = {};
+    copy_btn_rect_ = {};
+    tts_btn_rect_ = {};
+    pin_btn_rect_ = {};
+    edit_btn_rect_ = {};
+    open_btn_rect_ = {};
+
+    // Header divider, same rule the other two cards draw.
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha));
+    dc_render_target_->DrawLine(D2D1::Point2F(14.0f, 37.0f), D2D1::Point2F(w - 14.0f, 37.0f),
+                                scratch_brush_, 1.0f);
+
+    // Body: the measured column (w - 32 while the scrollbar gutter is reserved,
+    // w - 28 otherwise) with the show path's cached layout.
+    const float body_top = kBodyTopDip;
+    const float bar_bottom = h - 10.0f;
+    const float bar_top = bar_bottom - kPreviewBarHeightDip;
+    const float body_bottom = bar_top - 8.0f;
+    const float col_left = 14.0f;
+    const float col_right = w - static_cast<float>(scrollable_ ? 32 : 28);
+    body_viewport_rect_ = D2D1::RectF(col_left, body_top, col_right,
+                                      body_bottom > body_top ? body_bottom : body_top);
+    if (!translated_text_.empty() && body_format_ && body_bottom > body_top) {
+        dc_render_target_->PushAxisAlignedClip(body_viewport_rect_,
+                                              D2D1_ANTIALIAS_MODE_ALIASED);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
+        if (body_text_layout_) {
+            dc_render_target_->DrawTextLayout(
+                D2D1::Point2F(col_left, body_top - scroll_offset_dip_), body_text_layout_,
+                scratch_brush_);
+        } else {
+            const D2D1_RECT_F body_rect =
+                D2D1::RectF(col_left, body_top - scroll_offset_dip_, col_right,
+                            body_top - scroll_offset_dip_ + content_height_dip_ + 40.0f);
+            dc_render_target_->DrawText(translated_text_.c_str(),
+                                        static_cast<UINT32>(translated_text_.size()),
+                                        body_format_, body_rect, scratch_brush_);
+        }
+        dc_render_target_->PopAxisAlignedClip();
+    }
+
+    // Thin progress line: track + accent fill, proportional to the accepted
+    // chunk count. The finished card pins the fill at 100% instead of hiding it
+    // (the card is a result surface until the caller's ShowTranslation
+    // replaces it).
+    preview_progress_track_rect_ = D2D1::RectF(col_left, bar_top, w - 14.0f, bar_bottom);
+    float fraction = 0.0f;
+    if (preview_total_ > 0) {
+        const int clamped_index =
+            preview_index_ < 0 ? 0 : (preview_index_ > preview_total_ ? preview_total_
+                                                                      : preview_index_);
+        fraction = static_cast<float>(clamped_index) / static_cast<float>(preview_total_);
+    }
+    if (preview_phase_ == ChunkPreviewPhase::Finished) fraction = 1.0f;
+    if (fraction < 0.0f) fraction = 0.0f;
+    if (fraction > 1.0f) fraction = 1.0f;
+    preview_progress_fill_rect_ = D2D1::RectF(
+        col_left, bar_top, col_left + (w - 14.0f - col_left) * fraction, bar_bottom);
+    scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.85f));
+    dc_render_target_->FillRoundedRectangle(
+        D2D1::RoundedRect(preview_progress_track_rect_, 1.5f, 1.5f), scratch_brush_);
+    if (preview_progress_fill_rect_.right > preview_progress_fill_rect_.left) {
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
+        dc_render_target_->FillRoundedRectangle(
+            D2D1::RoundedRect(preview_progress_fill_rect_, 1.5f, 1.5f), scratch_brush_);
+    }
+
+    // Scrollbar: the preview body can overflow on a long run, and the shared
+    // REQ-002 thumb math already runs against content_height_dip_.
+    if (scrollable_) {
+        const float track_left = w - 12.0f;
+        scrollbar_track_rect_ = D2D1::RectF(track_left, body_top, track_left + 8.0f, body_bottom);
+        const float track_h = body_bottom - body_top;
+        const float thumb_h = ScrollbarThumbHeightDip(track_h, track_h, content_height_dip_);
+        const float thumb_top = ScrollbarThumbTopDip(body_top, track_h, thumb_h,
+                                                     scroll_offset_dip_, content_height_dip_,
+                                                     track_h);
+        scrollbar_thumb_rect_ = D2D1::RectF(track_left, thumb_top, track_left + 8.0f,
+                                            thumb_top + thumb_h);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.75f));
+        dc_render_target_->FillRoundedRectangle(
+            D2D1::RoundedRect(scrollbar_track_rect_, 4.0f, 4.0f), scratch_brush_);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
+        dc_render_target_->FillRoundedRectangle(
+            D2D1::RoundedRect(scrollbar_thumb_rect_, 4.0f, 4.0f), scratch_brush_);
+    } else {
+        scrollbar_track_rect_ = {};
+        scrollbar_thumb_rect_ = {};
+    }
+}
+
 void TooltipWindow::DismissThreadSafe() {
     if (!hwnd_) return;
     // 261111_0001 U1 (v0.10.7, audit D1a/D1b) + G-06 round 2: delegate to
@@ -1358,6 +1927,13 @@ void TooltipWindow::DismissThreadSafe() {
     // transition through TooltipCardVisibility before returning on any thread
     // (visibility cleared, teardown owed, card generation captured) and the
     // message carries that generation for the exactly-once GUI teardown.
+    //
+    // V10F L1-B: this seam is the PROGRAMMATIC dismissal (main.cpp's tray
+    // "back-translation off" row, the shutdown paths and the marshal tests) -
+    // not a user click outside the card. A pinned card must not outlive the
+    // feature that spawned it, so the pin is released first; an outside click /
+    // ESC still reaches the pin-gated Dismiss() directly.
+    pinned_.store(false, std::memory_order_relaxed);
     Dismiss();
 }
 
@@ -1428,6 +2004,15 @@ bool TooltipWindow::BackTransNeedsReferenceLine(const std::wstring& original_tex
 // ---- timer plan application ----------------------------------------------
 void TooltipWindow::ApplyBackTransTimerPlan(BackTransTimerEvent ev) {
     if (!hwnd_) return;
+    // V10F L1-B: a PINNED card ignores the autohide timers outright. Both
+    // "start the countdown" events (Shown / the hover grace) are dropped; the
+    // pause/kill events still run so a pin taken while the timer is armed
+    // cancels it.
+    if (pinned_.load(std::memory_order_relaxed) &&
+        (ev == BackTransTimerEvent::Shown || ev == BackTransTimerEvent::PointerLeft)) {
+        ::KillTimer(hwnd_, kTimerBackTranslateAutohide);
+        return;
+    }
     // v0.10.9 (U-B, defect 3-5c): the arming delay is the ADAPTIVE one measured
     // for THIS card (BackTransAutohideMsForContent), not the fixed floor.
     const BackTransTimerPlan plan =
@@ -1505,7 +2090,137 @@ void TooltipWindow::HideBackTranslationCard() {
     thumb_hover_ = false;
     scrollbar_track_rect_ = {};
     scrollbar_thumb_rect_ = {};
+    // V10F FUP-05: the pane/view state belongs to the card that is going away.
+    backtrans_view_ = BackTransView::Split;
+    backtrans_scroll_pane_ = BackTransScrollPane::Back;
+    backtrans_ref_offset_dip_ = 0.0f;
+    backtrans_ref_track_rect_ = {};
+    backtrans_ref_thumb_rect_ = {};
+    backtrans_back_label_rect_ = {};
+    backtrans_ref_label_rect_ = {};
+    backtrans_back_label_hover_ = false;
+    backtrans_ref_label_hover_ = false;
+    backtrans_pin_rect_ = {};
+    backtrans_pin_hover_ = false;
+    backtrans_measured_back_h_ = 0;
+    backtrans_measured_ref_h_ = 0;
+    backtrans_header_extra_h_ = 0;
 }
+
+// ---- V10F FUP-05: RTL + locale for one comparison-card body format --------
+// Same clone-swap discipline as ShowTranslation's body_format_ block (DWrite's
+// localeName is creation-only, so a tag change is a clone; an unchanged tag -
+// case-folded, DWrite lowercases on readback - never churns the COM object).
+// Direction and alignment are applied to whichever format survives, so a failed
+// clone degrades to "correct direction, previous font hint" instead of to no
+// RTL at all.
+//
+// ALIGNMENT note (deliberate deviation from the brief's "alignment trailing"):
+// DWRITE_TEXT_ALIGNMENT_LEADING/TRAILING are READING-DIRECTION-RELATIVE, so
+// LEADING already hugs the RIGHT edge once the direction is RTL, and TRAILING
+// would flip the paragraph back to the left. The assignment below therefore
+// pins LEADING explicitly for both directions (the RTL hug is produced by the
+// direction, exactly as DirectWrite intends); the test suite pins the resulting
+// reading direction, which is the observable that matters.
+void TooltipWindow::ApplyBackTransBodyFormat(IDWriteTextFormat*& slot, bool rtl,
+                                            const std::string& norm_code) {
+    if (!slot) return;
+    const LanguageInfo* tag_info = FindLanguageByCode(norm_code);
+    if (dwrite_factory_ && tag_info && tag_info->bcp47 && tag_info->bcp47[0]) {
+        const std::wstring tag = ToUtf16(tag_info->bcp47);
+        wchar_t cur_locale[64] = {};
+        const bool same_locale =
+            SUCCEEDED(slot->GetLocaleName(cur_locale, 64)) &&
+            EqualsIgnoreCaseAscii<wchar_t>(cur_locale, tag);
+        if (!tag.empty() && !same_locale) {
+            IDWriteTextFormat* swapped = CloneFormatWithLocale(dwrite_factory_, slot, tag.c_str());
+            if (swapped) {
+                slot->Release();
+                slot = swapped;
+            } else {
+                DIAG_LOG("UI", "tooltip_backtrans_locale_swap_fail tag=%ls", tag.c_str());
+            }
+        }
+    }
+    slot->SetReadingDirection(rtl ? DWRITE_READING_DIRECTION_RIGHT_TO_LEFT
+                                  : DWRITE_READING_DIRECTION_LEFT_TO_RIGHT);
+    slot->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+}
+
+// ---- V10F FUP-08: the DPI of the monitor the card will appear on -----------
+UINT TooltipWindow::AnchorMonitorDpi(HWND target_hwnd, HWND badge_hwnd) const {
+    if (target_hwnd && ::IsWindow(target_hwnd)) {
+        return emebalachat::ui::WindowDpi(target_hwnd);
+    }
+    if (badge_hwnd && ::IsWindow(badge_hwnd)) {
+        return emebalachat::ui::WindowDpi(badge_hwnd);
+    }
+    POINT cursor = {};
+    if (!::GetCursorPos(&cursor)) {
+        cursor = POINT{0, 0};
+    }
+    return emebalachat::ui::MonitorDpiAtPoint(cursor);
+}
+
+// ---- V10F FUP-05: the split <-> solo panel toggle -------------------------
+// Re-plans from the SHOW-TIME measurements (backtrans_measured_*_h_), so one
+// click costs an integer planner call, not a DirectWrite pass. Everything the
+// renderer and the hit tests read is rebuilt here (plan, card height, scroll
+// extents, pane clamps, window size), which is why the toggle cannot desync
+// measure from render: the plan remains the single source of truth.
+void TooltipWindow::ApplyBackTransView(BackTransView view) {
+    if (!hwnd_ || !is_backtrans_mode_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) return; // GUI-thread only
+    backtrans_view_ = view;
+    const BackTransPanelPlan plan = PlanBackTransViewPanels(
+        backtrans_view_, backtrans_measured_back_h_, backtrans_measured_ref_h_,
+        backtrans_header_extra_h_);
+    backtrans_panel_plan_ = plan;
+    current_width_ = kBackTransCardWidthDip;
+    current_height_ = plan.card_height_dip;
+    scrollable_ = plan.scrollable;
+    content_height_dip_ = static_cast<float>(plan.max_scroll_offset + plan.shared_viewport_h);
+    // V10F FUP-05: both pane offsets survive the toggle but are re-clamped
+    // against the NEW viewports (a pane that just gained height may have lost
+    // all of its scroll range).
+    scroll_offset_dip_ = ClampScrollOffset(scroll_offset_dip_,
+                                           static_cast<float>(plan.back_content_h),
+                                           static_cast<float>(plan.back_view_h));
+    backtrans_ref_offset_dip_ = ClampScrollOffset(backtrans_ref_offset_dip_,
+                                                  static_cast<float>(plan.ref_content_h),
+                                                  static_cast<float>(plan.ref_view_h));
+    backtrans_scroll_pane_ = backtrans_view_ == BackTransView::RefOnly
+                                 ? BackTransScrollPane::Ref
+                                 : BackTransScrollPane::Back;
+    if (dragging_thumb_) {
+        dragging_thumb_ = false;
+        ::ReleaseCapture();
+    }
+    DIAG_LOG("UI", "tooltip backtrans_view=%d height=%d scrollable=%d",
+             static_cast<int>(view), current_height_, plan.scrollable ? 1 : 0);
+    ReallocateBuffer(PhysW(), PhysH());
+    RECT wr = {};
+    if (::GetWindowRect(hwnd_, &wr)) {
+        // Keep the card's top-left origin (the reader's eye is there) and only
+        // re-clamp: a taller card must not run off the monitor's work area.
+        POINT probe = {static_cast<LONG>(wr.left), static_cast<LONG>(wr.top)};
+        HMONITOR mon = ::MonitorFromPoint(probe, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(MONITORINFO);
+        POINT origin = {wr.left, wr.top};
+        if (::GetMonitorInfoW(mon, &mi)) {
+            origin = emebalachat::ui::ClampWindowOrigin(wr.left, wr.top, PhysW(), PhysH(), 10,
+                                                        mi.rcWork);
+        }
+        ::SetWindowPos(hwnd_, HWND_TOPMOST, origin.x, origin.y, PhysW(), PhysH(),
+                       SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+    Render();
+    UpdateLayered();
+    // A view switch is a "still reading" signal for the adaptive autohide.
+    RearmBackTransAutohideForScroll();
+}
+
 
 // ---- 3-tier anchor resolution --------------------------------------------
 // Tier 1 (caret): GetGUIThreadInfo on the TARGET's thread. The caret rect is in
@@ -1706,6 +2421,30 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
                               ? original_text
                               : std::wstring();
 
+    // ---- V10F FUP-05: reading direction + locale for the comparison card ---
+    // The back-translation and the original are BOTH in the SOURCE language
+    // (that is what makes the round trip readable), so the pair's direction is
+    // the source language's — resolved from the localized source label through
+    // the registry (labels are name_en / native / code, all of which
+    // NormalizeLanguageCode resolves). The first-strong heuristic is the
+    // documented fallback for a card whose label could not be resolved (e.g. a
+    // caller that passed an empty label), matching bidi_utils' per-string
+    // contract for unknown-language content.
+    // Direction is set BEFORE the measurement below: DWrite lays an RTL
+    // paragraph out from the right edge, so a measurement taken under LTR would
+    // not be the layout the renderer paints.
+    {
+        const std::string src_code = NormalizeLanguageCode(ToUtf8(source_lang_label));
+        bool backtrans_rtl = IsRtlLanguageCode(src_code);
+        if (!backtrans_rtl) {
+            backtrans_rtl = GuessBaseDirection(backtrans_text_) == TextDirection::RTL;
+        }
+        ApplyBackTransBodyFormat(backtrans_body_format_, backtrans_rtl, src_code);
+        ApplyBackTransBodyFormat(backtrans_ref_format_, backtrans_rtl, src_code);
+        DIAG_LOG("UI", "tooltip backtrans_dir=%s src=%s",
+                 backtrans_rtl ? "rtl" : "ltr", src_code.c_str());
+    }
+
     // A fresh card always starts unscrolled (same rule the translation card
     // follows). scrollable_ is NOT reset here: it is assigned unconditionally
     // from the measured panel plan below, which is the whole point of defect
@@ -1724,6 +2463,26 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
     scrollbar_thumb_rect_ = {};
     backtrans_hover_paused_ = false;
     backtrans_close_hover_ = false;
+    // V10F FUP-05: every fresh card starts in the SPLIT view with BOTH pane
+    // offsets at 0 (the pre-V10F card had exactly one offset, so this is the
+    // pre-V10F behavior for an unpinned card).
+    backtrans_view_ = BackTransView::Split;
+    backtrans_scroll_pane_ = BackTransScrollPane::Back;
+    backtrans_ref_offset_dip_ = 0.0f;
+    backtrans_ref_track_rect_ = {};
+    backtrans_ref_thumb_rect_ = {};
+    backtrans_back_label_rect_ = {};
+    backtrans_ref_label_rect_ = {};
+    backtrans_back_label_hover_ = false;
+    backtrans_ref_label_hover_ = false;
+    backtrans_pin_rect_ = {};
+    backtrans_pin_hover_ = false;
+    // V10F L1-B + L3-B: per-card state, same rule as ShowTranslation.
+    pinned_.store(false, std::memory_order_relaxed);
+    preview_phase_ = ChunkPreviewPhase::Inactive;
+    preview_text_.clear();
+    preview_index_ = 0;
+    preview_total_ = 0;
 
     // Size: the pure character-count plan is the floor; a real DirectWrite
     // measurement refines both panels' heights and the header row when the
@@ -1768,8 +2527,15 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
         }
     }
     backtrans_header_plan_ =
-        PlanBackTransHeaderRowDip(header_w, pill_w, static_cast<float>(kBackTransCardWidthDip));
+        // V10F L1-B: the pin box owns the slot between the ✕ and the verdict
+        // pill, so the row planner is fed the card width MINUS that slot - the
+        // pill and the header text therefore never reach the pin by
+        // construction (the same "give the pure planner a narrower row"
+        // technique PlanHeaderActionCluster uses on the translation card).
+        PlanBackTransHeaderRowDip(header_w, pill_w,
+                                  static_cast<float>(kBackTransCardWidthDip - kHeaderPinSlotDip));
     const int header_extra_h = static_cast<int>(backtrans_header_plan_.pill_row_h);
+    backtrans_header_extra_h_ = header_extra_h; // V10F FUP-05: kept for the view toggle
 
     // ---- v0.10.9 (U-B, defects 3-3/3-4): MEASURE BOTH panels ----
     // The original used to be a fixed 6+16 DIP one-line box appended to the
@@ -1789,7 +2555,12 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
             std::ceil(MeasureBackTransTextHeight(
                 backtrans_ref_line_, backtrans_ref_format_, static_cast<float>(column_w),
                 static_cast<float>(kBackTransRefLineDip))));
-        return PlanBackTransPanels(back_h, ref_h, header_extra_h);
+        // V10F FUP-05: remember the two measurements so the view toggle can
+        // re-plan without touching DirectWrite again (a re-measure at the
+        // toggled column width would be a second measurement pass per click).
+        backtrans_measured_back_h_ = back_h;
+        backtrans_measured_ref_h_ = ref_h;
+        return PlanBackTransViewPanels(backtrans_view_, back_h, ref_h, header_extra_h);
     };
     BackTransPanelPlan panel_plan = measure_panels(text_column);
     if (panel_plan.scrollable) {
@@ -1822,11 +2593,14 @@ void TooltipWindow::ShowBackTranslation(const std::wstring& original_text,
 
     // DPI + physical buffer, then the anchor (which needs the physical card
     // extents to clamp correctly).
-    POINT probe = {};
-    if (!::GetCursorPos(&probe)) {
-        probe = POINT{0, 0};
-    }
-    dpi_ = emebalachat::ui::MonitorDpiAtPoint(probe);
+    //
+    // V10F FUP-08: the DPI comes from the ANCHOR WINDOW's monitor, not from the
+    // cursor. The card is placed next to the caret/badge/target window, which
+    // routinely sits on a DIFFERENT monitor than the pointer (the reported
+    // symptom: a back-translation card over a secondary 150% display rendered
+    // at the primary's 100% scale). AnchorMonitorDpi falls back to the
+    // pre-V10F cursor probe only when neither window handle is usable.
+    dpi_ = AnchorMonitorDpi(target_hwnd, badge_hwnd);
     ReallocateBuffer(PhysW(), PhysH());
 
     const POINT origin = ResolveBackTranslationAnchor(target_hwnd, badge_hwnd, PhysW(), PhysH());
@@ -1941,6 +2715,15 @@ void TooltipWindow::RefreshTheme() {
 
 void TooltipWindow::Dismiss() {
     if (!hwnd_) return;
+    // V10F L1-B: a PINNED card ignores the outside-click dismissal (the mouse
+    // hook's WindowFromPoint path in main.cpp calls this) and the autohide
+    // timers, which is the whole point of the pin. The card's own ✕ goes
+    // through DismissExplicit() below and is NOT gated, so the pin can never
+    // trap the user. `pinned_` is atomic: this runs on the hook threads too.
+    if (pinned_.load(std::memory_order_relaxed)) {
+        DIAG_LOG("UI", "tooltip_dismiss ignored reason=pinned");
+        return;
+    }
     // 261108_0002 (WS3, v0.10.6): a dismissal also discards back-translation
     // payloads still queued for this window. Without it, a show enqueued a
     // moment before the user pressed ✕/ESC (or before the autohide fired)
@@ -1950,6 +2733,12 @@ void TooltipWindow::Dismiss() {
     {
         std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
         g_tt_backtrans_queue.clear();
+    }
+    // V10F L3-B: same rule for the preview queue - a Begin/Append posted a
+    // moment before the dismissal must not resurrect the card it closed.
+    {
+        std::lock_guard<std::mutex> lk(g_tt_preview_mu);
+        g_tt_preview_queue.clear();
     }
     // REQ-R10 companion: the ESC (keyboard hook) and outside-click (mouse hook)
     // dismissal paths call Dismiss() off the GUI thread. ShowWindow/SAPI on
@@ -2014,6 +2803,35 @@ void TooltipWindow::Dismiss() {
     TeardownCard();
 }
 
+// V10F L1-B: the ✕ buttons' dismissal. Structurally the on-thread Dismiss()
+// tail (same visibility proof, same TeardownCard) with ONE difference: the pin
+// does not apply, because clicking the card's own close affordance is an
+// explicit, deliberate dismissal. A pinned card therefore always has a way out
+// that needs no second click on the pin.
+void TooltipWindow::DismissExplicit() {
+    if (!hwnd_) return;
+    if (::GetCurrentThreadId() != gui_thread_id_) {
+        // Defensive: the ✕ hit test runs on the GUI thread, so this branch is
+        // unreachable today. An off-thread caller that wants a pin-proof close
+        // must marshal its own GUI-thread work (the generic Dismiss() is
+        // swallowed by the pin by design); log and drop instead of tearing a
+        // card down from a thread that does not own the D2D target.
+        DIAG_LOG("UI", "tooltip_dismiss_explicit ignored off-thread");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_tt_backtrans_mu);
+        g_tt_backtrans_queue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_tt_preview_mu);
+        g_tt_preview_queue.clear();
+    }
+    if (!card_visibility_.IsVisible()) return;
+    pinned_.store(false, std::memory_order_relaxed);
+    TeardownCard();
+}
+
 void TooltipWindow::TeardownCard() {
     // 261111_0001 U1 (v0.10.7, audit D1a/D1b): GUI-side teardown half of
     // Dismiss(), shared by the on-thread Dismiss() path and the kDismissMessage
@@ -2070,7 +2888,61 @@ void TooltipWindow::TeardownCard() {
     scrollbar_thumb_rect_ = {};
     backtrans_panel_plan_ = BackTransPanelPlan{};
     backtrans_autohide_ms_ = kBackTransAutohideMs;
+    // V10F FUP-05: the pane/view state dies with the card (a stale solo view or
+    // a stale pane offset must not leak into the next card).
+    backtrans_view_ = BackTransView::Split;
+    backtrans_scroll_pane_ = BackTransScrollPane::Back;
+    backtrans_ref_offset_dip_ = 0.0f;
+    backtrans_ref_track_rect_ = {};
+    backtrans_ref_thumb_rect_ = {};
+    backtrans_back_label_rect_ = {};
+    backtrans_ref_label_rect_ = {};
+    backtrans_back_label_hover_ = false;
+    backtrans_ref_label_hover_ = false;
+    backtrans_pin_rect_ = {};
+    backtrans_pin_hover_ = false;
+    backtrans_measured_back_h_ = 0;
+    backtrans_measured_ref_h_ = 0;
+    backtrans_header_extra_h_ = 0;
+    // V10F L1-B + L3-B + FUP-08: per-card state released with the card. The
+    // pin clears so the NEXT card starts unpinned; the cached body layout is
+    // content-shaped for the text that is being dropped, so it goes too.
+    pinned_.store(false, std::memory_order_relaxed);
+    preview_phase_ = ChunkPreviewPhase::Inactive;
+    preview_index_ = 0;
+    preview_total_ = 0;
+    preview_text_.clear();
+    preview_progress_track_rect_ = {};
+    preview_progress_fill_rect_ = {};
+    ReleaseBodyTextLayout();
     ::ShowWindow(hwnd_, SW_HIDE);
+}
+
+// V10F FUP-02: the picker-session source snapshot (see the hpp contract).
+// Latch captures the RAW source_lang_code_ member ("" exactly when the card is
+// showing AUTO), byte-identical to what GetSourceLangCode() would return for
+// the live state, so the retranslate carry semantics are unchanged.
+void TooltipWindow::LatchLanguagePickerSourceSnapshot() {
+    lang_picker_snapshot_valid_ = true;
+    lang_picker_snapshot_text_ = source_text_;
+    lang_picker_snapshot_code_ = source_lang_code_;
+}
+
+TooltipWindow::LanguagePickerSourceSnapshot
+TooltipWindow::GetLanguagePickerSourceSnapshot() const {
+    LanguagePickerSourceSnapshot out;
+    out.valid = lang_picker_snapshot_valid_;
+    if (out.valid) {
+        out.source_text = lang_picker_snapshot_text_;
+        out.source_lang_code = lang_picker_snapshot_code_;
+    }
+    return out;
+}
+
+void TooltipWindow::ClearLanguagePickerSourceSnapshot() {
+    lang_picker_snapshot_valid_ = false;
+    lang_picker_snapshot_text_.clear();
+    lang_picker_snapshot_code_.clear();
 }
 
 void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
@@ -2091,13 +2963,30 @@ void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
     }
     const float step = WheelDeltaToOffsetStepDip(wheel_delta, line_height_dip_);
     if (step == 0.0f) return;
-    // v0.10.9 (U-B): the clamp basis is the ACTIVE mode's viewport - the
-    // back-translation card clamps against its taller panel viewport (one
-    // shared offset, two clips), every other mode against the REQ-002 body.
+    // v0.10.9 (U-B): the clamp basis is the ACTIVE mode's viewport.
+    // V10F FUP-05: on the comparison card the wheel addresses the PANE UNDER
+    // THE POINTER (each panel now has its own offset, so "scroll both together"
+    // is gone). The pointer read is a GUI-thread Win32 call; when it fails the
+    // pane resolver's default (the view's soloing pane, else the
+    // back-translation) applies.
+    if (is_backtrans_mode_) {
+        float y_dip = -1.0f;
+        POINT cursor = {};
+        if (::GetCursorPos(&cursor)) {
+            ::ScreenToClient(hwnd_, &cursor);
+            y_dip = static_cast<float>(emebalachat::ui::ScalePixelsToDips(cursor.y, dpi_));
+        }
+        backtrans_scroll_pane_ = TargetBackTransPaneForPoint(y_dip);
+    }
     const float viewport_h = ActiveScrollViewportDip();
-    const float next = ClampScrollOffset(scroll_offset_dip_ + step, content_height_dip_, viewport_h);
-    if (next == scroll_offset_dip_) return; // clamped at an edge: no repaint jitter
-    scroll_offset_dip_ = next;
+    const float content_h = is_backtrans_mode_
+                                ? BackTransPaneContentDip(backtrans_scroll_pane_)
+                                : content_height_dip_;
+    float& offset = is_backtrans_mode_ ? BackTransPaneOffset(backtrans_scroll_pane_)
+                                       : scroll_offset_dip_;
+    const float next = ClampScrollOffset(offset + step, content_h, viewport_h);
+    if (next == offset) return; // clamped at an edge: no repaint jitter
+    offset = next;
     // v0.10.9 (U-B, defect 3-5c): a scroll is a "still reading" signal.
     RearmBackTransAutohideForScroll();
     Render();
@@ -2109,12 +2998,24 @@ void TooltipWindow::ScrollByDipWheel(int wheel_delta) {
 // SAME tested code path instead of a second copy (its WM_LBUTTONDOWN branch
 // used to swallow every press, which is why drag-scroll never worked there).
 bool TooltipWindow::BeginScrollThumbDrag(float x_dip, float y_dip) {
-    if (!scrollable_ || !IsPointInRect(scrollbar_thumb_rect_, x_dip, y_dip)) {
+    if (!scrollable_) return false;
+    // V10F FUP-05: the comparison card draws ONE THUMB PER overflowing pane
+    // (each pane has its own offset), so the press resolves which pane's thumb
+    // it landed on. Every other mode keeps the single REQ-002 thumb.
+    bool ref_pane = false;
+    if (is_backtrans_mode_ && IsPointInRect(backtrans_ref_thumb_rect_, x_dip, y_dip)) {
+        ref_pane = true;
+    } else if (!IsPointInRect(scrollbar_thumb_rect_, x_dip, y_dip)) {
         return false;
     }
     dragging_thumb_ = true;
     thumb_hover_ = true;
-    drag_start_offset_dip_ = scroll_offset_dip_;
+    if (is_backtrans_mode_) {
+        backtrans_scroll_pane_ =
+            ref_pane ? BackTransScrollPane::Ref : BackTransScrollPane::Back;
+    }
+    drag_start_offset_dip_ = is_backtrans_mode_ && ref_pane ? backtrans_ref_offset_dip_
+                                                           : scroll_offset_dip_;
     drag_start_y_dip_ = y_dip;
     ::SetCapture(hwnd_);
     Render();
@@ -2124,17 +3025,29 @@ bool TooltipWindow::BeginScrollThumbDrag(float x_dip, float y_dip) {
 
 bool TooltipWindow::UpdateScrollThumbDrag(float y_dip) {
     if (!dragging_thumb_) return false;
-    const float track_h = scrollbar_track_rect_.bottom - scrollbar_track_rect_.top;
-    const float thumb_h = scrollbar_thumb_rect_.bottom - scrollbar_thumb_rect_.top;
+    // V10F FUP-05: the drag moves the pane whose thumb was grabbed. The rects,
+    // the extents and the offset slot are therefore all pane-scoped; the
+    // non-backtrans card keeps the pre-V10F body math unchanged.
+    const bool ref_pane = is_backtrans_mode_ &&
+                          backtrans_scroll_pane_ == BackTransScrollPane::Ref;
+    const D2D1_RECT_F& track = ref_pane ? backtrans_ref_track_rect_ : scrollbar_track_rect_;
+    const D2D1_RECT_F& thumb = ref_pane ? backtrans_ref_thumb_rect_ : scrollbar_thumb_rect_;
+    const float track_h = track.bottom - track.top;
+    const float thumb_h = thumb.bottom - thumb.top;
     const float viewport_h = ActiveScrollViewportDip();
+    const float content_h = is_backtrans_mode_
+                                ? BackTransPaneContentDip(backtrans_scroll_pane_)
+                                : content_height_dip_;
     const float range = track_h - thumb_h;
-    const float scroll_range = content_height_dip_ - viewport_h;
+    const float scroll_range = content_h - viewport_h;
     if (range <= 0.0f || scroll_range <= 0.0f) return false;
+    float& offset = is_backtrans_mode_ ? BackTransPaneOffset(backtrans_scroll_pane_)
+                                       : scroll_offset_dip_;
     const float dy = y_dip - drag_start_y_dip_;
     const float next = ClampScrollOffset(drag_start_offset_dip_ + dy * scroll_range / range,
-                                         content_height_dip_, viewport_h);
-    if (next == scroll_offset_dip_) return false;
-    scroll_offset_dip_ = next;
+                                         content_h, viewport_h);
+    if (next == offset) return false;
+    offset = next;
     RearmBackTransAutohideForScroll();
     return true;
 }
@@ -2246,20 +3159,32 @@ void TooltipWindow::RenderBackTranslation() {
     const BackTransPanelPlan& panels = backtrans_panel_plan_;
     const float h = static_cast<float>(current_height_);
 
-    // ---- header row: title + (maybe) pill + close ----
+    // ---- header row: title + (maybe) pill + pin + close ----
     const float row_top = kBackTransRowTopDip;
     const float row_bottom = row_top + kBackTransRowHeightDip;
     close_btn_rect_ = D2D1::RectF(w - kBackTransCloseRightDip - kBackTransCloseW, row_top,
                                   w - kBackTransCloseRightDip, row_bottom);
     backtrans_close_rect_ = close_btn_rect_;
+    // V10F L1-B: the pin toggle. One 20 DIP box between the ✕ and the verdict
+    // pill; the header-row planner was fed the card width MINUS
+    // kHeaderPinSlotDip (ShowBackTranslation), so the pill's box can never
+    // reach it. Same right-anchoring rule as the translation card's cluster.
+    backtrans_pin_rect_ = D2D1::RectF(
+        close_btn_rect_.left - kHeaderCloseGapDip - kHeaderActionIconDip, row_top,
+        close_btn_rect_.left - kHeaderCloseGapDip, row_bottom);
 
     const std::wstring pill_text = I18n::Get(backtrans_matched_ ? StringId::BackTranslateMatchExact
                                                                : StringId::BackTranslateMatchCheck);
     const float pill_w = plan.pill_width_dip;
-    // Single row: the pill sits immediately left of the ✕. Wrapped: it starts
-    // at the card's left padding, under the header.
+    // Single row: the pill sits immediately left of the pin box. Wrapped: it
+    // starts at the card's left padding, under the header.
+    // V10F L1-B: the single-row basis is the planner's EFFECTIVE close edge
+    // (card width minus the pin slot), so the pill stops short of the pin
+    // exactly where PlanBackTransHeaderRowDip assumed it would.
+    const float row_close_left =
+        w - static_cast<float>(kHeaderPinSlotDip) - kBackTransCloseRightDip - kBackTransCloseW;
     const float pill_left = (plan.layout == BackTransHeaderLayout::SingleRow)
-                                ? (close_btn_rect_.left - kBackTransCloseGapDip - pill_w)
+                                ? (row_close_left - kBackTransCloseGapDip - pill_w)
                                 : kBackTransPadDip;
     const float pill_top = (plan.layout == BackTransHeaderLayout::SingleRow)
                                ? row_top
@@ -2278,6 +3203,24 @@ void TooltipWindow::RenderBackTranslation() {
         scratch_brush_->SetColor(ui::ColorFromHex(pill_color, 1.0f));
         dc_render_target_->DrawText(pill_text.c_str(), static_cast<UINT32>(pill_text.size()),
                                     button_format_, pill_rect, scratch_brush_);
+    }
+
+    // V10F L1-B: the pin toggle's glyph. Accent while pinned (the card will
+    // ignore outside clicks and autohide), muted otherwise; the hover read is
+    // the usual text_primary lift. A 20 DIP box cannot hold the localized
+    // "고정 해제" / "Unpin" label in any shipped locale, so this card shows the
+    // glyph and encodes the state in the color; the translation card's 480/620
+    // DIP tiers DO draw the label (PlanHeaderActionCluster decides).
+    if (header_format_) {
+        scratch_brush_->SetColor(
+            backtrans_pin_hover_
+                ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                : (pinned_.load(std::memory_order_relaxed)
+                       ? ui::ColorFromHex(theme.accent_primary, 1.0f)
+                       : ui::ColorFromHex(theme.text_muted, 0.85f)));
+        const std::wstring pin_icon = L"\xD83D\xDCCC"; // U+1F4CC pushpin
+        dc_render_target_->DrawText(pin_icon.c_str(), static_cast<UINT32>(pin_icon.size()),
+                                    header_format_, backtrans_pin_rect_, scratch_brush_);
     }
 
     // Title: bounded by the plan's header budget, which already excludes the
@@ -2317,7 +3260,8 @@ void TooltipWindow::RenderBackTranslation() {
     // text the C5 table contains. The body is drawn into a rect as tall as the
     // MEASURED content and then cut by the clip, so DirectWrite always lays
     // out every line (no bottom truncation) while the viewport decides what is
-    // visible. Scroll offset: the ONE shared value, clamped per panel.
+    // visible. V10F FUP-05: each panel clamps ITS OWN offset (the shared one is
+    // gone), and the label band doubles as the split/solo view toggle.
     const std::wstring back_label = I18n::Get(StringId::BackTransSectionBack);
     const std::wstring ref_label = I18n::Get(StringId::BackTransSectionOriginal);
     const float scrollbar_gutter =
@@ -2326,13 +3270,27 @@ void TooltipWindow::RenderBackTranslation() {
     const float col_right = w - kBackTransPadDip - scrollbar_gutter;
     const float label_h = static_cast<float>(kBackTransSectionLabelDip);
 
+    // The two toggle hit zones are rebuilt every frame from the plan, so the
+    // WndProc hit test and the painted band can never disagree.
+    backtrans_back_label_rect_ = D2D1::RectF(
+        col_left, static_cast<float>(panels.back_label_top),
+        col_right, static_cast<float>(panels.back_label_top) + label_h);
+    backtrans_ref_label_rect_ = D2D1::RectF(
+        col_left, static_cast<float>(panels.ref_label_top),
+        col_right, static_cast<float>(panels.ref_label_top) + label_h);
+
     if (backtrans_section_format_ && !back_label.empty()) {
-        const D2D1_RECT_F label_rect = D2D1::RectF(
-            col_left, static_cast<float>(panels.back_label_top),
-            col_right, static_cast<float>(panels.back_label_top) + label_h);
-        scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 0.95f));
+        const bool collapsed =
+            panels.back_view_h <= 0 && !backtrans_text_.empty(); // solo [원문] view
+        scratch_brush_->SetColor(
+            collapsed
+                ? ui::ColorFromHex(backtrans_back_label_hover_ ? theme.text_primary
+                                                               : theme.text_muted,
+                                   1.0f)
+                : ui::ColorFromHex(theme.accent_primary, 0.95f));
         dc_render_target_->DrawText(back_label.c_str(), static_cast<UINT32>(back_label.size()),
-                                    backtrans_section_format_, label_rect, scratch_brush_);
+                                    backtrans_section_format_, backtrans_back_label_rect_,
+                                    scratch_brush_);
     }
 
     if (backtrans_body_format_ && !backtrans_text_.empty() && panels.back_view_h > 0) {
@@ -2376,18 +3334,26 @@ void TooltipWindow::RenderBackTranslation() {
     }
 
     if (backtrans_section_format_ && !ref_label.empty()) {
-        const D2D1_RECT_F label_rect = D2D1::RectF(
-            col_left, static_cast<float>(panels.ref_label_top),
-            col_right, static_cast<float>(panels.ref_label_top) + label_h);
-        scratch_brush_->SetColor(ui::ColorFromHex(theme.text_muted, 1.0f));
+        const bool collapsed =
+            panels.ref_view_h <= 0 && !backtrans_ref_line_.empty(); // solo [역번역] view
+        scratch_brush_->SetColor(
+            collapsed
+                ? ui::ColorFromHex(backtrans_ref_label_hover_ ? theme.text_primary
+                                                              : theme.text_muted,
+                                   1.0f)
+                : ui::ColorFromHex(theme.text_muted, 1.0f));
         dc_render_target_->DrawText(ref_label.c_str(), static_cast<UINT32>(ref_label.size()),
-                                    backtrans_section_format_, label_rect, scratch_brush_);
+                                    backtrans_section_format_, backtrans_ref_label_rect_,
+                                    scratch_brush_);
     }
 
     if (backtrans_ref_format_ && !backtrans_ref_line_.empty() && panels.ref_view_h > 0) {
         const float view_top = static_cast<float>(panels.ref_view_top);
         const float view_bottom = view_top + static_cast<float>(panels.ref_view_h);
-        const float draw_off = ClampScrollOffset(scroll_offset_dip_,
+        // V10F FUP-05: the ORIGINAL pane scrolls on its OWN offset
+        // (backtrans_ref_offset_dip_), so scrolling it no longer drags the
+        // back-translation along.
+        const float draw_off = ClampScrollOffset(backtrans_ref_offset_dip_,
                                                  static_cast<float>(panels.ref_content_h),
                                                  static_cast<float>(panels.ref_view_h));
         const D2D1_RECT_F clip_rect =
@@ -2403,42 +3369,61 @@ void TooltipWindow::RenderBackTranslation() {
         dc_render_target_->PopAxisAlignedClip();
     }
 
-    // ---- shared scrollbar: ONE thumb for the ONE shared offset ----
-    // Drawn across both viewports (the offset moves them together), inside the
-    // gutter the text column already reserved. The rects are stashed for the
-    // WM_SETCURSOR / WM_LBUTTONDOWN / WM_MOUSEMOVE hit tests, so the hand
-    // cursor + thumb drag work exactly like the translation card's.
-    if (scrollable_) {
-        const float track_left = w - kBackTransPadDip - static_cast<float>(kBackTransScrollbarWDip);
-        const float track_top = static_cast<float>(panels.back_label_top);
-        const float track_bottom = static_cast<float>(panels.ref_view_top + panels.ref_view_h);
-        const float track_h = track_bottom - track_top;
-        const float viewport_h = static_cast<float>(panels.shared_viewport_h);
-        if (track_h > 0.0f) {
-            scrollbar_track_rect_ =
-                D2D1::RectF(track_left, track_top,
-                            track_left + static_cast<float>(kBackTransScrollbarWDip), track_bottom);
-            const float thumb_h = ScrollbarThumbHeightDip(track_h, viewport_h, content_height_dip_);
-            const float thumb_top = ScrollbarThumbTopDip(track_top, track_h, thumb_h,
-                                                         scroll_offset_dip_, content_height_dip_,
-                                                         viewport_h);
-            scrollbar_thumb_rect_ =
-                D2D1::RectF(track_left, thumb_top,
-                            track_left + static_cast<float>(kBackTransScrollbarWDip),
-                            thumb_top + thumb_h);
-            const bool thumb_active = thumb_hover_ || dragging_thumb_;
-            scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.75f));
-            dc_render_target_->FillRoundedRectangle(
-                D2D1::RoundedRect(scrollbar_track_rect_, 3.0f, 3.0f), scratch_brush_);
-            scratch_brush_->SetColor(thumb_active ? ui::ColorFromHex(theme.text_primary, 1.0f)
-                                                  : ui::ColorFromHex(theme.text_muted, 1.0f));
-            dc_render_target_->FillRoundedRectangle(
-                D2D1::RoundedRect(scrollbar_thumb_rect_, 3.0f, 3.0f), scratch_brush_);
-        } else {
-            scrollbar_track_rect_ = {};
-            scrollbar_thumb_rect_ = {};
+    // ---- V10F FUP-05: ONE THUMB PER PANE ----
+    // The pre-V10F card drew a single thumb across both viewports because both
+    // panels shared ONE offset. With independent offsets that thumb would lie
+    // about at least one of them, so each overflowing pane gets its own thumb
+    // over its own viewport depth, and each maps its OWN offset. The rects are
+    // stashed for the WM_SETCURSOR / WM_LBUTTONDOWN / WM_MOUSEMOVE hit tests
+    // (the drag then moves the pane whose thumb was grabbed).
+    const float track_left = w - kBackTransPadDip - static_cast<float>(kBackTransScrollbarWDip);
+    const float track_w = static_cast<float>(kBackTransScrollbarWDip);
+    const bool thumb_active = thumb_hover_ || dragging_thumb_;
+    const auto draw_pane_thumb = [&](D2D1_RECT_F& track_rect, D2D1_RECT_F& thumb_rect,
+                                     int view_top_dip, int view_h_dip, int content_dip,
+                                     float offset_dip) {
+        const float track_top = static_cast<float>(view_top_dip);
+        const float track_h = static_cast<float>(view_h_dip);
+        if (track_h <= 0.0f) {
+            track_rect = {};
+            thumb_rect = {};
+            return;
         }
+        track_rect = D2D1::RectF(track_left, track_top, track_left + track_w,
+                                 track_top + track_h);
+        const float viewport_h = track_h;
+        const float content_h = static_cast<float>(content_dip);
+        const float thumb_h = ScrollbarThumbHeightDip(track_h, viewport_h, content_h);
+        const float thumb_top = ScrollbarThumbTopDip(track_top, track_h, thumb_h, offset_dip,
+                                                     content_h, viewport_h);
+        thumb_rect = D2D1::RectF(track_left, thumb_top, track_left + track_w,
+                                 thumb_top + thumb_h);
+        scratch_brush_->SetColor(ui::ColorFromHex(theme.surface_elevated, 0.75f));
+        dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(track_rect, 3.0f, 3.0f),
+                                               scratch_brush_);
+        scratch_brush_->SetColor(thumb_active ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                              : ui::ColorFromHex(theme.text_muted, 1.0f));
+        dc_render_target_->FillRoundedRectangle(D2D1::RoundedRect(thumb_rect, 3.0f, 3.0f),
+                                               scratch_brush_);
+    };
+    if (scrollable_ && panels.back_view_h > 0 &&
+        panels.back_content_h > panels.back_view_h) {
+        draw_pane_thumb(scrollbar_track_rect_, scrollbar_thumb_rect_, panels.back_view_top,
+                        panels.back_view_h, panels.back_content_h, scroll_offset_dip_);
     } else {
+        scrollbar_track_rect_ = {};
+        scrollbar_thumb_rect_ = {};
+    }
+    if (scrollable_ && panels.ref_view_h > 0 &&
+        panels.ref_content_h > panels.ref_view_h) {
+        draw_pane_thumb(backtrans_ref_track_rect_, backtrans_ref_thumb_rect_,
+                        panels.ref_view_top, panels.ref_view_h, panels.ref_content_h,
+                        backtrans_ref_offset_dip_);
+    } else {
+        backtrans_ref_track_rect_ = {};
+        backtrans_ref_thumb_rect_ = {};
+    }
+    if (!scrollable_) {
         // Never leave a stale thumb rect behind: a non-scrolling card must not
         // answer the drag hit test (the normal-mode renderer keeps the same
         // invariant).
@@ -2486,6 +3471,16 @@ void TooltipWindow::Render() {
         RenderBackTranslation();
         const HRESULT hr_back = dc_render_target_->EndDraw();
         if (IsRecoverableDeviceLost(hr_back)) {
+            RecreateAfterDeviceLost();
+        }
+        return;
+    }
+
+    // --- V10F L3-B: progressive preview card (live, chunk by chunk) ---
+    if (preview_phase_ != ChunkPreviewPhase::Inactive) {
+        RenderChunkPreview();
+        const HRESULT hr_preview = dc_render_target_->EndDraw();
+        if (IsRecoverableDeviceLost(hr_preview)) {
             RecreateAfterDeviceLost();
         }
         return;
@@ -2576,8 +3571,32 @@ void TooltipWindow::Render() {
     std::wstring tgt_name = target_lang_.empty() ? I18n::GetLanguageDisplayName("English")
                                                  : ToUtf16(target_lang_);
     std::wstring tgt_label = tgt_name + L" ▾";
+    // ---- V10F L2/L1-B: the right-anchored header action cluster -----------
+    // [pin][edit][open][✕], right to left. PlanHeaderActionCluster decides
+    // between labelled pills and 20 DIP icon boxes from the room left of the
+    // target pill's minimum position, and the TARGET planner is then fed an
+    // effective card width whose close edge IS the cluster's left edge - so the
+    // pill can never run under the cluster, on any width tier or locale.
+    const float header_close_left = static_cast<float>(current_width_) - 32.0f;
+    const float header_pill_min_left =
+        src_tag_x + src_tag_width + 28.0f + kHeaderTargetMinWidthDip;
+    header_action_plan_ = PlanHeaderActionCluster(
+        header_close_left, header_pill_min_left, pin_btn_label_w_, edit_btn_label_w_,
+        open_btn_label_w_);
+    pin_btn_rect_ = D2D1::RectF(header_action_plan_.left, 8.0f,
+                                header_action_plan_.left + header_action_plan_.pin_w, 30.0f);
+    edit_btn_rect_ = D2D1::RectF(pin_btn_rect_.right + kHeaderActionGapDip, 8.0f,
+                                 pin_btn_rect_.right + kHeaderActionGapDip +
+                                     header_action_plan_.edit_w,
+                                 30.0f);
+    open_btn_rect_ = D2D1::RectF(edit_btn_rect_.right + kHeaderActionGapDip, 8.0f,
+                                 edit_btn_rect_.right + kHeaderActionGapDip +
+                                     header_action_plan_.open_w,
+                                 30.0f);
     const HeaderTargetButtonPlan tgt_plan = PlanHeaderTargetButton(
-        src_tag_x, src_tag_width, static_cast<float>(current_width_), tgt_btn_w_);
+        src_tag_x, src_tag_width,
+        header_action_plan_.left + 32.0f, // effective width: close edge == cluster left
+        tgt_btn_w_);
     lang_btn_rect_ = D2D1::RectF(tgt_plan.x, 8.0f, tgt_plan.x + tgt_plan.width, 30.0f);
     D2D1_ROUNDED_RECT tgtTagRect = D2D1::RoundedRect(lang_btn_rect_, theme.control_radius, theme.control_radius);
 
@@ -2595,6 +3614,54 @@ void TooltipWindow::Render() {
         scratch_brush_->SetColor(ui::ColorFromHex(theme.accent_primary, 1.0f));
         dc_render_target_->DrawText(tgt_label.c_str(), static_cast<UINT32>(tgt_label.size()), button_format_, lang_btn_rect_, scratch_brush_);
     }
+
+    // ---- V10F L2/L1-B: the three header action buttons --------------------
+    // One draw block for all three so the fill/border/hover treatment matches
+    // the source and target pills exactly. `labels` comes from the cluster
+    // plan: on the 360 DIP tier the boxes are 20 DIP icon squares (no shipped
+    // locale fits "수정 · 재번역" there), on 480/620 they carry the localized
+    // label. A callback that was never registered renders the button dimmed
+    // instead of disappearing, so the header geometry never reflows when P2-E
+    // wires it. (261122_0002 Wave-C: the wording avoids the P6c sweep's
+    // banned needle word, which guards the retired pre-P6c claims.)
+    const bool pinned_now = pinned_.load(std::memory_order_relaxed);
+    const auto draw_header_action = [&](const D2D1_RECT_F& rect, int hover_id,
+                                        const wchar_t* glyph, const std::wstring& label,
+                                        bool wired, UINT32 resting_color) {
+        const bool hovered = hovered_btn_ == hover_id && wired;
+        const D2D1_ROUNDED_RECT rr =
+            D2D1::RoundedRect(rect, theme.control_radius, theme.control_radius);
+        scratch_brush_->SetColor(hovered ? ui::ColorFromHex(theme.surface_hover, 1.0f)
+                                         : ui::ColorFromHex(theme.surface_elevated, 0.95f));
+        dc_render_target_->FillRoundedRectangle(rr, scratch_brush_);
+        scratch_brush_->SetColor(hovered
+                                     ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                                     : ui::ColorFromHex(theme.border_subtle,
+                                                        theme.border_subtle_alpha));
+        dc_render_target_->DrawRoundedRectangle(rr, scratch_brush_, 1.0f);
+        if (!header_format_ || !button_format_) return;
+        scratch_brush_->SetColor(hovered ? ui::ColorFromHex(theme.text_primary, 1.0f)
+                                         : ui::ColorFromHex(resting_color, wired ? 1.0f : 0.45f));
+        if (header_action_plan_.labels && !label.empty()) {
+            dc_render_target_->DrawText(label.c_str(), static_cast<UINT32>(label.size()),
+                                        button_format_, rect, scratch_brush_);
+        } else {
+            const std::wstring glyph_text(glyph ? glyph : L"");
+            dc_render_target_->DrawText(glyph_text.c_str(),
+                                        static_cast<UINT32>(glyph_text.size()),
+                                        header_format_, rect, scratch_brush_);
+        }
+    };
+    draw_header_action(
+        pin_btn_rect_, 6, L"\xD83D\xDCCC",
+        I18n::Get(pinned_now ? StringId::UnpinTooltipCard : StringId::PinTooltipCard), true,
+        pinned_now ? theme.accent_primary : theme.text_secondary);
+    draw_header_action(edit_btn_rect_, 7, L"\x270E",
+                       I18n::Get(StringId::EditRetranslate),
+                       static_cast<bool>(edit_request_cb_), theme.text_secondary);
+    draw_header_action(open_btn_rect_, 8, L"\x29C9",
+                       I18n::Get(StringId::OpenInWindow),
+                       static_cast<bool>(open_in_window_cb_), theme.text_secondary);
 
     // Close button (top right)
     close_btn_rect_ = D2D1::RectF(static_cast<float>(current_width_) - 32.0f, 8.0f, static_cast<float>(current_width_) - 12.0f, 28.0f);
@@ -2625,18 +3692,28 @@ void TooltipWindow::Render() {
     if (!translated_text_.empty() && body_format_) {
         scratch_brush_->SetColor(ui::ColorFromHex(theme.text_primary, 1.0f));
         dc_render_target_->PushAxisAlignedClip(body_viewport_rect_, D2D1_ANTIALIAS_MODE_ALIASED);
-        D2D1_RECT_F bodyRect = D2D1::RectF(
-            14.0f,
-            body_y - scroll_offset_dip_,
-            14.0f + max_body_width,
-            body_y - scroll_offset_dip_ + (std::max)(content_height_dip_, body_height) + body_height);
-        dc_render_target_->DrawText(
-            translated_text_.c_str(),
-            static_cast<UINT32>(translated_text_.size()),
-            body_format_,
-            bodyRect,
-            scratch_brush_
-        );
+        // V10F FUP-08: paint the layout the show path already shaped. The
+        // DrawText fallback is the pre-V10F path, kept for the degenerate case
+        // where CreateTextLayout failed (no factory, OOM) - a failed cache must
+        // never blank the body.
+        if (body_text_layout_) {
+            dc_render_target_->DrawTextLayout(
+                D2D1::Point2F(14.0f, body_y - scroll_offset_dip_), body_text_layout_,
+                scratch_brush_);
+        } else {
+            D2D1_RECT_F bodyRect = D2D1::RectF(
+                14.0f,
+                body_y - scroll_offset_dip_,
+                14.0f + max_body_width,
+                body_y - scroll_offset_dip_ + (std::max)(content_height_dip_, body_height) + body_height);
+            dc_render_target_->DrawText(
+                translated_text_.c_str(),
+                static_cast<UINT32>(translated_text_.size()),
+                body_format_,
+                bodyRect,
+                scratch_brush_
+            );
+        }
         dc_render_target_->PopAxisAlignedClip();
     }
 
@@ -2920,7 +3997,7 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     p = std::move(g_tt_message_queue.front());
                     g_tt_message_queue.pop_front();
                 }
-                pThis->ShowMessage(p.x, p.y, p.header, p.body, p.generation);
+                pThis->ShowMessage(p.x, p.y, p.header, p.body, p.generation, p.autohide_ms);
             }
             return 0;
         }
@@ -2969,6 +4046,25 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 pThis->ShowBackTranslation(p.original_text, p.back_text,
                                            p.source_lang_label, p.target_lang_label,
                                            p.meaning_matched, p.target_hwnd, p.badge_hwnd);
+            }
+            return 0;
+        }
+
+        // V10F L3-B: the marshaled progressive-preview operations. Same SEC-ADJ
+        // value-queue drain as the handlers above; the cumulative text travels
+        // inside the payload, so the wake-up stays a pure (0, 0) notification.
+        case kChunkPreviewMessage: {
+            for (;;) {
+                ChunkPreviewPayload p;
+                {
+                    std::lock_guard<std::mutex> lk(g_tt_preview_mu);
+                    if (g_tt_preview_queue.empty()) {
+                        break;
+                    }
+                    p = std::move(g_tt_preview_queue.front());
+                    g_tt_preview_queue.pop_front();
+                }
+                pThis->ApplyChunkPreviewOp(p.op, p.total_chunks, p.cumulative, p.success);
             }
             return 0;
         }
@@ -3076,6 +4172,13 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                                 emebalachat::ui::ScaleDipsToPixels(
                                     static_cast<int>(pThis->lang_btn_rect_.bottom), pThis->dpi_)};
                 ::ClientToScreen(hwnd, &anchor);
+                // V10F FUP-02: latch the card's source state BEFORE the modal
+                // picker runs. Every dismissal path empties source_text_/
+                // source_lang_code_ (TeardownCard above); without the latch, a
+                // mid-session dismissal would hand the pick's retranslate
+                // emptied state (retranslate_skip_empty). The arm clears the
+                // latch right after the dispatch below, on every outcome.
+                pThis->LatchLanguagePickerSourceSnapshot();
                 // 260922_0001 A5 / PR5-03: the same focus choreography the two
                 // TrackPopupMenuEx paths run — back up the foreground owner, take
                 // it for the modal surface, restore after it closes.
@@ -3103,6 +4206,10 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                         }
                     }
                 }
+                // V10F FUP-02: the snapshot is per-picker-session; release it on
+                // every outcome (commit, cancel, click-outside) so a later menu
+                // pick can never read a stale latch.
+                pThis->ClearLanguagePickerSourceSnapshot();
             }
             return 0;
         }
@@ -3147,8 +4254,14 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // interactive while the card actually overflows.
             if (pThis->is_backtrans_mode_) {
                 if (IsPointInRect(pThis->backtrans_close_rect_, x, y) ||
+                    IsPointInRect(pThis->backtrans_pin_rect_, x, y) ||
+                    IsPointInRect(pThis->backtrans_back_label_rect_, x, y) ||
+                    IsPointInRect(pThis->backtrans_ref_label_rect_, x, y) ||
                     (pThis->scrollable_ &&
-                     IsPointInRect(pThis->scrollbar_thumb_rect_, x, y))) {
+                     IsPointInRect(pThis->scrollbar_thumb_rect_, x, y)) ||
+                    // V10F FUP-05: the original pane's own thumb.
+                    (pThis->scrollable_ &&
+                     IsPointInRect(pThis->backtrans_ref_thumb_rect_, x, y))) {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
                 } else {
                     ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
@@ -3162,6 +4275,10 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 IsPointInRect(pThis->src_btn_rect_, x, y) ||
                 IsPointInRect(pThis->lang_btn_rect_, x, y) ||
                 IsPointInRect(pThis->close_btn_rect_, x, y) ||
+                // V10F L2/L1-B: the header action cluster (pin/edit/open).
+                IsPointInRect(pThis->pin_btn_rect_, x, y) ||
+                IsPointInRect(pThis->edit_btn_rect_, x, y) ||
+                IsPointInRect(pThis->open_btn_rect_, x, y) ||
                 (pThis->scrollable_ && IsPointInRect(pThis->scrollbar_thumb_rect_, x, y))) {
                 ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
                 return TRUE;
@@ -3195,14 +4312,38 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     repaint = true;
                 }
                 pThis->ApplyBackTransTimerPlan(TooltipWindow::BackTransTimerEvent::PointerMoved);
+                // V10F: the pin click must NOT pause/close the card; the hover
+                // read stays the plain pause + repaint.
                 const bool close_hover = IsPointInRect(pThis->backtrans_close_rect_, x, y);
                 if (close_hover != pThis->backtrans_close_hover_) {
                     pThis->backtrans_close_hover_ = close_hover;
                     repaint = true;
                 }
+                const bool pin_hover = IsPointInRect(pThis->backtrans_pin_rect_, x, y);
+                if (pin_hover != pThis->backtrans_pin_hover_) {
+                    pThis->backtrans_pin_hover_ = pin_hover;
+                    repaint = true;
+                }
+                // V10F FUP-05: the two section-label bands are the view toggle,
+                // so they read as interactive (hover lift + hand cursor).
+                const bool back_label_hover =
+                    IsPointInRect(pThis->backtrans_back_label_rect_, x, y) &&
+                    !pThis->backtrans_text_.empty();
+                if (back_label_hover != pThis->backtrans_back_label_hover_) {
+                    pThis->backtrans_back_label_hover_ = back_label_hover;
+                    repaint = true;
+                }
+                const bool ref_label_hover =
+                    IsPointInRect(pThis->backtrans_ref_label_rect_, x, y) &&
+                    !pThis->backtrans_ref_line_.empty();
+                if (ref_label_hover != pThis->backtrans_ref_label_hover_) {
+                    pThis->backtrans_ref_label_hover_ = ref_label_hover;
+                    repaint = true;
+                }
                 const bool new_thumb_hover =
                     pThis->scrollable_ && !pThis->dragging_thumb_ &&
-                    IsPointInRect(pThis->scrollbar_thumb_rect_, x, y);
+                    (IsPointInRect(pThis->scrollbar_thumb_rect_, x, y) ||
+                     IsPointInRect(pThis->backtrans_ref_thumb_rect_, x, y));
                 if (new_thumb_hover != pThis->thumb_hover_) {
                     pThis->thumb_hover_ = new_thumb_hover;
                     repaint = true;
@@ -3243,6 +4384,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // language menu). The planner clamp keeps an 8 DIP gap between
             // the rects, so this order is defensive-only.
             else if (IsPointInRect(pThis->close_btn_rect_, x, y)) new_hover = 4;
+            // V10F L2/L1-B: the header action cluster. Ids 6/7/8 continue the
+            // frozen 1..5 numbering (6 was reserved-in-comment by the
+            // back-translation card, which keeps its own close-hover flag).
+            else if (IsPointInRect(pThis->pin_btn_rect_, x, y)) new_hover = 6;
+            else if (IsPointInRect(pThis->edit_btn_rect_, x, y)) new_hover = 7;
+            else if (IsPointInRect(pThis->open_btn_rect_, x, y)) new_hover = 8;
             else if (IsPointInRect(pThis->lang_btn_rect_, x, y)) new_hover = 3;
 
             const bool new_thumb_hover =
@@ -3282,9 +4429,14 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // 261108_0002 (WS3, v0.10.6): leaving the back-translation card
             // resumes the countdown with the 1500 ms grace window.
             if (pThis->is_backtrans_mode_) {
-                if (pThis->backtrans_close_hover_ || pThis->thumb_hover_) {
+                if (pThis->backtrans_close_hover_ || pThis->thumb_hover_ ||
+                    pThis->backtrans_pin_hover_ || pThis->backtrans_back_label_hover_ ||
+                    pThis->backtrans_ref_label_hover_) {
                     pThis->backtrans_close_hover_ = false;
                     pThis->thumb_hover_ = false;
+                    pThis->backtrans_pin_hover_ = false;
+                    pThis->backtrans_back_label_hover_ = false;
+                    pThis->backtrans_ref_label_hover_ = false;
                     pThis->Render();
                     pThis->UpdateLayered();
                 }
@@ -3301,6 +4453,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_LBUTTONDOWN: {
+            // V10F L3-B: the live preview card's only affordance is the ✕
+            // (dispatched on UP). A press is inert, so no stale footer/header
+            // rect from the previous card can fire under the live run.
+            if (pThis->preview_phase_ != TooltipWindow::ChunkPreviewPhase::Inactive) {
+                return 0;
+            }
             // 261108_0002 (WS3, v0.10.6): the back-translation card's only
             // BUTTON is ✕; a press anywhere else is inert. Dismiss on UP so the
             // press/release pair stays honest.
@@ -3372,9 +4530,37 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     static_cast<int>(static_cast<short>(LOWORD(lParam))), pThis->dpi_));
                 float by = static_cast<float>(emebalachat::ui::ScalePixelsToDips(
                     static_cast<int>(static_cast<short>(HIWORD(lParam))), pThis->dpi_));
+                // V10F L1-B: the pin toggle (card-level: outside-click and
+                // autohide are ignored while it is set).
+                if (IsPointInRect(pThis->backtrans_pin_rect_, bx, by)) {
+                    const bool next = !pThis->pinned_.load(std::memory_order_relaxed);
+                    pThis->pinned_.store(next, std::memory_order_relaxed);
+                    DIAG_LOG("UI", "tooltip_pin pinned=%d mode=backtrans", next ? 1 : 0);
+                    if (!next && pThis->backtrans_autohide_ms_ > 0) {
+                        // Re-arm the countdown the pin suspended, so an
+                        // unpinned card behaves exactly like a fresh one.
+                        pThis->ApplyBackTransTimerPlan(
+                            TooltipWindow::BackTransTimerEvent::Shown);
+                    } else {
+                        ::KillTimer(hwnd, TooltipWindow::kTimerBackTranslateAutohide);
+                    }
+                    pThis->Render();
+                    pThis->UpdateLayered();
+                    return 0;
+                }
+                // V10F FUP-05: a section label is the split <-> solo toggle.
+                if (IsPointInRect(pThis->backtrans_back_label_rect_, bx, by) ||
+                    IsPointInRect(pThis->backtrans_ref_label_rect_, bx, by)) {
+                    const bool ref_label =
+                        IsPointInRect(pThis->backtrans_ref_label_rect_, bx, by);
+                    pThis->ApplyBackTransView(pThis->NextBackTransViewForLabel(
+                        ref_label ? TooltipWindow::BackTransLabelTarget::Ref
+                                  : TooltipWindow::BackTransLabelTarget::Back));
+                    return 0;
+                }
                 if (IsPointInRect(pThis->backtrans_close_rect_, bx, by)) {
                     DIAG_LOG("UI", "tooltip_backtrans_dismiss reason=close_button");
-                    pThis->Dismiss();
+                    pThis->DismissExplicit();
                 }
                 return 0;
             }
@@ -3407,8 +4593,44 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 return 0;
             }
 
+            // ---- V10F L2/L1-B: the header action cluster ----------------
+            // Pin: flips the card-level pin (no dismissal, no timer churn -
+            // Dismiss() and the autohide arms read the flag).
+            if (IsPointInRect(pThis->pin_btn_rect_, x, y)) {
+                const bool next = !pThis->pinned_.load(std::memory_order_relaxed);
+                pThis->pinned_.store(next, std::memory_order_relaxed);
+                DIAG_LOG("UI", "tooltip_pin pinned=%d mode=translation", next ? 1 : 0);
+                pThis->Render();
+                pThis->UpdateLayered();
+                return 0;
+            }
+            // Edit / retranslate: the P2-G editor hand-off. Guarded null: a
+            // tooltip whose callback was never registered (run_tests, a build
+            // without the editor) is a no-op instead of a crash.
+            if (IsPointInRect(pThis->edit_btn_rect_, x, y)) {
+                if (pThis->edit_request_cb_) {
+                    DIAG_LOG("UI", "tooltip_edit_request");
+                    pThis->edit_request_cb_();
+                } else {
+                    DIAG_LOG("UI", "tooltip_edit_request ignored reason=no_callback");
+                }
+                return 0;
+            }
+            // Open in window: the P2-G editor's standalone surface.
+            if (IsPointInRect(pThis->open_btn_rect_, x, y)) {
+                if (pThis->open_in_window_cb_) {
+                    DIAG_LOG("UI", "tooltip_open_in_window_request");
+                    pThis->open_in_window_cb_();
+                } else {
+                    DIAG_LOG("UI", "tooltip_open_in_window ignored reason=no_callback");
+                }
+                return 0;
+            }
+
             if (IsPointInRect(pThis->close_btn_rect_, x, y)) {
-                pThis->Dismiss();
+                // V10F L1-B: the ✕ is an explicit dismissal - it bypasses the
+                // pin (DismissExplicit), so a pinned card is never a trap.
+                pThis->DismissExplicit();
                 return 0;
             }
 
@@ -4020,6 +5242,12 @@ LRESULT CALLBACK TooltipWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             // re-arms it, so this handler's job is unchanged.
             if (wParam == kTimerBackTranslateAutohide) {
                 ::KillTimer(hwnd, kTimerBackTranslateAutohide);
+                if (pThis->pinned_.load(std::memory_order_relaxed)) {
+                    // V10F L1-B: a pinned card is immune to autohide. The
+                    // timer is already dead above, so the card simply stays.
+                    DIAG_LOG("UI", "tooltip_backtrans_autohide ignored reason=pinned");
+                    return 0;
+                }
                 if (pThis->is_backtrans_mode_) {
                     DIAG_LOG("UI", "tooltip_backtrans_dismiss reason=autohide");
                     pThis->Dismiss();

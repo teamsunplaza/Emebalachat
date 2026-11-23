@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -71,6 +72,215 @@ struct WinHttpHandleDeleter {
     }
 };
 using ScopedHInternet = std::unique_ptr<void, WinHttpHandleDeleter>;
+
+// ---- V10F (RISK-02 Option A, 261122_0002 P2-A): the abortable request slot
+// ---- V10F-R1 (F-01, fix-list round 1): ONE SLOT PER PURPOSE ----
+//
+// Cloned from src/ui/gguf_model_manager_window.cpp's HfAddDialogState /
+// HfClearSlot protocol (~L761-798), which removed the same "a synchronous
+// WinHTTP call cannot be aborted" freeze from the HF model download (REQ-052).
+// F-01 splits the pre-fix PROCESS-WIDE slot into TWO purpose slots:
+//   * Chat    — every /v1/chat/completions request (ChatCompletion's chunk
+//               loop; serialized on the engine's translate mutex);
+//   * Models  — the settings dialog's GET /v1/models (FetchModels /
+//               ListModels), which runs on its OWN detached worker thread.
+// With one shared slot a chat cancel closed the WRONG request (an in-flight
+// model-list GET) and a model fetch holding the slot made a chat publish fail
+// (the chat request then ran un-abortable — the 60 s receive-timeout freeze
+// RISK-02 removed came back). Per-purpose slots make a cancel close exactly
+// the request it names.
+//
+// The slot keeps the HfClearSlot single-owner discipline:
+//   * the slot is cleared under the mutex BEFORE the close, and whoever clears
+//     it owns the single close — no handle is ever closed twice;
+//   * the worker never uses a handle after the cancel path closed it (every
+//     post-close WinHTTP call fails, and the read loops test the abort flag);
+//   * a request that could not publish (an overlapping same-purpose request
+//     holds the slot) still owns its own close, so no handle leaks.
+//
+// F-01 adds two invariants on top:
+//   * TOKEN KEYING — every publish draws a fresh monotonically increasing
+//     token; ClearRequestSlot matches (handle AND token), never the raw
+//     HINTERNET value alone. HINTERNET values are recycled by the system, so
+//     after the abort path closed handle H a NEW request can publish the same
+//     numeric H — a raw-value clear would then match the LIVE request and
+//     close it out from under its owner (ABA).
+//   * GUARD-OWNED STICKY FLAG — the abort verdict lives in the publishing
+//     guard's OWN std::atomic<bool> (reached through the slot's live_flag,
+//     written under the slot mutex), not in the slot. A reader aborted
+//     mid-WinHttpReadData keeps its verdict even when a later publish recycles
+//     the slot — the pre-fix slot-level bool could be reset by that publish
+//     and the reader would overclaim a partial 200 body as complete.
+// The helpers below name their slot parameter `g_request_slot` and take the
+// per-purpose slot through it, so the single-owner lock shape reads the same
+// at every call site.
+enum class OpenAiRequestSlotPurpose { Chat, Models };
+
+struct RequestAbortSlot {
+    std::mutex mu;
+    HINTERNET request = nullptr;       // published while a request is in flight
+    unsigned long long token = 0;      // F-01: this occupant's publish token (0 = empty)
+    unsigned long long next_token = 1; // F-01: monotonic per-slot token source
+    std::atomic<bool>* live_flag = nullptr; // F-01: the guard's own abort flag
+    bool aborted = false;              // sticky verdict for the POST-HOC check that
+                                       // runs after HttpRequest returned (the guard
+                                       // is gone then); a same-purpose publish clears it
+};
+RequestAbortSlot g_request_slot_chat;
+RequestAbortSlot g_request_slot_models;
+
+RequestAbortSlot& RequestSlotFor(OpenAiRequestSlotPurpose purpose) {
+    return purpose == OpenAiRequestSlotPurpose::Models ? g_request_slot_models
+                                                       : g_request_slot_chat;
+}
+
+class ScopedAbortableRequest; // defined below; the TLS consult forward-declared
+
+// The one request this THREAD currently has published (nullptr when none).
+// HttpRequest is synchronous, so the published guard is thread-local state —
+// RequestSlotAborted() can stay a zero-argument call and still read the RIGHT
+// request's flag even after another thread recycled the slot.
+thread_local const ScopedAbortableRequest* t_current_abortable = nullptr;
+
+// Single-owner close: returns true when this side owned (and performed) the
+// close, false when the abort path already closed the handle OR the slot has
+// since been republished with a different token (F-01: a recycled HINTERNET
+// value must never let a stale guard clear — and close — a newer request).
+bool ClearRequestSlot(RequestAbortSlot& g_request_slot, HINTERNET h,
+                      unsigned long long token) {
+    if (!h) return false;
+    bool mine = false;
+    {
+        std::lock_guard<std::mutex> lk(g_request_slot.mu);
+        if (g_request_slot.request == h && g_request_slot.token == token) {
+            g_request_slot.request = nullptr;
+            g_request_slot.token = 0;
+            g_request_slot.live_flag = nullptr;
+            mine = true;
+        }
+    }
+    if (mine) ::WinHttpCloseHandle(h);
+    return mine;
+}
+
+// Publishes a freshly created handle into a purpose slot and hands the slot
+// this guard's sticky flag. Returns false when the slot is already occupied
+// by an overlapping same-purpose request (that request keeps the slot; this
+// one closes its own handle at scope exit).
+bool PublishRequestSlot(RequestAbortSlot& g_request_slot, HINTERNET h,
+                        unsigned long long& out_token, std::atomic<bool>* live_flag) {
+    if (!h) return false;
+    std::lock_guard<std::mutex> lk(g_request_slot.mu);
+    if (g_request_slot.request != nullptr) return false;
+    g_request_slot.request = h;
+    g_request_slot.token = g_request_slot.next_token++;
+    g_request_slot.live_flag = live_flag;
+    g_request_slot.aborted = false; // scoped to THIS request (post-hoc arm only)
+    out_token = g_request_slot.token;
+    return true;
+}
+
+// Aborts the in-flight request of ONE purpose slot: takes the handle and the
+// guard's flag under the mutex, sets the verdict, then closes outside it.
+// The verdict is written into the GUARD's flag (not the slot), so a later
+// publish to the slot can never erase an abort a reader is still acting on.
+bool AbortRequestSlot(RequestAbortSlot& g_request_slot) {
+    HINTERNET h = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_request_slot.mu);
+        h = g_request_slot.request;
+        if (h == nullptr) return false;
+        g_request_slot.request = nullptr;
+        g_request_slot.token = 0;
+        // Both verdicts under one mutex: the guard's flag (survives any later
+        // publish — this is the mid-read authority) and the slot's sticky flag
+        // (the post-hoc authority once the guard is gone).
+        if (g_request_slot.live_flag != nullptr) {
+            g_request_slot.live_flag->store(true, std::memory_order_release);
+            g_request_slot.live_flag = nullptr;
+        }
+        g_request_slot.aborted = true;
+    }
+    ::WinHttpCloseHandle(h);
+    return true;
+}
+
+// RAII owner of ONE abortable request handle bound to ONE purpose slot.
+// `published_` records whether the slot ever held this handle, which is what
+// makes the close exactly-once in BOTH directions: a published handle is
+// cleared through the single-owner clear (a no-op when the abort path already
+// took it, or when a newer token occupies the slot — F-01), and an
+// unpublished one is closed here because no other side has ever seen it.
+class ScopedAbortableRequest {
+public:
+    ScopedAbortableRequest(HINTERNET h, RequestAbortSlot& slot) : h_(h), slot_(slot) {
+        published_ = PublishRequestSlot(slot_, h_, token_, &aborted_flag_);
+        t_current_abortable = this;
+    }
+    ~ScopedAbortableRequest() {
+        if (t_current_abortable == this) t_current_abortable = nullptr;
+        if (h_ == nullptr) return;
+        if (published_) {
+            ClearRequestSlot(slot_, h_, token_);
+        } else {
+            ::WinHttpCloseHandle(h_);
+        }
+    }
+    ScopedAbortableRequest(const ScopedAbortableRequest&) = delete;
+    ScopedAbortableRequest& operator=(const ScopedAbortableRequest&) = delete;
+
+    HINTERNET get() const { return h_; }
+    explicit operator bool() const { return h_ != nullptr; }
+    // F-01: the sticky per-request verdict. Written by AbortRequestSlot through
+    // the slot's live_flag under the slot mutex (never after the guard
+    // unpublishes, so no write-after-free), readable lock-free at any point.
+    bool WasAborted() const { return aborted_flag_.load(std::memory_order_acquire); }
+
+private:
+    HINTERNET h_ = nullptr;
+    RequestAbortSlot& slot_;
+    unsigned long long token_ = 0;
+    std::atomic<bool> aborted_flag_{false};
+    bool published_ = false;
+};
+
+// The abort verdict for THIS thread's in-flight request: the guard's own flag
+// first (valid mid-read; immune to slot recycling), then the purpose slots'
+// sticky flags (valid post-hoc, after HttpRequest's guard was destroyed — a
+// same-purpose publish can only happen on this thread AFTER the post-hoc
+// check ran, so it cannot erase the verdict in between).
+bool RequestSlotAborted() {
+    const ScopedAbortableRequest* cur = t_current_abortable;
+    if (cur != nullptr && cur->WasAborted()) return true;
+    for (RequestAbortSlot* slot : {&g_request_slot_chat, &g_request_slot_models}) {
+        std::lock_guard<std::mutex> lk(slot->mu);
+        if (slot->aborted) return true;
+    }
+    return false;
+}
+
+// V10F-R2 (fix-list round 2, F-31): the PURPOSE-SCOPED post-hoc variant. The
+// zero-argument consult above stays the mid-read authority (the TLS guard is
+// primary; both slots' sticky flags are the secondary net), but a POST-HOC
+// check — after this thread's guard is gone — must read only the request's
+// OWN slot: a chat cancel's sticky verdict sitting in the chat slot must not
+// let an unrelated purpose's post-hoc scan discard a cleanly-finished
+// sibling request's result as "aborted".
+bool RequestSlotAbortedFor(OpenAiRequestSlotPurpose purpose) {
+    const ScopedAbortableRequest* cur = t_current_abortable;
+    if (cur != nullptr && cur->WasAborted()) return true;
+    RequestAbortSlot& slot = RequestSlotFor(purpose);
+    std::lock_guard<std::mutex> lk(slot.mu);
+    return slot.aborted;
+}
+
+// V10F (L3-B): the incremental consumer of a 200 response body. Called on the
+// request thread with each streamed slice, in arrival order, BEFORE the next
+// read; returning FALSE aborts the transfer (the caller saw a cancel/abort
+// token) and HttpRequest fails closed — the partial body is discarded and the
+// status is 0, so callers parse nothing. Null (the default) keeps the
+// pre-streaming single-shot body read byte-for-byte.
+using HttpBodySink = std::function<bool(std::string_view)>;
 
 // ---- base64 (RFC 4648, no external dependency) ----
 
@@ -494,66 +704,9 @@ OpenAiChatResult ParseChatJson(std::string_view json) {
     return result;
 }
 
-// Resolves a base URL into (host, port, is_https, path-prefix) for WinHTTP.
-// The base may carry a path prefix (e.g. "https://host/v1"); we append the
-// endpoint path onto it. Returns false when the URL cannot be decomposed.
-bool DecomposeBaseUrl(std::string_view base, std::wstring& host, INTERNET_PORT& port,
-                      bool& https, std::wstring& prefix) {
-    https = false;
-    port = INTERNET_DEFAULT_HTTP_PORT;
-    host.clear();
-    prefix.clear();
-
-    // scheme://
-    auto scheme_end = base.find("://");
-    if (scheme_end == std::string_view::npos) return false;
-    std::string scheme = std::string(base.substr(0, scheme_end));
-    for (auto& ch : scheme) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    if (scheme == "https") { https = true; port = INTERNET_DEFAULT_HTTPS_PORT; }
-    else if (scheme == "http") { https = false; port = INTERNET_DEFAULT_HTTP_PORT; }
-    else return false;
-
-    std::string rest = std::string(base.substr(scheme_end + 3));
-    // Strip userinfo (not supported) and split host[:port] from path.
-    auto at = rest.find('@');
-    if (at != std::string::npos) return false; // credentials in URL unsupported
-    std::string authority, path;
-    auto slash = rest.find('/');
-    if (slash == std::string::npos) { authority = rest; path = ""; }
-    else { authority = rest.substr(0, slash); path = rest.substr(slash); }
-
-    // host[:port]
-    std::string h = authority, ps;
-    auto colon = authority.rfind(':');
-    if (colon != std::string::npos && authority.find(']') == std::string::npos) {
-        h = authority.substr(0, colon);
-        ps = authority.substr(colon + 1);
-    } else if (colon != std::string::npos && authority.front() == '[') {
-        // [v6]:port
-        auto rb = authority.rfind(']');
-        if (rb == std::string::npos || rb + 1 >= authority.size() || authority[rb + 1] != ':') return false;
-        h = authority.substr(0, rb + 1);
-        ps = authority.substr(rb + 2);
-    }
-    if (h.empty()) return false;
-    if (!ps.empty()) {
-        int p = 0;
-        for (char c : ps) {
-            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
-            p = p * 10 + (c - '0');
-            if (p > 65535) return false;
-        }
-        port = static_cast<INTERNET_PORT>(p);
-    }
-
-    host = ToUtf16(h);
-    if (path.empty() || path == "/") prefix = L"";
-    else {
-        prefix = ToUtf16(path);
-        while (!prefix.empty() && prefix.back() == L'/') prefix.pop_back();
-    }
-    return !host.empty();
-}
+// (V10F BUG-07: DecomposeBaseUrl moved OUT of this anonymous namespace and
+// exported through openai_compatible_client.hpp — see the definition after
+// the namespace close.)
 
 // JSON string escaper for the request body (control chars + quote + backslash).
 std::string JsonEscape(std::string_view s) {
@@ -592,11 +745,23 @@ std::string JsonEscape(std::string_view s) {
 // that could not be pinned to WINHTTP_OPTION_REDIRECT_POLICY_NEVER — the
 // request is abandoned (status 0) before it can carry the Bearer key on a
 // redirect-following session.
+//
+// V10F (RISK-02 / L3-B, 261122_0002 P2-A): two trailing, defaulted seams.
+//   * body_sink — the incremental 200-body consumer (see HttpBodySink); null
+//     keeps the historical single-shot read, so ListModels and every
+//     non-streaming chat request are byte-identical.
+//   * abort — the caller's shutdown/cancel token (TranslationTaskContext::
+//     abort), polled between reads exactly like the chunk loops poll it
+//     between requests. A set token aborts the read and the request fails
+//     closed, so a long SSE body cannot outlive a shutdown.
 DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
                   const std::wstring& method, const std::wstring& path,
                   const std::string& auth_header, const std::string& body,
                   const OpenAiHttpProfile& profile, std::string& response_body,
-                  std::string* error_body = nullptr) {
+                  std::string* error_body = nullptr,
+                  const HttpBodySink* body_sink = nullptr,
+                  const std::atomic<bool>* abort = nullptr,
+                  OpenAiRequestSlotPurpose purpose = OpenAiRequestSlotPurpose::Chat) {
     response_body.clear();
     if (error_body) {
         error_body->clear();
@@ -640,9 +805,17 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
     ScopedHInternet hConnect(::WinHttpConnect(hSession.get(), host.c_str(), port, 0));
     if (!hConnect) return 0;
 
-    ScopedHInternet hRequest(::WinHttpOpenRequest(
+    // V10F (RISK-02 Option A): the request handle publishes into the abort
+    // slot the instant it exists, so RequestAbortCurrent() from another thread
+    // can close it and unblock a pending WinHTTP call. The guard clears the
+    // slot (under the mutex) before any close it performs, so the handle is
+    // closed exactly once no matter which side wins the race. V10F-R1 (F-01):
+    // the slot is PER PURPOSE (chat vs model-list fetch), so a chat cancel
+    // can never close a model-list GET and vice versa.
+    ScopedAbortableRequest hRequest(::WinHttpOpenRequest(
         hConnect.get(), method.c_str(), path.c_str(), nullptr, WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES, https ? WINHTTP_FLAG_SECURE : 0));
+        WINHTTP_DEFAULT_ACCEPT_TYPES, https ? WINHTTP_FLAG_SECURE : 0),
+        RequestSlotFor(purpose));
     if (!hRequest) return 0;
 
     // Bearer auth + JSON content type. The header carries the key; it is built
@@ -694,6 +867,10 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
         return 0;
     }
     if (!::WinHttpReceiveResponse(hRequest.get(), nullptr)) return 0;
+    // V10F (RISK-02): an abort that landed while the response was pending has
+    // already closed the handle; report a transport failure instead of
+    // continuing on a dead request.
+    if (RequestSlotAborted()) return 0;
 
     DWORD status = 0, status_size = sizeof(status);
     ::WinHttpQueryHeaders(hRequest.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -727,7 +904,16 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
 
     DWORD avail = 0;
     bool overflow = false;
-    while (::WinHttpQueryDataAvailable(hRequest.get(), &avail) && avail > 0) {
+    bool aborted = false;
+    while (!aborted && ::WinHttpQueryDataAvailable(hRequest.get(), &avail) && avail > 0) {
+        // V10F (RISK-02 / L3-B): the caller's shutdown token is polled between
+        // reads, and a cross-thread RequestAbortCurrent() has closed the handle
+        // (every following call fails). Either way the request fails CLOSED
+        // below — a partially read body is never parsed or trusted.
+        if (ChunkLoopAbortRequested(abort) || RequestSlotAborted()) {
+            aborted = true;
+            break;
+        }
         if (response_body.size() + static_cast<size_t>(avail) > kMaxResponseBodyBytes) {
             overflow = true;
             break;
@@ -737,9 +923,38 @@ DWORD HttpRequest(bool https, const std::wstring& host, INTERNET_PORT port,
         if (::WinHttpReadData(hRequest.get(), buf.data(), avail, &read) && read > 0) {
             response_body.append(buf.data(), read);
             if (response_body.size() > kMaxResponseBodyBytes) { overflow = true; break; }
+            // V10F (L3-B): the incremental consumer sees every slice in
+            // arrival order (the SSE reader turns it into deltas + preview
+            // callbacks). A false return is the caller's own abort verdict.
+            if (body_sink != nullptr && !(*body_sink)(std::string_view(buf.data(), read))) {
+                aborted = true;
+                break;
+            }
         } else {
+            // V10F-R1 (F-01): a read failure immediately after a cross-thread
+            // close must NOT fall out of the loop as an ordinary end-of-body —
+            // the 200 status plus the partial body would overclaim a complete
+            // answer. Re-poll the abort verdict; a close-induced failure takes
+            // the fail-closed arm below like an in-loop abort.
+            if (ChunkLoopAbortRequested(abort) || RequestSlotAborted()) {
+                aborted = true;
+            }
             break;
         }
+    }
+    // V10F-R1 (F-01): the loop can also end with the abort verdict pending —
+    // WinHttpQueryDataAvailable returning FALSE on the closed handle exits via
+    // the while condition without touching `aborted`. Re-poll once more so a
+    // truncated body after a close is discarded, never parsed.
+    if (!aborted && (ChunkLoopAbortRequested(abort) || RequestSlotAborted())) {
+        aborted = true;
+    }
+    if (aborted) {
+        DIAG_F("OPENAI/HttpRequest/006: request aborted (close-on-cancel or caller token); "
+               "partial body discarded, body_len=%zu (fail-closed)\n",
+               response_body.size());
+        response_body.clear();
+        return 0;
     }
     if (overflow) {
         DIAG_F("OPENAI/HttpRequest/003: response body exceeded %zu-byte cap; aborting (DoS guard)\n",
@@ -799,6 +1014,92 @@ void ScopedSecretScrub::ScrubNow() noexcept {
 
 // ---- Pure policy / security helpers ----
 
+// V10F (BUG-07, 261122_0002 P1-U4): the base-URL decomposition for the
+// WinHTTP seams, exported (see the header contract). The authority grammar is
+// deliberately strict — this decomposer feeds WinHttpConnect/OpenRequest, not
+// a full URL parser:
+//   * bracketed IPv6 is parsed at ']' FIRST, so "[::1]" with no port is VALID
+//     (the scheme default port applies) — the pre-V10F rfind(':') grammar
+//     misread the colons inside the literal as a port separator and rejected
+//     every portless bracketed IPv6 base;
+//   * an explicitly empty port ("host:" / "[::1]:") is rejected, not silently
+//     treated as the default;
+//   * a stray ']' in an unbracketed authority is rejected (host names never
+//     carry one — the old grammar let "ho]st" and "ho]st:80" through);
+//   * '?'/'#' anywhere in the authority or path split inputs is rejected
+//     (query/fragment-bearing bases fail closed instead of being truncated).
+bool DecomposeBaseUrl(std::string_view base, std::wstring& host, unsigned short& port,
+                      bool& https, std::wstring& prefix) {
+    https = false;
+    port = INTERNET_DEFAULT_HTTP_PORT;
+    host.clear();
+    prefix.clear();
+
+    // scheme://
+    auto scheme_end = base.find("://");
+    if (scheme_end == std::string_view::npos) return false;
+    std::string scheme = std::string(base.substr(0, scheme_end));
+    for (auto& ch : scheme) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (scheme == "https") { https = true; port = INTERNET_DEFAULT_HTTPS_PORT; }
+    else if (scheme == "http") { https = false; port = INTERNET_DEFAULT_HTTP_PORT; }
+    else return false;
+
+    std::string rest = std::string(base.substr(scheme_end + 3));
+    // Strip userinfo (not supported) and split host[:port] from path.
+    auto at = rest.find('@');
+    if (at != std::string::npos) return false; // credentials in URL unsupported
+    std::string authority, path;
+    auto slash = rest.find('/');
+    if (slash == std::string_view::npos) { authority = rest; path = ""; }
+    else { authority = rest.substr(0, slash); path = rest.substr(slash); }
+    // V10F (BUG-07): no query/fragment in either split input (fail closed).
+    if (authority.find_first_of("?#") != std::string::npos ||
+        path.find_first_of("?#") != std::string::npos) {
+        return false;
+    }
+
+    // host[:port] — bracketed IPv6 first ('[...]' literal, optional :port).
+    std::string h = authority, ps;
+    bool port_specified = false;
+    if (!authority.empty() && authority.front() == '[') {
+        const auto rb = authority.find(']');
+        if (rb == std::string::npos) return false; // unterminated bracket literal
+        h = authority.substr(0, rb + 1);
+        if (rb + 1 < authority.size()) {
+            if (authority[rb + 1] != ':') return false; // garbage after ']'
+            ps = authority.substr(rb + 2);
+            port_specified = true;
+        }
+    } else {
+        if (authority.find(']') != std::string::npos) return false; // stray ']'
+        const auto colon = authority.rfind(':');
+        if (colon != std::string::npos) {
+            h = authority.substr(0, colon);
+            ps = authority.substr(colon + 1);
+            port_specified = true;
+        }
+    }
+    if (h.empty()) return false;
+    if (port_specified) {
+        if (ps.empty()) return false; // V10F (BUG-07): an empty port is not valid
+        int p = 0;
+        for (char c : ps) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+            p = p * 10 + (c - '0');
+            if (p > 65535) return false;
+        }
+        port = static_cast<INTERNET_PORT>(p);
+    }
+
+    host = ToUtf16(h);
+    if (path.empty() || path == "/") prefix = L"";
+    else {
+        prefix = ToUtf16(path);
+        while (!prefix.empty() && prefix.back() == L'/') prefix.pop_back();
+    }
+    return !host.empty();
+}
+
 OpenAiUrlSecurity ClassifyOpenAiBaseUrl(std::string_view base_url) {
     auto scheme_end = base_url.find("://");
     if (scheme_end == std::string_view::npos || scheme_end == 0) return OpenAiUrlSecurity::Invalid;
@@ -824,7 +1125,7 @@ std::vector<std::string> ParseOpenAiModelsJson(std::string_view json) {
 
 std::string BuildChatBody(std::string_view model, std::string_view system,
                           std::string_view user, std::string_view reasoning_effort,
-                          bool include_optional_params) {
+                          bool include_optional_params, bool stream) {
     // 2A-2 (report §3.1-A item 2): the legacy "temperature":0 + "max_tokens":
     // 8192 pair is now an OPT-IN (tests / a future knob). Production omits
     // both: the fixed token cap rejects 4K-output and small-context servers,
@@ -837,6 +1138,13 @@ std::string BuildChatBody(std::string_view model, std::string_view system,
       << "\"},{\"role\":\"user\",\"content\":\"" << JsonEscape(user) << "\"}]";
     if (!reasoning_effort.empty()) {
         b << ",\"reasoning_effort\":\"" << JsonEscape(reasoning_effort) << "\"";
+    }
+    // V10F (L3-B): "stream":true asks for text/event-stream frames. Omitted
+    // when false, so the non-streaming body stays byte-for-byte identical; it
+    // is emitted BEFORE the optional pair so that pair remains the tail the
+    // legacy body pin expects.
+    if (stream) {
+        b << ",\"stream\":true";
     }
     if (include_optional_params) {
         b << ",\"temperature\":0,\"max_tokens\":8192";
@@ -903,6 +1211,92 @@ bool OpenAiChunkNeedsRequest(std::string_view chunk_text) {
 
 OpenAiChatResult ParseOpenAiChatJson(std::string_view json) {
     return ParseChatJson(json);
+}
+
+// ---- V10F (L3-B, 261122_0002 P2-A): the SSE seams (see the header) ----
+
+std::string ParseOpenAiSseFrameData(std::string_view frame) {
+    // WHATWG SSE field grammar, the subset OpenAI-compatible servers emit: a
+    // frame is the text up to a blank line, data: lines join with '\n', one
+    // optional space after the colon is stripped, comments (':') and every
+    // other field are ignored, and a CRLF transport's '\r' is dropped.
+    std::string data;
+    bool have_data = false;
+    size_t start = 0;
+    for (;;) {
+        const size_t nl = frame.find('\n', start);
+        std::string_view line =
+            frame.substr(start, (nl == std::string_view::npos ? frame.size() : nl) - start);
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        constexpr std::string_view kDataField = "data:";
+        if (line.size() >= kDataField.size() &&
+            line.compare(0, kDataField.size(), kDataField) == 0) {
+            line.remove_prefix(kDataField.size());
+            if (!line.empty() && line.front() == ' ') line.remove_prefix(1);
+            if (have_data) data.push_back('\n'); // multi-line data joins with LF
+            data.append(line);
+            have_data = true;
+        }
+        if (nl == std::string_view::npos) break;
+        start = nl + 1;
+    }
+    return data;
+}
+
+OpenAiSseDelta ParseOpenAiSseDeltaJson(std::string_view json) {
+    // choices[0].delta.content / choices[0].finish_reason. Structurally the
+    // same walk ParseChatJson does for the non-streaming "message" object, so
+    // both paths read the same provider shapes; every loop advances or stops
+    // (NextKey consumes the key + colon, SkipValue always moves), which is the
+    // F-1 no-spin contract applied to a per-token payload.
+    OpenAiSseDelta out;
+    size_t pos = 0;
+    SkipWs(json, pos);
+    if (pos >= json.size() || json[pos] != '{') return out;
+    ++pos;
+    std::string key;
+    while (NextKey(json, pos, key)) {
+        if (key == "choices" && pos < json.size() && json[pos] == '[') {
+            ++pos; // into the choices array
+            SkipWs(json, pos);
+            if (pos >= json.size() || json[pos] != '{') break;
+            ++pos; // into the FIRST choice object (later choices are ignored)
+            std::string ckey;
+            while (NextKey(json, pos, ckey)) {
+                if (ckey == "delta" && pos < json.size() && json[pos] == '{') {
+                    ++pos; // into the delta object
+                    std::string dkey;
+                    while (NextKey(json, pos, dkey)) {
+                        if (dkey == "content") {
+                            if (pos < json.size() && json[pos] == '"') {
+                                ParseJsonString(json, pos, out.content);
+                            } else {
+                                // "content": null on a finish_reason-only frame.
+                                SkipValue(json, pos);
+                            }
+                        } else {
+                            SkipValue(json, pos); // role / tool_calls / ...
+                        }
+                        SkipWs(json, pos);
+                        if (pos < json.size() && json[pos] == ',') ++pos;
+                    }
+                    if (pos < json.size() && json[pos] == '}') ++pos;
+                } else if (ckey == "finish_reason" && pos < json.size() && json[pos] == '"') {
+                    ParseJsonString(json, pos, out.finish_reason);
+                    BoundFinishReasonToken(out.finish_reason); // G-4 bound-at-parse
+                } else {
+                    SkipValue(json, pos);
+                }
+                SkipWs(json, pos);
+                if (pos < json.size() && json[pos] == ',') ++pos;
+            }
+            return out;
+        }
+        SkipValue(json, pos);
+        SkipWs(json, pos);
+        if (pos < json.size() && json[pos] == ',') ++pos;
+    }
+    return out;
 }
 
 namespace {
@@ -1485,6 +1879,21 @@ bool OpenAiCompatibleClient::FetchModelsAndCapabilities(
                static_cast<int>(sec), cfg.http_consent_given ? 1 : 0);
         return false;
     }
+    // V10F-R2 (fix-list round 2, F-28): the model-list GET carries the SAME
+    // Authorization: Bearer key as the chat leg, so the plaintext-http
+    // exception is scoped to the consented ORIGIN exactly like the engine's
+    // request-time gate (V10F-R1 F-17): the boolean alone must never put the
+    // key on a base_url the user did not consent to (a hand-edited http
+    // origin against a stale YES). The caller hands the persisted scope in
+    // through OpenAiConfig::http_consent_origin; a mismatch fails closed
+    // through this same consent-blocked path, before the key is unprotected
+    // and before any byte leaves.
+    if (sec == OpenAiUrlSecurity::Http &&
+        !OpenAiHttpConsentOriginMatches(cfg.base_url, cfg.http_consent_origin)) {
+        DIAG_F("OPENAI/ListModels/002: http consent origin mismatch; refusing the "
+               "fetch (fail-closed, no request started)\n");
+        return false;
+    }
 
     std::string key;
     if (!WithUnprotectedKey(cfg, key)) return false;
@@ -1506,8 +1915,12 @@ bool OpenAiCompatibleClient::FetchModelsAndCapabilities(
     const std::wstring path = prefix.empty() ? L"/v1/models" : prefix + L"/models";
     std::string body;
     std::string response;
+    // V10F-R1 (F-01): the model-list GET publishes into the MODELS purpose
+    // slot, never the chat slot — a chat cancel must not close it and it must
+    // never block (or be blocked by) a chat request's publish.
     const DWORD status = HttpRequest(https, host, port, L"GET", path, key, body,
-                                     kListModelsProfile, response);
+                                     kListModelsProfile, response, nullptr, nullptr,
+                                     nullptr, OpenAiRequestSlotPurpose::Models);
     if (status != 200) return false;
     // vp-plan C4: ONE body, TWO parses. ParseModelsJson keeps its exact
     // historical shape/caps (and its F-1/F-7 pins); the capability walk is a
@@ -1515,6 +1928,15 @@ bool OpenAiCompatibleClient::FetchModelsAndCapabilities(
     if (ids) *ids = ParseModelsJson(response);
     if (caps) *caps = ParseModelCapabilitiesJson(response);
     return true;
+}
+
+bool OpenAiCompatibleClient::RequestAbortCurrent() {
+    // V10F (RISK-02 Option A): the whole abort is the slot's single-owner
+    // close — see g_request_slot_chat. V10F-R1 (F-01): the CHAT purpose only,
+    // so a chat cancel closes the chat request and never a model-list GET
+    // running on the settings dialog's worker. Returns whether a request was
+    // in flight.
+    return AbortRequestSlot(g_request_slot_chat);
 }
 
 std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
@@ -1525,6 +1947,12 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
                                                     const TranslationTaskContext& ctx) {
     if (out_error_detail) {
         out_error_detail->clear();
+    }
+    // V10F (RISK-03 carrier): the per-request detail slot is cleared on entry
+    // exactly like the named out-param, so a caller that owns its context can
+    // never read a previous request's cause on success (or on a cancel).
+    if (ctx.out_error_detail) {
+        ctx.out_error_detail->clear();
     }
     // A new request starts with a clean failure record; only a failure
     // below writes a fresh one (honest-failure contract: an empty result
@@ -1556,6 +1984,13 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
         const std::string detail = SanitizeOpenAiErrorDetail(raw_detail, key);
         if (out_error_detail) {
             *out_error_detail = detail;
+        }
+        // V10F (RISK-03 carrier): the identical bounded/masked cause also lands
+        // in the caller's per-request slot. The process-wide record below stays
+        // (worker.cpp / drag / double-Ctrl+C read it), but a caller that owns
+        // its TranslationTaskContext no longer has to race that global.
+        if (ctx.out_error_detail) {
+            *ctx.out_error_detail = detail;
         }
         RecordChatErrorDetail(detail);
     };
@@ -1619,18 +2054,40 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
     // size below and the whole request fails closed at
     // kOpenAiMaxTotalResponseBytes (see the header for the headroom math).
     std::size_t total_response_bytes = 0;
+    // V10F (L3-B / P2-B cumulative contract): the stitched text of every chunk
+    // that already COMPLETED inside this request (content + trailing delimiter,
+    // exactly what JoinOpenAiChunkTranslations will produce for them). The
+    // preview sink is CUMULATIVE (translation_progress.hpp: the receiver
+    // REPLACES, never appends), so a per-delta emission must carry everything
+    // the user should currently see. Concatenating this prefix at every delta
+    // would cost O(total) per token on a long request, so the rule is: the
+    // first chunk (prefix empty, the overwhelmingly common single-chunk case)
+    // streams per delta, and each later chunk emits ONE cumulative tick when it
+    // completes. Monotone growth either way, no shrinking preview, bounded
+    // copying.
+    std::string preview_prefix;
+    struct PrefixScrubber {
+        std::string& value;
+        ~PrefixScrubber() { SecureZeroMemory(value.data(), value.size()); }
+    } preview_scrubber{preview_prefix};
     bool any_request_sent = false;
     for (size_t i = 0; i < chunks.size(); ++i) {
         // 261121_0002 T2 (design-pick §Plumbing, OpenAI row): a user cancel is
         // honored at the TOP of the iteration — BEFORE the loop-budget check,
         // before the no-content fold, before any further I/O — so a long run
-        // unwinds within one chunk's request time (an in-flight synchronous
-        // WinHTTP call cannot be aborted; see the design's honest limits). The
-        // return is deliberately BARE (no fail()): a cancel is not an engine
-        // failure, so no cause is recorded and LastChatErrorDetail stays clean.
-        // The manager attributes Canceled vs EngineFailed (T3). The scrubbing
-        // destructor still zeroes the partial translations on this exit.
-        if (ChunkLoopCancelRequested(ctx.cancel)) {
+        // unwinds within one chunk's request time. The return is deliberately
+        // BARE (no fail()): a cancel is not an engine failure, so no cause is
+        // recorded and LastChatErrorDetail stays clean. The manager attributes
+        // Canceled vs EngineFailed (T3). The scrubbing destructor still zeroes
+        // the partial translations on this exit.
+        //
+        // V10F (RISK-02, 261122_0002 P2-A): the engine's shutdown latch bridge
+        // (ctx.abort) folds into the SAME gate, so an exit intent can never
+        // start another POST; the in-flight-request half is the slot abort
+        // below (a request blocked in WinHTTP is closed by
+        // OpenAiCompatibleClient::RequestAbortCurrent from the caller's
+        // thread, which the read loop turns into a fail-closed return).
+        if (ChunkLoopCancelRequested(ctx.cancel) || ChunkLoopAbortRequested(ctx.abort)) {
             DIAG_F("OPENAI/ChatCompletion/010: cancel requested (index=%zu of %zu); "
                    "whole request unwinds (shape-only)\n",
                    i, chunks.size());
@@ -1646,6 +2103,12 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
             // that is the delimiter alone, exactly like the Google client's
             // pure-delimiter fold.
             translations.push_back(chunks[i].text);
+            // The preview prefix mirrors the final join (text + the chunk's
+            // trailing delimiter), so a later chunk's cumulative tick is the
+            // whole story so far. Silent: a folded chunk carries no
+            // translation worth a preview update.
+            preview_prefix += chunks[i].text;
+            preview_prefix += chunks[i].trailing_delimiter;
             DIAG_F("OPENAI/ChatCompletion/006: chunk has no translatable content and is "
                    "passed through without a request (index=%zu of %zu, text_len=%zu)\n",
                    i, chunks.size(), chunks[i].text.size());
@@ -1675,6 +2138,84 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
         if (ShowChunkProgress(chunks.size()) && ctx.on_chunk) {
             ctx.on_chunk(i + 1, chunks.size());
         }
+        // V10F (L3-B / RISK-02 Option C, 261122_0002 P2-A): per-chunk SSE state.
+        // Declared OUTSIDE the attempt loop so the post-request assembly (and
+        // the reasoning_effort 400 retry's reset) share one set of buffers.
+        // `streaming` is the whole switch: an empty ctx.on_chunk_text leaves the
+        // client on the byte-identical non-streaming path.
+        const bool streaming = static_cast<bool>(ctx.on_chunk_text);
+        std::string sse_frame;    // current frame's non-blank lines, '\n'-joined
+        std::string sse_partial;  // line fragment carried across reads
+        std::string sse_raw;      // cumulative choices[0].delta.content
+        std::string sse_finish;   // last non-empty finish_reason token
+        bool sse_done = false;    // saw the "data: [DONE]" terminator
+        bool sse_frames_seen = false; // saw at least one data frame (SSE in use)
+        bool stream_aborted = false; // the sink's own abort verdict (cancel/abort)
+        // The streamed text is user content, so it gets the same exit hygiene as
+        // the translations vector below (TranslationScrubber): zeroed when the
+        // chunk iteration ends, after the assembled content has been copied out.
+        struct StreamScrubber {
+            std::string& value;
+            ~StreamScrubber() { SecureZeroMemory(value.data(), value.size()); }
+        } sse_scrubber{sse_raw};
+        // Dispatches the accumulated frame: frame -> data payload -> delta.
+        // The preview is the CUMULATIVE text post think-strip + trim, i.e.
+        // exactly what this chunk will contribute once the stream ends, so a
+        // consumer sets (never appends) its surface.
+        auto dispatch_sse_frame = [&]() {
+            const std::string data = ParseOpenAiSseFrameData(sse_frame);
+            sse_frame.clear();
+            if (data.empty()) return; // comment-only keep-alive frame
+            if (data == "[DONE]") {
+                sse_done = true;
+                return;
+            }
+            const OpenAiSseDelta delta = ParseOpenAiSseDeltaJson(data);
+            sse_frames_seen = true;
+            if (!delta.finish_reason.empty()) sse_finish = delta.finish_reason;
+            if (delta.content.empty()) return; // role prelude / tool delta
+            sse_raw += delta.content;
+            // The first chunk streams per delta; a later chunk's per-delta tick
+            // would have to re-copy the whole prefix (see preview_prefix), so it
+            // emits once on completion instead.
+            if (ctx.on_chunk_text && preview_prefix.empty()) {
+                ctx.on_chunk_text(
+                    ToUtf16(TrimAsciiWhitespace(StripThinkBlocks(sse_raw))));
+            }
+        };
+        HttpBodySink sse_sink;
+        if (streaming) {
+            sse_sink = [&](std::string_view slice) -> bool {
+                // Fail closed on a cancel/abort that landed between SSE reads:
+                // false makes HttpRequest discard the partial body and report
+                // status 0, so no half-streamed translation is trusted.
+                if (ChunkLoopCancelRequested(ctx.cancel) ||
+                    ChunkLoopAbortRequested(ctx.abort)) {
+                    stream_aborted = true;
+                    return false;
+                }
+                size_t start = 0;
+                while (start < slice.size()) {
+                    const size_t nl = slice.find('\n', start);
+                    if (nl == std::string_view::npos) {
+                        sse_partial.append(slice.substr(start));
+                        break;
+                    }
+                    sse_partial.append(slice.substr(start, nl - start));
+                    std::string line = std::move(sse_partial);
+                    sse_partial.clear();
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    if (line.empty()) {
+                        dispatch_sse_frame(); // blank line ends the frame
+                    } else {
+                        if (!sse_frame.empty()) sse_frame.push_back('\n');
+                        sse_frame += line;
+                    }
+                    start = nl + 1;
+                }
+                return !stream_aborted;
+            };
+        }
         std::string response;
         std::string error_body;
         DWORD status = 0;
@@ -1683,11 +2224,20 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
             const std::string_view effort =
                 with_effort ? std::string_view(cfg.reasoning_effort) : std::string_view();
             const std::string body = BuildChatBody(cfg.model, system, chunks[i].text, effort,
-                                                  /*include_optional_params=*/false);
+                                                  /*include_optional_params=*/false,
+                                                  /*stream=*/streaming);
             response.clear();
             error_body.clear();
+            sse_frame.clear();
+            sse_partial.clear();
+            sse_raw.clear();
+            sse_finish.clear();
+            sse_done = false;
+            sse_frames_seen = false;
+            stream_aborted = false;
             status = HttpRequest(https, host, port, L"POST", path, key, body,
-                                 kChatProfile, response, &error_body);
+                                 kChatProfile, response, &error_body,
+                                 streaming ? &sse_sink : nullptr, ctx.abort);
             if (status == 400 && with_effort) {
                 effort_rejected = true;
                 DIAG_F("OPENAI/ChatCompletion/003: server rejected reasoning_effort (HTTP 400); "
@@ -1695,6 +2245,14 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
                 continue;
             }
             break;
+        }
+        if (status == 0 && (stream_aborted || RequestSlotAbortedFor(OpenAiRequestSlotPurpose::Chat))) {
+            // V10F (RISK-02): a cancel/abort is NOT an engine failure — unwind
+            // bare so LastChatErrorDetail and ctx.out_error_detail stay empty
+            // and the manager attributes Canceled (the engine.cpp rule).
+            DIAG_F("OPENAI/ChatCompletion/011: request aborted (index=%zu of %zu); "
+                   "whole request unwinds (shape-only)\n", i, chunks.size());
+            return {};
         }
         if (status != 200) {
             // 261111_0001 U6 (R1 P1-3): surface the REAL cause — the HTTP
@@ -1743,7 +2301,68 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
             return {};
         }
 
-        OpenAiChatResult parsed = ParseOpenAiChatJson(response);
+        // V10F (L3-B): assemble the chunk's answer. Non-streaming parses the
+        // single JSON body exactly as before; streaming replays the SSE frames
+        // it already consumed through the SAME post-processing (think-strip +
+        // trim + finish_reason diagnosis), so both paths hand the chunk loop an
+        // identical OpenAiChatResult.
+        OpenAiChatResult parsed;
+        if (streaming) {
+            // A final line/frame can arrive without its terminating blank line
+            // (servers close right after the last delta): flush both.
+            if (!sse_partial.empty()) {
+                std::string line = std::move(sse_partial);
+                sse_partial.clear();
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (!line.empty()) {
+                    if (!sse_frame.empty()) sse_frame.push_back('\n');
+                    sse_frame += line;
+                }
+            }
+            dispatch_sse_frame();
+            if (!sse_frames_seen) {
+                // No SSE frame at all: the endpoint ignored "stream":true and
+                // answered with one ordinary chat-completion body (several
+                // compatible servers do). Parse it exactly like the
+                // non-streaming path instead of failing a request that plainly
+                // succeeded; the preview simply has nothing progressive to show.
+                DIAG_F("OPENAI/ChatCompletion/013: no SSE frames in the 200 body "
+                       "(index=%zu of %zu, bytes=%zu); parsing it as a non-streaming answer\n",
+                       i, chunks.size(), response.size());
+                parsed = ParseOpenAiChatJson(response);
+            } else if (!sse_done) {
+                // V10F-R1 (F-10): the [DONE] terminator is ABSENT — classify
+                // the close. A final frame carrying finish_reason "stop" means
+                // the server simply omitted the terminator (several compatible
+                // servers do): the assembled answer is COMPLETE and flows
+                // through the same post-processing as the [DONE] path. Any
+                // other close without [DONE] (no finish_reason, "length",
+                // "content_filter") is a truncation — a partial answer must
+                // never masquerade as a complete translation, so the WHOLE
+                // request fails closed through the ordinary recorder, the same
+                // verdict an unparseable non-streaming body gets. Aborted
+                // streams never reach here (they already returned status 0).
+                if (ClassifyOpenAiSseTermination(sse_done, sse_finish) ==
+                    OpenAiSseTermination::Truncated) {
+                    fail(std::string());
+                    DIAG_F("OPENAI/ChatCompletion/012: stream ended without the [DONE] "
+                           "terminator or a finish_reason \"stop\" final frame "
+                           "(index=%zu of %zu, bytes=%zu, deltas_len=%zu, finish=%s); "
+                           "failing closed\n",
+                           i, chunks.size(), response.size(), sse_raw.size(),
+                           sse_finish.empty() ? "(none)" : sse_finish.c_str());
+                    return {};
+                }
+                parsed.content = TrimAsciiWhitespace(StripThinkBlocks(sse_raw));
+            } else {
+                parsed.content = TrimAsciiWhitespace(StripThinkBlocks(sse_raw));
+                if (parsed.content.empty() && !sse_finish.empty() && sse_finish != "stop") {
+                    parsed.failure_detail = "finish_reason: " + sse_finish;
+                }
+            }
+        } else {
+            parsed = ParseOpenAiChatJson(response);
+        }
         if (parsed.content.empty()) {
             // 2A-4(b): a distinguishable diagnosis ("finish_reason: ...") when
             // the provider blocked or truncated the answer, "" otherwise (R2-E:
@@ -1753,6 +2372,13 @@ std::wstring OpenAiCompatibleClient::ChatCompletion(const OpenAiConfig& cfg,
                    "(index=%zu of %zu, detail_len=%zu)\n",
                    i, chunks.size(), parsed.failure_detail.size());
             return {};
+        }
+        // V10F (L3-B): advance the stitched prefix and give a multi-chunk run
+        // its cumulative tick (the first chunk already streamed per delta).
+        preview_prefix += parsed.content;
+        preview_prefix += chunks[i].trailing_delimiter;
+        if (ctx.on_chunk_text) {
+            ctx.on_chunk_text(ToUtf16(preview_prefix));
         }
         translations.push_back(std::move(parsed.content));
     }

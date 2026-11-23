@@ -29,7 +29,7 @@
 #define EMBALA_VERSION_ASCII EMBALA_VERSION_STR(EMEBALACHAT_VERSION_STR)
 #else
 // Fallback when the compile definition is absent (see header comment).
-#define EMBALA_VERSION_ASCII "0.10.9"
+#define EMBALA_VERSION_ASCII "0.10.10"
 #endif
 
 #define EMBALA_VERSION_WIDE EMBALA_VERSION_CATW(EMBALA_VERSION_ASCII)

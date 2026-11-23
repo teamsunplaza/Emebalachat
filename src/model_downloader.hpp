@@ -11,6 +11,9 @@
 // Reuses the update checker's DownloadUpdate engine (src/update_checker.hpp)
 // through the generalized DownloadOptions seam: an HF host allowlist and a
 // 4 GiB absolute cap, without changing the update path's pinned behavior.
+// V10F (BUG-10 transport half, 261122_0002 P2-A): the same seam now also
+// carries the abort slot, so cancelling closes the live socket instead of
+// waiting out the receive timeout (see AbortActiveModelDownload below).
 // The SHA-256 pin MIRRORS the installer/engine constants — SYNC NOTE below.
 //
 // Failure contract (same as the update checker): quiet inline states in the
@@ -146,6 +149,24 @@ FetchOutcome FetchAndInstallModel(
     const std::function<void(std::uint64_t received, std::uint64_t total)>& on_progress,
     const std::atomic<bool>& cancel,
     const std::function<void(FetchPhase)>& on_phase = {});
+
+// V10F (BUG-10 transport half, 261122_0002 P2-A): close the socket of the
+// transfer that is running RIGHT NOW, from any thread. FetchAndInstallModel
+// publishes its live WinHTTP handles into a process-wide slot for the duration
+// of the transfer (updatelogic::DownloadAbortSlot, the
+// gguf_model_manager_window.cpp HfClearSlot protocol), so this call turns a
+// worker blocked in WinHttpQueryDataAvailable / WinHttpReadData into a prompt
+// FetchOutcome::Cancelled instead of a join() that freezes the GUI thread.
+// A running transfer ALREADY bridges its own `cancel` flag to this call (a
+// 20 ms watcher thread inside FetchAndInstallModel), so a caller that only sets
+// cancel gets the prompt abort with no extra wiring; this entry point exists
+// for callers that want to close the socket BEFORE setting the flag (or before
+// their own join).
+// Returns true when a handle was actually closed. A call while idle, and a call
+// when no slot was ever published (an already-cancelled fetch), are no-ops —
+// the caller's cancel flag covers the between-request window. Only ONE model
+// transfer runs at a time (the dialog joins its worker), so one slot is exact.
+bool AbortActiveModelDownload();
 
 // True when the pinned model file already sits in the shared store.
 bool ModelFilePresent();

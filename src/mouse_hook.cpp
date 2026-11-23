@@ -13,31 +13,65 @@ namespace emebalachat {
 
 namespace {
 
-// ISSUE-013 (v0.10.7): the Win32 half of the drag-release threshold. The LL
-// hook delivers PHYSICAL pixels of the monitor under the cursor, so the
-// system drag metrics must be read for THAT monitor's DPI:
-// GetSystemMetricsForDpi (user32, Win10 1607+) returns the metric already
-// expressed in that monitor's physical pixels. Resolved through
-// GetProcAddress (the dpi.cpp shcore discipline) so an older host degrades
-// to the DPI-unaware GetSystemMetrics instead of failing to load. Cost: one
-// MonitorDpiAtPoint + two metric reads per drag RELEASE (never per move) -
-// the hook thread already calls GetSystemMetrics freely for the double-click
-// detection in the WM_LBUTTONDOWN branch.
-int DragThresholdPixelsForPress(POINT press_pt) {
-    const UINT dpi = ui::MonitorDpiAtPoint(press_pt);
-    typedef int(WINAPI* GetSystemMetricsForDpiFn)(int, UINT);
-    static GetSystemMetricsForDpiFn metrics_for_dpi = []() -> GetSystemMetricsForDpiFn {
+// ISSUE-013 (v0.10.7) + V10F D2 (v0.10.10 phased fixes): shared Win32 half
+// of the system-metric thresholds. The LL hook delivers PHYSICAL pixels of
+// the monitor under the cursor, so every system metric compared against
+// those pixels must be read for THAT monitor's DPI: GetSystemMetricsForDpi
+// (user32, Win10 1607+) returns the metric already expressed in that
+// monitor's physical pixels. Resolved through GetProcAddress (the dpi.cpp
+// shcore discipline) so an older host degrades to the DPI-unaware
+// GetSystemMetrics instead of failing to load. V10F D2: the cached pointer
+// lives in this shared helper so the WM_LBUTTONDOWN double-click tolerance
+// (previously the last DPI-unaware metric read on the hook path) is scaled
+// by the press monitor's DPI too. Cost: one MonitorDpiAtPoint + two metric
+// reads per drag RELEASE and per PRESS (never per move); the hook thread
+// already called GetSystemMetrics freely on the press path.
+typedef int (WINAPI* GetSystemMetricsForDpiFn)(int, UINT);
+
+GetSystemMetricsForDpiFn CachedMetricsForDpiFn() {
+    static GetSystemMetricsForDpiFn fn = []() -> GetSystemMetricsForDpiFn {
         HMODULE user32 = ::GetModuleHandleW(L"user32.dll");
         return user32 ? reinterpret_cast<GetSystemMetricsForDpiFn>(
                             ::GetProcAddress(user32, "GetSystemMetricsForDpi"))
                       : nullptr;
     }();
-    if (metrics_for_dpi) {
-        return MouseHook::DragThresholdFromMetrics(metrics_for_dpi(SM_CXDRAG, dpi),
-                                                   metrics_for_dpi(SM_CYDRAG, dpi));
+    return fn;
+}
+
+int SystemMetricForDpiOrFallback(int metric, UINT dpi) {
+    if (GetSystemMetricsForDpiFn metrics_for_dpi = CachedMetricsForDpiFn()) {
+        return metrics_for_dpi(metric, dpi);
     }
-    return MouseHook::DragThresholdFromMetrics(::GetSystemMetrics(SM_CXDRAG),
-                                               ::GetSystemMetrics(SM_CYDRAG));
+    return ::GetSystemMetrics(metric);
+}
+
+int DragThresholdPixelsForPress(POINT press_pt) {
+    const UINT dpi = ui::MonitorDpiAtPoint(press_pt);
+    return MouseHook::DragThresholdFromMetrics(
+        SystemMetricForDpiOrFallback(SM_CXDRAG, dpi),
+        SystemMetricForDpiOrFallback(SM_CYDRAG, dpi));
+}
+
+// V10F D2: the press gate's double-click tolerance rect. PURE half
+// (headless-testable shape): the Win32 metric read is injected as
+// metric_for_dpi so the resolution policy is exercisable without a display.
+// Deliberately NO clamping (unlike the drag threshold's 3 px floor): a 0
+// SM_CXDOUBLECLK is a valid hostile user setting that historically just
+// disabled the spatial criterion, and a per-metric failure mode would add a
+// behavior change on top of the DPI fix.
+struct DoubleClickTolerance {
+    int cx;
+    int cy;
+};
+
+DoubleClickTolerance DoubleClickToleranceForDpi(int (*metric_for_dpi)(int, UINT), UINT dpi) {
+    return { metric_for_dpi(SM_CXDOUBLECLK, dpi), metric_for_dpi(SM_CYDOUBLECLK, dpi) };
+}
+
+DoubleClickTolerance DoubleClickToleranceForPress(POINT press_pt) {
+    const UINT dpi = ui::MonitorDpiAtPoint(press_pt);
+    return DoubleClickToleranceForDpi(
+        [](int metric, UINT d) { return SystemMetricForDpiOrFallback(metric, d); }, dpi);
 }
 
 } // namespace
@@ -346,8 +380,14 @@ LRESULT CALLBACK MouseHook::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
         int d_last_x = std::abs(ms->pt.x - s_instance->last_click_pt_.x);
         int d_last_y = std::abs(ms->pt.y - s_instance->last_click_pt_.y);
         UINT max_dbl_time = ::GetDoubleClickTime();
-        int max_dbl_cx = ::GetSystemMetrics(SM_CXDOUBLECLK);
-        int max_dbl_cy = ::GetSystemMetrics(SM_CYDOUBLECLK);
+        // V10F D2: the tolerance rect used to come from the DPI-unaware
+        // ::GetSystemMetrics (4 physical px at 200% scale), shrinking the
+        // spatial half of double-click detection on scaled panels; resolve it
+        // for the press monitor's DPI through the same cached
+        // GetSystemMetricsForDpi helper as the drag threshold (ISSUE-013).
+        const DoubleClickTolerance dbl_tolerance = DoubleClickToleranceForPress(ms->pt);
+        int max_dbl_cx = dbl_tolerance.cx;
+        int max_dbl_cy = dbl_tolerance.cy;
 
         if ((now - s_instance->last_click_time_ <= max_dbl_time) &&
             (d_last_x <= max_dbl_cx) && (d_last_y <= max_dbl_cy)) {

@@ -32,7 +32,15 @@ constexpr WORD IDC_MD_LATER = 1506;
 constexpr WORD IDC_MD_RETRY = 1507;
 constexpr WORD IDC_MD_CLOSE = 1508;
 
-enum class MdPhase { Consent, Progress, Result };
+enum class MdPhase {
+    Consent,
+    Progress,
+    // V10F/BUG-10 (Option B): the transfer is unwinding. Every action is
+    // disabled and the body reads CancellingProgress until kMdMsgDone lands;
+    // only then does the dialog close (the caller's join is a no-op by then).
+    Cancelling,
+    Result
+};
 
 struct MdDialogState {
     std::atomic<bool> cancel{false};
@@ -51,8 +59,11 @@ void MdApplyVisibility(HWND dlg, MdPhase phase, bool no_space, bool success) {
     ::ShowWindow(::GetDlgItem(dlg, IDC_MD_STATUS), phase == MdPhase::Progress ? SW : HD);
     ::ShowWindow(::GetDlgItem(dlg, IDC_MD_PRIVACY),
                  phase == MdPhase::Consent && !no_space ? SW : HD);
+    // V10F/BUG-10: the cancelling state keeps the bar frozen in place (no
+    // further PBM_SETPOS writes) and drops every button, so the dialog has no
+    // remaining action while the worker unwinds.
     ::ShowWindow(::GetDlgItem(dlg, IDC_MD_PROGRESS),
-                 phase == MdPhase::Progress ? SW : HD);
+                 phase == MdPhase::Progress || phase == MdPhase::Cancelling ? SW : HD);
     ::ShowWindow(::GetDlgItem(dlg, IDC_MD_DOWNLOAD),
                  phase == MdPhase::Consent && !no_space ? SW : HD);
     ::ShowWindow(::GetDlgItem(dlg, IDC_MD_LATER),
@@ -74,6 +85,40 @@ std::wstring MdReplace(std::wstring text, std::wstring_view token, std::wstring_
         pos += value.size();
     }
     return text;
+}
+
+// V10F/BUG-10 (Option A+B): the ONE cancel route for Esc (IDCANCEL), the
+// title-bar [X] (WM_CLOSE) and [Later]. During the transfer the dialog must
+// NOT close here: FetchAndInstallModel's worker can sit inside a WinHTTP read
+// for the whole 30 s receive timeout, and OfferModelDownload's join after
+// DialogBoxIndirectParamW runs on the GUI thread — closing first would freeze
+// the app for that window. Instead the dialog drops every action, closes the
+// live socket through the transport seam, and shows CancellingProgress (an
+// existing StringId) until kMdMsgDone lands; only then does EndDialog run, at
+// which point the worker is provably finished and the exit join is a no-op.
+//
+// Order is the fix: the cancel flag covers the between-request window
+// (DownloadUpdate polls it before every 256 KiB read), and
+// AbortActiveModelDownload closes the handle the worker is actually blocked
+// on — both BEFORE the kMdMsgDone wait, so the wait is bounded by the worker's
+// unwind, not by the receive timeout.
+void MdRequestCancel(HWND dlg, MdDialogState* st) {
+    if (st && st->phase == MdPhase::Cancelling) {
+        return; // already unwinding: swallow repeated Esc / [X] / Later
+    }
+    if (!st || st->phase != MdPhase::Progress) {
+        // Consent (no worker yet) or Result (the worker already posted done):
+        // the historical quiet close cannot block on the join.
+        ::EndDialog(dlg, IDCANCEL);
+        return;
+    }
+    st->cancel.store(true, std::memory_order_relaxed);
+    modeldownloader::AbortActiveModelDownload(); // V10F: close the stalled socket now
+    st->phase = MdPhase::Cancelling;
+    ::SetWindowTextW(::GetDlgItem(dlg, IDC_MD_STATUS), L"");
+    MdSetBody(dlg, I18n::Get(StringId::CancellingProgress));
+    MdApplyVisibility(dlg, MdPhase::Cancelling, false, false);
+    ::InvalidateRect(dlg, nullptr, TRUE);
 }
 
 INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -119,6 +164,9 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
         }
 
         case kMdMsgProgress: {
+            // V10F/BUG-10: while the transfer unwinds the bar stays frozen at
+            // its last position; the in-flight chunk is discarded anyway.
+            if (st && st->phase == MdPhase::Cancelling) return TRUE;
             const int percent = static_cast<int>(wParam);
             const std::uint64_t received = static_cast<std::uint64_t>(lParam);
             ::SendMessageW(::GetDlgItem(dlg, IDC_MD_PROGRESS), PBM_SETPOS, percent, 0);
@@ -131,6 +179,11 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
         }
 
         case kMdMsgPhase: {
+            // V10F/BUG-10: a phase label (Verifying/Placing) must not paint
+            // over the CancellingProgress body while the dialog unwinds. The
+            // fetch still finishes the install by design; only the label is
+            // held back.
+            if (st && st->phase == MdPhase::Cancelling) return TRUE;
             // Hash/move phase label (percent frozen at 100 during the hash).
             ::SetWindowTextW(::GetDlgItem(dlg, IDC_MD_BODY),
                              I18n::Get(static_cast<StringId>(wParam)).c_str());
@@ -139,6 +192,14 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
 
         case kMdMsgDone: {
             st->outcome = static_cast<modeldownloader::FetchOutcome>(wParam);
+            // V10F/BUG-10: the cancel path already told the user it is
+            // unwinding; the worker is finished now (this post IS its last
+            // act), so the caller's join cannot block. Quiet close, exactly
+            // like [Later].
+            if (st->phase == MdPhase::Cancelling) {
+                ::EndDialog(dlg, IDCANCEL);
+                return TRUE;
+            }
             const bool success = st->outcome == modeldownloader::FetchOutcome::Ok;
             st->hash_failed = st->outcome == modeldownloader::FetchOutcome::HashMismatch;
             st->phase = MdPhase::Result;
@@ -167,9 +228,15 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
 
         case WM_COMMAND: {
             const WORD id = LOWORD(wParam);
+            // V10F/BUG-10: Esc arrives as WM_COMMAND(IDCANCEL) — the pre-fix
+            // proc fell through to `return FALSE;` so Esc did nothing at all.
+            // Esc now takes the same route as [Later] and the title-bar [X].
+            if (id == IDCANCEL) {
+                MdRequestCancel(dlg, st);
+                return TRUE;
+            }
             if (id == IDC_MD_LATER) {
-                st->cancel.store(true);
-                ::EndDialog(dlg, IDCANCEL);
+                MdRequestCancel(dlg, st);
                 return TRUE;
             }
             if (id == IDC_MD_CLOSE) {
@@ -183,6 +250,9 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
                 return TRUE;
             }
             if (id == IDC_MD_DOWNLOAD) {
+                if (st->phase == MdPhase::Cancelling) {
+                    return TRUE; // no restart while the old worker unwinds
+                }
                 // D-01/N1 (delta re-review): the prior fetch has already
                 // exited (its kMdMsgDone posted — that is what put us in the
                 // Result phase), so its thread object is joinable. Assigning
@@ -240,8 +310,10 @@ INT_PTR CALLBACK ModelDownloadProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lPa
         }
 
         case WM_CLOSE: {
-            st->cancel.store(true);
-            ::EndDialog(dlg, IDCANCEL);
+            // V10F/BUG-10: [X] is the same cancel route — deferred until the
+            // worker posts kMdMsgDone, so the GUI thread never joins a live
+            // transfer (up to the 30 s receive timeout).
+            MdRequestCancel(dlg, st);
             return TRUE;
         }
     }
@@ -275,6 +347,10 @@ bool OfferModelDownload(HWND owner) {
     if (st.worker_running && st.worker.joinable()) {
         st.worker.join(); // HF house contract: join on EVERY exit path
     }
+    // V10F/BUG-10: every DialogBox exit now happens either with no worker
+    // (Consent / Result) or after kMdMsgDone (the Cancelling path closes on
+    // that post), so the join above never waits on a live transfer — and the
+    // socket was already closed in MdRequestCancel via the P2-A transport seam.
     return modeldownloader::ModelFilePresent();
 }
 

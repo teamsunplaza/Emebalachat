@@ -52,6 +52,7 @@
 #include <cwchar>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -543,6 +544,107 @@ enum class DownloadPhase {
     Verifying    // bytes complete; streaming the SHA-256 (the 1.9 GB model
                  // hash takes seconds — the model dialog shows this phase)
 };
+
+// ---- V10F (RISK-02 Option A twin / BUG-10 transport half, 261122_0002 P2-A) --
+//
+// The abort slot for a blocking DownloadUpdate, cloned from
+// src/ui/gguf_model_manager_window.cpp's HfAddDialogState / HfClearSlot
+// protocol (~L761-798, the REQ-052 fix for the same 60 s GUI freeze). The
+// download publishes its live hConnect/hRequest handles here while they exist;
+// the OWNER thread (the dialog's cancel click, which already sets the cancel
+// flag) calls AbortCurrent() to close them. WinHttpCloseHandle from another
+// thread is WinHTTP's documented abort for a pending operation, so a transfer
+// blocked in WinHttpQueryDataAvailable / WinHttpReadData for the whole 30 s
+// receive timeout returns in milliseconds and `join()` no longer freezes the
+// GUI thread.
+//
+// Single-owner contract (the HfClearSlot rules, verbatim):
+//   * a slot is cleared under the mutex BEFORE its close; whoever cleared it
+//     owns the single close, so no handle is ever closed twice;
+//   * the worker never uses a handle the abort path closed (every post-close
+//     API call fails, and the loop then reports Cancelled);
+//   * ClearAndClose returns FALSE when the abort path already took the handle,
+//     so the worker's guard stays silent instead of double-closing;
+//   * an aborted transfer reports UpdateDownloadStatus::Cancelled, never a
+//     half-read Ok/Failed.
+// One slot serves ONE concurrent transfer (the update dialog and the model
+// dialog each own their own). Non-copyable, non-movable: the handle identities
+// belong to one owner. Header-only inline members so every including TU shares
+// the definition (no .cpp for this module).
+class DownloadAbortSlot {
+public:
+    enum class Kind { Connect, Request };
+
+    DownloadAbortSlot() = default;
+    DownloadAbortSlot(const DownloadAbortSlot&) = delete;
+    DownloadAbortSlot& operator=(const DownloadAbortSlot&) = delete;
+
+    // Publishes a freshly created handle. FALSE when the kind's slot is already
+    // occupied (an overlapping transfer): the caller then owns its own close.
+    bool Publish(Kind kind, HINTERNET h) {
+        if (h == nullptr) return false;
+        std::lock_guard<std::mutex> lk(mu_);
+        HINTERNET& slot = (kind == Kind::Connect) ? connect_ : request_;
+        if (slot != nullptr) return false;
+        slot = h;
+        return true;
+    }
+
+    // Single-owner close from the WORKER side: TRUE when this call owned (and
+    // performed) the close, FALSE when the abort path already closed the handle
+    // (or when it was never published, which the caller tells apart with its
+    // own `published` flag).
+    bool ClearAndClose(Kind kind, HINTERNET h) {
+        if (h == nullptr) return false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            HINTERNET& slot = (kind == Kind::Connect) ? connect_ : request_;
+            if (slot != h) return false;
+            slot = nullptr;
+        }
+        ::WinHttpCloseHandle(h);
+        return true;
+    }
+
+    // The OWNER-side abort: takes both handles and the sticky flag under the
+    // mutex, then closes outside it. TRUE when a handle was closed (a transfer
+    // was in flight); a call while idle is a no-op.
+    bool AbortCurrent() {
+        HINTERNET request = nullptr;
+        HINTERNET connect = nullptr;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            request = request_;
+            connect = connect_;
+            if (request == nullptr && connect == nullptr) return false;
+            request_ = nullptr;
+            connect_ = nullptr;
+            aborted_ = true;
+        }
+        if (request != nullptr) ::WinHttpCloseHandle(request);
+        if (connect != nullptr) ::WinHttpCloseHandle(connect);
+        return true;
+    }
+
+    // Sticky per transfer: set by AbortCurrent, reset by ResetAborted() at the
+    // start of a transfer. Read by the worker's failure mapping.
+    bool WasAborted() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return aborted_;
+    }
+
+    void ResetAborted() {
+        std::lock_guard<std::mutex> lk(mu_);
+        aborted_ = false;
+    }
+
+private:
+    mutable std::mutex mu_;
+    HINTERNET connect_ = nullptr;
+    HINTERNET request_ = nullptr;
+    bool aborted_ = false;
+};
+
 struct DownloadOptions {
     // Absolute byte cap (default: the update path's 2 GiB).
     std::uint64_t absolute_cap = kMaxDownloadBytes;
@@ -551,6 +653,13 @@ struct DownloadOptions {
     // Phase notifications (empty = ignore). Called with Verifying right
     // before the post-download hash and never otherwise.
     std::function<void(DownloadPhase)> phase_cb;
+    // V10F (BUG-10 transport half): the handle slot the download publishes into
+    // so the owner can abort a blocked transfer. nullptr (the default) keeps
+    // the pre-fix behaviour: the cancel flag is polled between 256 KiB reads
+    // only. Both in-tree callers publish a slot: the About-window updater
+    // passes its per-transfer DownloadAbortSlot (261122_0002 P2-E RISK-02) and
+    // the model downloader publishes its process-wide slot (P2-A).
+    DownloadAbortSlot* abort = nullptr;
 };
 
 } // namespace updatelogic
@@ -600,9 +709,15 @@ inline std::string SanitizeForDiag(std::string_view s) {
 // REQ-045 precedent at openai_compatible_client.cpp pins the same option for
 // the same reason; the SDK constant WINHTTP_OPTION_REDIRECT_POLICY_NEVER == 0
 // is used by name here).
-inline void PinRedirectPolicyNever(HINTERNET session) {
+// V10F-R1 (F-16, fix-list round 1): the SetOption RESULT is now returned and
+// every caller FAILS CLOSED on false — the pre-fix void seam could not report
+// a failed set, so a session that silently kept WinHTTP's default (FOLLOW)
+// still fetched (the CWE-601 protection off with no trace; the REQ-045 R3 /
+// F-5 precedent checks this option the same way).
+inline bool PinRedirectPolicyNever(HINTERNET session) {
     DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
-    ::WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
+    return ::WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY,
+                              &policy, sizeof(policy)) != FALSE;
 }
 
 // REQ-UC: WinHTTP GET returning the status code + (2xx) body. Follows up to
@@ -630,7 +745,16 @@ inline bool HttpGetWithStatus(const std::wstring& host, const std::wstring& path
         if (!hSession) return false;
         // REQ-UC: the 12 s spec budget, split 3/3/3/3 across the phases.
         ::WinHttpSetTimeouts(hSession, 3000, 3000, 3000, 3000);
-        PinRedirectPolicyNever(hSession);
+        // V10F-R1 (F-16): a session that cannot be pinned to never-follow is
+        // abandoned BEFORE any request exists on it (fail-closed) — otherwise
+        // the manual https + allowlist follower gates below are dead code.
+        if (!PinRedirectPolicyNever(hSession)) {
+            DIAG_F("UPDATE/HttpGet/002: cannot pin WINHTTP_OPTION_REDIRECT_POLICY_NEVER "
+                   "(err=%lu); abandoning the request (fail-closed, F-16)\n",
+                   ::GetLastError());
+            ::WinHttpCloseHandle(hSession);
+            return false;
+        }
 
         HINTERNET hConnect = ::WinHttpConnect(hSession, cur_host.c_str(),
                                               INTERNET_DEFAULT_HTTPS_PORT, 0);
@@ -864,9 +988,19 @@ inline bool ComputeFileSha256Hex(const std::wstring& path, std::string& out_hex)
 // https + GitHub allowlist gate on the initial URL and every hop), enforces
 // the download size cap (absolute 2 GiB + advertised-size cross-check) on both
 // the Content-Length and the live byte stream, then verifies the SHA-256
-// against `expected_sha256` (already lowercase; a nullopt expected hash is a
-// HashMismatch by design: fail-closed, no hash line no install). EVERY
-// non-Ok exit deletes the partial file.
+// against `expected_sha256` (already lowercase). A nullopt expected hash can
+// never verify, so it is a HashMismatch by design AND by early return: the
+// fail-closed gate sits before the output file exists and before any socket
+// opens (V10F/ABT-U3), instead of downloading the whole payload only to delete
+// it at the digest check. EVERY non-Ok exit deletes the partial file.
+//
+// V10F (BUG-10 transport half, 261122_0002 P2-A): `options.abort`, when
+// non-null, receives the live hConnect/hRequest handles for the duration of
+// each hop, so the OWNER thread can AbortCurrent() and close the socket under a
+// blocked read (the 30 s freeze the model-download dialog's join() used to
+// suffer). An aborted transfer reports Cancelled through the SAME failure
+// mapping the cancel flag uses, so the partial file is deleted and the dialog's
+// state machine sees the ordinary cancel arm.
 inline UpdateDownloadStatus DownloadUpdate(
     std::string_view download_url,
     const std::wstring& dest_path,
@@ -877,6 +1011,34 @@ inline UpdateDownloadStatus DownloadUpdate(
     const updatelogic::DownloadOptions& options = updatelogic::DownloadOptions{}) {
 
     if (cancel.load(std::memory_order_relaxed)) return UpdateDownloadStatus::Cancelled;
+    // V10F/ABT-U3 (261122_0002 P3-C6): a release whose notes carry no parseable
+    // "SHA256:" line can never pass verification, so refuse it HERE — before the
+    // CREATE_ALWAYS output file and before WinHttpOpen. Pre-fix the same
+    // condition was only seen at the digest gate, i.e. after streaming the whole
+    // ~700 MB installer and deleting it. The late `!expected_sha256` arm stays
+    // as the defence-in-depth copy of this rule (it still carries the real
+    // digest-mismatch case).
+    if (!expected_sha256) {
+        DIAG_F("UPDATE/Download/008: release notes carry no SHA256 line; refusing the download (fail-closed)\n");
+        return UpdateDownloadStatus::HashMismatch;
+    }
+    if (options.abort != nullptr) {
+        // A previous transfer's abort must not poison this one; the owner
+        // contract is "set cancel, then AbortCurrent" WHILE this call runs.
+        options.abort->ResetAborted();
+    }
+
+    // V10F (BUG-10): one failure mapping for the whole transfer. A call that
+    // fails AFTER the abort path closed its handle (or after the cancel flag
+    // was raised) is a user CANCEL, not a transfer failure: the dialog's cancel
+    // button must land in Cancelled, which is also what deletes the partial.
+    const auto fail_status = [&]() -> UpdateDownloadStatus {
+        if (cancel.load(std::memory_order_relaxed) ||
+            (options.abort != nullptr && options.abort->WasAborted())) {
+            return UpdateDownloadStatus::Cancelled;
+        }
+        return UpdateDownloadStatus::Failed;
+    };
 
     const auto host_ok = [&](const std::string& host) {
         return options.host_allowed ? options.host_allowed(host)
@@ -925,7 +1087,8 @@ inline UpdateDownloadStatus DownloadUpdate(
     std::wstring cur_path = ToUtf16(initial->second);
     bool got_200 = false;
     for (int hop = 0; hop < 6 && !got_200; ++hop) {
-        if (cancel.load(std::memory_order_relaxed)) {
+        if (cancel.load(std::memory_order_relaxed) ||
+            (options.abort != nullptr && options.abort->WasAborted())) {
             return UpdateDownloadStatus::Cancelled; // OutFile deletes the partial
         }
 
@@ -935,36 +1098,79 @@ inline UpdateDownloadStatus DownloadUpdate(
                                             WINHTTP_NO_PROXY_BYPASS, 0);
         if (!hSession) return UpdateDownloadStatus::Failed;
         // Big-file budget: generous per-phase caps so a slow link is not killed
-        // mid-stream; user cancel still aborts promptly between chunks.
+        // mid-stream; user cancel still aborts promptly between chunks, and the
+        // abort slot closes the socket for the stalled case (V10F, see below).
         ::WinHttpSetTimeouts(hSession, 5000, 10000, 10000, 30000);
-        update_detail::PinRedirectPolicyNever(hSession);
-        struct InternetGuard {
-            HINTERNET h;
-            ~InternetGuard() { if (h) ::WinHttpCloseHandle(h); }
-        } session_guard{hSession};
+        // V10F (BUG-10 transport half): this guard is the worker half of the
+        // slot protocol. A handle published into DownloadOptions::abort is
+        // closed through ClearAndClose, which is silent when the owner's
+        // AbortCurrent() already closed it (exactly-once); an UNpublished
+        // handle (no slot, or the slot was occupied) is closed right here, so
+        // no handle can leak. `slot == nullptr` keeps the pre-fix behaviour
+        // byte-for-byte (a caller without an abort slot; the About-updater
+        // site DOES wire one via WireDownloadAbortSlot — V10F/RISK-02).
+        struct SlotHandle {
+            HINTERNET h = nullptr;
+            updatelogic::DownloadAbortSlot* slot = nullptr;
+            updatelogic::DownloadAbortSlot::Kind kind =
+                updatelogic::DownloadAbortSlot::Kind::Request;
+            bool published = false;
+            ~SlotHandle() {
+                if (h == nullptr) return;
+                if (slot == nullptr) {
+                    ::WinHttpCloseHandle(h);
+                    return;
+                }
+                if (!slot->ClearAndClose(kind, h) && !published) {
+                    ::WinHttpCloseHandle(h);
+                }
+            }
+        } session_guard;
+        session_guard.h = hSession; // session handles stay worker-local
+
+        // V10F-R1 (F-16): a session that cannot be pinned to never-follow is
+        // abandoned BEFORE Connect/OpenRequest (fail-closed, the same gate the
+        // REQ-045 client carries) — sits after the SlotHandle guard so this
+        // return path closes the session; the OutFile guard deletes the
+        // (still-empty) partial. fail_status keeps the BUG-10 mapping: a pin
+        // failure after the abort path closed the handle reads as Cancelled.
+        if (!update_detail::PinRedirectPolicyNever(hSession)) {
+            DIAG_F("UPDATE/Download/009: cannot pin WINHTTP_OPTION_REDIRECT_POLICY_NEVER "
+                   "(err=%lu); abandoning the download (fail-closed, F-16)\n",
+                   ::GetLastError());
+            return fail_status();
+        }
 
         HINTERNET hConnect = ::WinHttpConnect(hSession, cur_host.c_str(),
                                               INTERNET_DEFAULT_HTTPS_PORT, 0);
-        if (!hConnect) return UpdateDownloadStatus::Failed;
-        struct ConnectGuard {
-            HINTERNET h;
-            ~ConnectGuard() { if (h) ::WinHttpCloseHandle(h); }
-        } connect_guard{hConnect};
+        if (!hConnect) return fail_status();
+        SlotHandle connect_guard;
+        connect_guard.h = hConnect;
+        connect_guard.slot = options.abort;
+        connect_guard.kind = updatelogic::DownloadAbortSlot::Kind::Connect;
+        connect_guard.published = (options.abort != nullptr)
+                                      ? options.abort->Publish(connect_guard.kind, hConnect)
+                                      : false;
 
         HINTERNET hRequest = ::WinHttpOpenRequest(hConnect, L"GET", cur_path.c_str(),
                                                   nullptr, WINHTTP_NO_REFERER,
                                                   WINHTTP_DEFAULT_ACCEPT_TYPES,
                                                   WINHTTP_FLAG_SECURE);
-        if (!hRequest) return UpdateDownloadStatus::Failed;
-        struct RequestGuard {
-            HINTERNET h;
-            ~RequestGuard() { if (h) ::WinHttpCloseHandle(h); }
-        } request_guard{hRequest};
+        if (!hRequest) return fail_status();
+        SlotHandle request_guard;
+        request_guard.h = hRequest;
+        request_guard.slot = options.abort;
+        request_guard.kind = updatelogic::DownloadAbortSlot::Kind::Request;
+        request_guard.published = (options.abort != nullptr)
+                                      ? options.abort->Publish(request_guard.kind, hRequest)
+                                      : false;
 
         if (!::WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                                   WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
             !::WinHttpReceiveResponse(hRequest, nullptr)) {
-            return UpdateDownloadStatus::Failed;
+            // A failed call after the abort path closed the handle is a CANCEL,
+            // not a transfer failure (the owner asked for it).
+            return fail_status();
         }
 
         DWORD status_code = 0;
@@ -1031,18 +1237,21 @@ inline UpdateDownloadStatus DownloadUpdate(
         if (on_progress) on_progress(received, total);
         std::vector<char> buf(256 * 1024);
         for (;;) {
-            if (cancel.load(std::memory_order_relaxed)) {
+            if (cancel.load(std::memory_order_relaxed) ||
+                (options.abort != nullptr && options.abort->WasAborted())) {
                 return UpdateDownloadStatus::Cancelled; // OutFile deletes the partial
             }
             DWORD avail = 0;
-            if (!::WinHttpQueryDataAvailable(hRequest, &avail)) return UpdateDownloadStatus::Failed;
+            if (!::WinHttpQueryDataAvailable(hRequest, &avail)) return fail_status();
             if (avail == 0) break;
             while (avail > 0) {
                 const DWORD chunk =
                     avail > static_cast<DWORD>(buf.size()) ? static_cast<DWORD>(buf.size()) : avail;
                 DWORD read = 0;
                 if (!::WinHttpReadData(hRequest, buf.data(), chunk, &read) || read == 0) {
-                    return UpdateDownloadStatus::Failed;
+                    // V10F (BUG-10): after the owner closed the handle this is
+                    // the ordinary abort path, i.e. a cancel.
+                    return fail_status();
                 }
                 DWORD written = 0;
                 if (!::WriteFile(out.h, buf.data(), read, &written, nullptr) || written != read) {
@@ -1102,9 +1311,12 @@ inline UpdateDownloadStatus DownloadUpdate(
 // verified file sits at a predictable %TEMP% path between hashing and launch
 // (and while "Later" parks it in Ready). Swapping it would require code
 // already running as the SAME USER, which is outside the desktop-app threat
-// model — same-user code can already do anything. If that model ever changes,
-// the hardening options are: re-hash immediately before launch, or hold the
-// file open with FILE_SHARE_NONE from download through launch.
+// model — same-user code can already do anything. Callers that have the
+// release-notes digest at hand must go through LaunchVerifiedInstaller below,
+// which re-hashes IMMEDIATELY before the launch and shrinks the swap window
+// to the microseconds between the digest read and the process create; this
+// plain LaunchInstaller stays as the ShellExecuteW primitive for callers
+// without a digest (none today).
 inline bool LaunchInstaller(const std::wstring& path) {
     HINSTANCE h = ::ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     if (reinterpret_cast<INT_PTR>(h) <= 32) {
@@ -1113,6 +1325,38 @@ inline bool LaunchInstaller(const std::wstring& path) {
         return false;
     }
     return true;
+}
+
+// V10F-R1 (F-16, fix-list round 1): the launch-time re-hash that closes the
+// CWE-367 window the TOCTOU note above documents. DownloadUpdate verified the
+// digest once after the download, but the file then lives at a predictable
+// %TEMP% path until the user clicks Install (possibly much later, after a
+// "Later" park). This helper re-hashes the file IMMEDIATELY before the
+// ShellExecuteW launch and fails closed on ANY doubt:
+//   * no expected hash handed in          -> no launch (nothing to verify
+//                                            against; fail-closed);
+//   * the file cannot be read/hashed      -> no launch;
+//   * the digest differs from the verified one -> no launch, and the swapped
+//                                            file is DELETED so a retry can
+//                                            never pick it up.
+// Only a match reaches ShellExecuteW, so an attacker window that only existed
+// between the download-time hash and the launch collapses to the
+// microseconds between this re-read and the process create.
+inline bool LaunchVerifiedInstaller(const std::wstring& path,
+                                    const std::optional<std::string>& expected_sha256) {
+    if (!expected_sha256.has_value()) {
+        DIAG_F("UPDATE/Launch/003: no expected hash at launch time; refusing to launch "
+               "(fail-closed, F-16)\n");
+        return false;
+    }
+    std::string actual;
+    if (!ComputeFileSha256Hex(path, actual) || actual != *expected_sha256) {
+        DIAG_F("UPDATE/Launch/002: launch-time re-hash mismatch (or unreadable file); "
+               "refusing to launch, file deleted (fail-closed, F-16)\n");
+        ::DeleteFileW(path.c_str());
+        return false;
+    }
+    return LaunchInstaller(path);
 }
 
 } // namespace emebalachat

@@ -57,6 +57,21 @@ enum TrayMenuId : UINT {
     // through on_open_engine_load_settings; main.cpp owns the deferred modal
     // open (the REQ-047 D3 contract, kMsgOpenEngineLoadSettings = WM_APP+0x502).
     ID_TRAY_ENGINE_LOAD_SETTINGS = 2016,
+    // V10F (261122_0002 P3-C1, UX-1 Option B): the two ADDITIVE rows the slim
+    // menu introduces, both in the free 2017..2019 window between the frozen
+    // engine band's last entry (ID_TRAY_ENGINE_LOAD_SETTINGS, 2016) and the
+    // 2020 control band:
+    //   ID_TRAY_OPENAI_SETTINGS  the engine submenu's separate
+    //                            "OpenAI 호환 엔진 설정…" entry (the radio item
+    //                            above it is the INSTANT engine switch). A
+    //                            PLAIN row: no check geometry, so the frozen
+    //                            4-way radio contract 2010~2014 is untouched.
+    //   ID_TRAY_SETTINGS_HUB     the settings container's first row, which
+    //                            invokes main.cpp's hub callback.
+    // The static_asserts after the band block pin both into that window and
+    // keep every pre-V10F id byte-identical.
+    ID_TRAY_OPENAI_SETTINGS = 2017,
+    ID_TRAY_SETTINGS_HUB = 2018,
     ID_TRAY_SWAP = 2020,
     ID_TRAY_AUTOSEND = 2030,
     // 261108_0002 (WS3, v0.10.6): the "역번역 플로팅 표시 (번역 검증)" check row,
@@ -263,6 +278,42 @@ static_assert(ID_TRAY_USER_LANG_MANAGE < 2900,
               "(2900, tooltip.hpp kTooltipCmdUserSrcBase)");
 static_assert(ID_TRAY_USER_LANG_MANAGE <= 0xFFFF,
               "the P9b-3 user-language dialog rows must stay inside the 16-bit menu-command space");
+
+// V10F (261122_0002 P3-C1, UX-1 Option B): the slim menu's two additive
+// command rows sit in the free window between the frozen engine band's last
+// entry (2016) and the 2020 control band, and the recent-row band fills the
+// free window between the P9b-3 dialog rows (2866) and the tooltip's own user
+// band (2900). The asserts state the three properties the dispatcher relies on:
+//   1. WINDOW: both id-2017/2018 rows stay above ID_TRAY_ENGINE_LOAD_SETTINGS
+//      and strictly below ID_TRAY_SWAP, so no frozen band is renumbered
+//      (the 2010~2014 radio band, 2015 manager, 2016 load settings all keep
+//      their values - the id pins in tests read the literals).
+//   2. CONTIGUITY: the recent band starts directly above the P9b-3 rows with
+//      no gap another band can later claim, and its two pair slots are
+//      contiguous and pairwise disjoint.
+//   3. HEADROOM: the band's exclusive end stays below the tooltip's user band
+//      (2900, tooltip.hpp kTooltipCmdUserSrcBase) and inside the 16-bit
+//      WM_COMMAND space, so the two surfaces can never address one another's
+//      commands. Growing kTrayRecentLanguageCapacity is a re-pin duty HERE.
+static_assert(ID_TRAY_OPENAI_SETTINGS > ID_TRAY_ENGINE_LOAD_SETTINGS &&
+                  ID_TRAY_SETTINGS_HUB > ID_TRAY_OPENAI_SETTINGS &&
+                  ID_TRAY_SETTINGS_HUB < ID_TRAY_SWAP,
+              "the V10F rows must fill the free 2017..2019 window without renumbering "
+              "the frozen engine/control bands");
+static_assert(kTrayRecentLangBase == ID_TRAY_USER_LANG_MANAGE + 4,
+              "the V10F recent band must sit in the free window above the P9b-3 rows (2870)");
+static_assert(kTrayRecentLangPairCount == 2,
+              "the V10F recent band holds one slot per tray pair");
+static_assert(TrayRecentLangCommand(TrayRecentPair::Typing, kTrayRecentLanguageCapacity - 1) <
+                      TrayRecentLangCommand(TrayRecentPair::Drag, 0) &&
+                  TrayRecentLangCommand(TrayRecentPair::Drag, kTrayRecentLanguageCapacity - 1) + 1 ==
+                      kTrayRecentLangBandEnd,
+              "the two V10F recent slots must be contiguous and pairwise disjoint");
+static_assert(kTrayRecentLangBandEnd <= 2900,
+              "the V10F recent band must stay below the tooltip user band (2900, "
+              "tooltip.hpp kTooltipCmdUserSrcBase)");
+static_assert(kTrayRecentLangBandEnd <= 0x10000,
+              "the V10F recent band must stay inside the 16-bit menu-command space");
 
 } // namespace
 
@@ -762,6 +813,72 @@ LanguageSwapPlan PlanLanguageSwap(std::string_view cur_source,
     return plan;
 }
 
+// ---- V10F (261122_0002 P3-C1): the recent-TARGET-language MRU -------------
+// The contract lives on the declarations (tray.hpp). Both helpers are pure:
+// no window, no config write, no I18n call, so the order/dedupe/cap rules and
+// the "only rows the live view offers" filter are unit-testable headlessly.
+void RememberRecentLanguage(std::vector<std::string>& list, std::string_view code) {
+    // NormalizeLanguageCode is the ONE spelling authority (config.cpp): it
+    // maps a code, an English name or a native name onto the registry code and
+    // every unresolvable token onto "AUTO". AUTO is source-only, so it is the
+    // sentinel that drops instead of an entry that records.
+    const std::string normalized = NormalizeLanguageCode(code);
+    if (normalized.empty() || normalized == "AUTO") {
+        return;
+    }
+    // Move-to-front: the second use of a language must not duplicate its row.
+    list.erase(std::remove(list.begin(), list.end(), normalized), list.end());
+    list.insert(list.begin(), normalized);
+    if (list.size() > kTrayRecentLanguageCapacity) {
+        list.resize(kTrayRecentLanguageCapacity);
+    }
+}
+
+std::vector<TrayRecentLanguageRow> BuildRecentLanguageRows(
+    const std::vector<std::string>& recent_codes,
+    const std::vector<const LanguageInfo*>& target_view,
+    std::size_t capacity) {
+    std::vector<TrayRecentLanguageRow> rows;
+    if (capacity == 0) {
+        return rows;
+    }
+    rows.reserve((std::min)(capacity, recent_codes.size()));
+    for (const std::string& stored : recent_codes) {
+        if (rows.size() >= capacity) {
+            break;
+        }
+        const std::string code = NormalizeLanguageCode(stored);
+        if (code.empty() || code == "AUTO") {
+            continue;
+        }
+        bool duplicated = false;
+        for (const TrayRecentLanguageRow& row : rows) {
+            if (row.code == code) {
+                duplicated = true;
+                break;
+            }
+        }
+        if (duplicated) {
+            continue;
+        }
+        // The row must be drawable AND dispatchable: the target view is the
+        // SAME merge the pair's 도착 언어 submenu renders, so a language the
+        // active engine cannot serve as a target never becomes a dead row.
+        const LanguageInfo* offered = nullptr;
+        for (const LanguageInfo* entry : target_view) {
+            if (entry != nullptr && entry->code == code) {
+                offered = entry;
+                break;
+            }
+        }
+        if (offered == nullptr) {
+            continue;
+        }
+        rows.push_back(TrayRecentLanguageRow{offered->code, offered->name_en});
+    }
+    return rows;
+}
+
 bool SystemTray::Create(HWND hOwner, HINSTANCE hInstance, const Callbacks& callbacks) {
     hOwner_ = hOwner;
     hInstance_ = hInstance;
@@ -825,6 +942,20 @@ void SystemTray::SetUiTheme(std::string_view theme_key) {
 // SetUiLanguage - ShowContextMenu re-reads this on every open).
 void SystemTray::SetBackTranslationEnabled(bool enabled) {
     back_translation_enabled_ = enabled;
+}
+
+// V10F (261122_0002 P3-C1): the settings-hub seam. Pure state store, exactly
+// like the ui-language / back-translation setters above: no HWND, no shell, so
+// it is safe on a non-Created tray (main.cpp wires it once at startup, before
+// the message loop, and the row it feeds is only built on menu open).
+void SystemTray::SetOpenSettingsHubCallback(std::function<void()> cb) {
+    open_settings_hub_ = std::move(cb);
+}
+
+// V10F (P3-C1): the external half of the recent-language MRU (see tray.hpp).
+// Same pure store: the rule lives in RememberRecentLanguage.
+void SystemTray::NoteRecentLanguage(const std::string& code) {
+    RememberRecentLanguage(recent_languages_, code);
 }
 
 void SystemTray::RefreshTheme() {
@@ -952,12 +1083,17 @@ void SystemTray::ShowContextMenu() {
     HMENU hMenu = ::CreatePopupMenu();
     if (!hMenu) return;
 
-    // 1. Status toggle item
-    // W1 (R1-22): the top row now carries the TYPE pair as well, so the pair
-    // is readable without hovering the icon or walking the 3-level language
-    // menus: "상태: 활성 (F9: 일시 정지) · 자동 감지 → 영어" (research shape
+    // ---- F0. status + pair summary (top row) ----------------------------
+    // W1 (R1-22): the top row carries the TYPE pair as well, so the pair is
+    // readable without hovering the icon or opening any submenu:
+    // "상태: 활성 (F9: 일시 정지) · 자동 감지 → 영어" (research shape
     // "상태: … · KO → EN"; display names via GetLanguageDisplayName, zero new
     // i18n keys).
+    // V10F (261122_0002 P3-C1, UX-1 Option B): this is row F0 of the ten-row
+    // slim menu. Everything below is built FIRST (the submenus are handles) and
+    // appended in VISUAL order, because a menu's display order is its append
+    // order while the build order has to satisfy data dependencies (the engine
+    // view feeds the language views, which feed the pair submenus).
     const std::wstring statusLabel = ComposeTrayStatusLabel(
         is_active_ ? I18n::Get(StringId::MenuStatusActive)
                    : I18n::Get(StringId::MenuStatusPaused),
@@ -966,7 +1102,27 @@ void SystemTray::ShowContextMenu() {
     ::AppendMenuW(hMenu, MF_STRING | (is_active_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_STATUS, statusLabel.c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 2. Engine submenu
+    // ---- F6. settings container (created here, filled by the blocks below)
+    // V10F (UX-1 Option B): the six legacy settings commands - the UI-language
+    // submenu, the theme submenu, the three toggles (sound / badge /
+    // autostart) - plus the two "내 언어" dialog rows collapse into ONE
+    // submenu. Every pre-V10F command id survives verbatim (the four ids
+    // pinned by tests included); only their DEPTH changed. The container's
+    // first row is the settings-hub entry main.cpp wave B wires through
+    // SetOpenSettingsHubCallback.
+    //
+    // 261122_0002 Phase-3 i18n micro-pass: the dedicated MenuSettings id
+    // ("환경설정" / "Settings") landed in all 89 tables, so both the container
+    // title and the hub row draw it (the P3-C1 I18N REQUEST is closed).
+    HMENU hSettingsMenu = ::CreatePopupMenu();
+    {
+        std::wstring hubLabel = I18n::Get(StringId::MenuSettings);
+        hubLabel += L"\u2026";
+        ::AppendMenuW(hSettingsMenu, MF_STRING, ID_TRAY_SETTINGS_HUB, hubLabel.c_str());
+        ::AppendMenuW(hSettingsMenu, MF_SEPARATOR, 0, nullptr);
+    }
+
+    // ---- F3. engine submenu (built here, appended in visual order) ------
     // REQ-056 (derive-at-open): the submenu's config-derived values are
     // resolved NOW, at menu build time, from main.cpp (the single authority)
     // — the tray keeps no cached copies, so no push path can go stale (the
@@ -1049,7 +1205,22 @@ void SystemTray::ShowContextMenu() {
     // (it opens a dialog; the 4-way radio contract is untouched).
     ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_ENGINE_LOAD_SETTINGS,
                   I18n::Get(StringId::EngineLoadSettingsMenuRow).c_str());
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
+    // V10F (261122_0002 P3-C1, UX-1 Option B): the OpenAI row SPLIT. The radio
+    // item above (ID_TRAY_ENGINE_OPENAI, frozen id + check mark) is now the
+    // INSTANT engine switch; this PLAIN row is the settings dialog, so a user
+    // who already has a profile can switch without a modal and a user who
+    // wants to edit the base URL / key / model still has a one-click path.
+    // Reuses StringId::OpenAiSettingsAction ("OpenAI 호환 엔진 설정…", the
+    // tray/settings entry id the REQ-045 batch landed), so no new string and
+    // no new id band: 2017 sits in the free 2017..2019 window. Unset callback
+    // falls back to on_select_engine(2) in the dispatch below, i.e. exactly
+    // today's behavior, so this row is live before wave B splits the radio.
+    ::AppendMenuW(hEngineMenu, MF_STRING, ID_TRAY_OPENAI_SETTINGS,
+                  I18n::Get(StringId::OpenAiSettingsAction).c_str());
+    // V10F (UX-1 Option B): the engine row is appended to hMenu in VISUAL order
+    // with the rest of the slim menu (see the append block below) - the
+    // submenu handle is built here because the language views below read
+    // `pref` and the resolver view.
 
     // 2b. R6 Phase 6 (plan §5.4) + 261119_0001 U4 (UI-language-89 phase 2,
     // architect-pick.md "Search-row command ID" + "Current-locale signal in
@@ -1091,7 +1262,11 @@ void SystemTray::ShowContextMenu() {
         ::AppendMenuW(hUiLangMenu, MF_STRING, ID_TRAY_UILANG_SEARCH,
                       I18n::Get(StringId::MenuSearchLangs).c_str());
     }
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), uiLangTitle.c_str());
+    // V10F (UX-1 Option B): the UI-language submenu is a row of the settings
+    // container now (row F6), not of the top level. Its build block above is
+    // byte-identical - only the parent menu changed, so every P6-U4 pin over
+    // the Auto/separator/검색… shape and the endonym title still reads true.
+    ::AppendMenuW(hSettingsMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hUiLangMenu), uiLangTitle.c_str());
 
     // 2c. UI Theme selector submenu (Fluent Craft / Warm Editorial / Refined Monolith)
     const I18nStrings i18n_ = I18n::GetThemeStrings();
@@ -1108,7 +1283,10 @@ void SystemTray::ShowContextMenu() {
                       MF_STRING | (activeThemeId == ui::ThemeId::Monolith ? MF_CHECKED : MF_UNCHECKED),
                       kCmdThemeMonolith, i18n_.theme_monolith.c_str());
     }
-    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hThemeMenu), i18n_.menu_ui_theme.c_str());
+    // V10F (UX-1 Option B): the theme picker joins the settings container
+    // (row F6). The three kCmdTheme* command ids are untouched, so the theme
+    // dispatch arm below and main.cpp's apply_theme_change wiring are too.
+    ::AppendMenuW(hSettingsMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hThemeMenu), i18n_.menu_ui_theme.c_str());
 
     // 3+4. REQ-025 (Phase A §2.1.A3-25): the language pickers are grouped into
     // TWO contexts so typing-translation and drag-tooltip translations can use
@@ -1418,12 +1596,52 @@ void SystemTray::ShowContextMenu() {
                         ID_TRAY_TGT_BASE, TrayUserLangSurface::TypingTarget,
                         tgtMenu, normTgt, tgt_code_, typing_tgt_req);
 
+    // ---- recent-language rows: ONE build serves BOTH pair submenus ------
+    // V10F (261122_0002 P3-C1): the MRU (tray.hpp) filtered against the LIVE
+    // target view the 도착 언어 submenu just rendered, so a row can be neither
+    // dead nor ambiguous. Both pairs read the SAME list: the engine view is
+    // shared (`menu_engine` above), so the two surfaces offer the same target
+    // rows and only their command ids and dispatch callbacks differ - which is
+    // exactly the pair the user chose by opening that submenu.
+    const std::vector<TrayRecentLanguageRow> recent_rows =
+        BuildRecentLanguageRows(recent_languages_, tgtMenu.registry,
+                                kTrayRecentLanguageCapacity);
+
+    // ---- F1. keyboard-typing pair (row 2) -------------------------------
+    // 출발 언어 ▾ (the search row + ghost + "내 언어" + the engine-view registry
+    // rows), 도착 언어 ▾ (same shape), the pair Swap, the recent-target block
+    // and the 검색… escape hatch that opens the shared picker for this pair's
+    // target role (the SAME deferred open the 도착 언어 submenu's first row
+    // posts, so the two affordances cannot disagree about which request they
+    // latch).
     HMENU hTypingGroup = ::CreatePopupMenu();
     ::AppendMenuW(hTypingGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
     ::AppendMenuW(hTypingGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
+    // W2 (R1-22): the typing pair's Swap row. It USED to sit on the top level;
+    // V10F moves it INTO the pair submenu it swaps (the drag pair has had its
+    // Swap in its own group since W2). ID, label and the dispatch arm are
+    // unchanged, so the AUTO-pivot policy through PlanLanguageSwap still runs
+    // exactly as before.
+    ::AppendMenuW(hTypingGroup, MF_STRING, ID_TRAY_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
+    if (!recent_rows.empty()) {
+        ::AppendMenuW(hTypingGroup, MF_SEPARATOR, 0, nullptr);
+        // A header is not a command: disabled, id 0 (the "내 언어" header
+        // idiom). Rendered only when the block has rows, so an empty MRU costs
+        // no orphan header.
+        ::AppendMenuW(hTypingGroup, MF_STRING | MF_DISABLED, 0,
+                      I18n::Get(StringId::RecentLanguagesHeader).c_str());
+        for (size_t i = 0; i < recent_rows.size(); ++i) {
+            const std::wstring item_text = ToUtf16(recent_rows[i].code) + L" - " +
+                                           I18n::GetLanguageDisplayName(recent_rows[i].code);
+            ::AppendMenuW(hTypingGroup, MF_STRING,
+                          TrayRecentLangCommand(TrayRecentPair::Typing, i), item_text.c_str());
+        }
+    }
+    ::AppendMenuW(hTypingGroup, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hTypingGroup, MF_STRING, ID_TRAY_SEARCH_TGT, I18n::Get(StringId::MenuSearchLangs).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTypingGroup), I18n::Get(StringId::MenuTypingGroup).c_str());
 
-    // 4b. Drag ("번역툴팁") pair — check marks follow drag_src_code_/drag_tgt_code_.
+    // ---- F2. 번역툴팁 pair (row 3) --------------------------------------
     // 261116_0003 P6: same engine-view + 검색…/ghost shape as the type pair
     // above, surface TrayTooltip (the picker's phase-note §3 mapping).
     HMENU hDragSrcMenu = ::CreatePopupMenu();
@@ -1439,55 +1657,78 @@ void SystemTray::ShowContextMenu() {
     HMENU hTooltipGroup = ::CreatePopupMenu();
     ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragSrcMenu), I18n::Get(StringId::MenuSourceLang).c_str());
     ::AppendMenuW(hTooltipGroup, MF_POPUP, reinterpret_cast<UINT_PTR>(hDragTgtMenu), I18n::Get(StringId::MenuTargetLang).c_str());
-    // W2 (R1-22): the drag pair gets its OWN Swap row inside the 번역툴팁 group
-    // (the type pair's Swap stays on the top level). PLAIN item, ID in the
-    // >=2600 band, label reused from MenuSwapLangs - zero new i18n keys. The
-    // dispatch applies the same AUTO-pivot policy as the type swap through the
-    // shared PlanLanguageSwap planner, then routes through
-    // ApplyLanguageChange(LanguageContext::Drag, ...) so persistence, the
-    // drag-pair check marks, the tooltip label and the pin write all ride the
-    // single language authority (INV-2/INV-3).
+    // W2 (R1-22): the drag pair gets its OWN Swap row inside the 번역툴팁 group.
+    // PLAIN item, ID in the >=2600 band, label reused from MenuSwapLangs - zero
+    // new i18n keys. The dispatch applies the same AUTO-pivot policy as the
+    // type swap through the shared PlanLanguageSwap planner, then routes
+    // through ApplyLanguageChange(LanguageContext::Drag, ...) so persistence,
+    // the drag-pair check marks, the tooltip label and the pin write all ride
+    // the single language authority (INV-2/INV-3).
     ::AppendMenuW(hTooltipGroup, MF_STRING, ID_TRAY_DRAG_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
+    if (!recent_rows.empty()) {
+        ::AppendMenuW(hTooltipGroup, MF_SEPARATOR, 0, nullptr);
+        ::AppendMenuW(hTooltipGroup, MF_STRING | MF_DISABLED, 0,
+                      I18n::Get(StringId::RecentLanguagesHeader).c_str());
+        for (size_t i = 0; i < recent_rows.size(); ++i) {
+            const std::wstring item_text = ToUtf16(recent_rows[i].code) + L" - " +
+                                           I18n::GetLanguageDisplayName(recent_rows[i].code);
+            ::AppendMenuW(hTooltipGroup, MF_STRING,
+                          TrayRecentLangCommand(TrayRecentPair::Drag, i), item_text.c_str());
+        }
+    }
+    ::AppendMenuW(hTooltipGroup, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(hTooltipGroup, MF_STRING, ID_TRAY_SEARCH_DRAG_TGT, I18n::Get(StringId::MenuSearchLangs).c_str());
     ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hTooltipGroup), I18n::Get(StringId::MenuTooltipGroup).c_str());
 
-    // 4c. 261116_0003 P9b-3 U4a: the "내 언어" management rows, directly below
-    // the two language submenu groups they manage (pinned position: above the
-    // Swap row). BOTH open modal dialogs, so both are PLAIN items (no check
-    // geometry) and BOTH defer their open to the controller in the dispatch
-    // below (the kMsgOpenGgufManager REQ-047 D3 contract). The add row reuses
-    // the P9b-1 dialog title as its label (the copy the add dialog itself
-    // shows); the manage row reuses the group's own name — the manager dialog
-    // it opens carries that same title (U4b's recorded copy gap: no dedicated
-    // "관리…" id landed in P9b-1, and this unit adds no StringIds), so the
-    // affordance reads as "open my languages". The trailing ellipsis marks a
-    // dialog-opening row (the codebase's menu convention; the P9b-1 strings
-    // carry no ellipsis of their own, so it is appended here).
-    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_USER_LANG_ADD,
-                  (I18n::Get(StringId::UserLangAddTitle) + L"\u2026").c_str());
-    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_USER_LANG_MANAGE,
-                  (I18n::Get(StringId::UserLangsGroup) + L"\u2026").c_str());
-
-    // 5. Swap languages
-    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_SWAP, I18n::Get(StringId::MenuSwapLangs).c_str());
+    // ---- F3. engine (VISUAL position; the submenu itself was built above) --
+    ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hEngineMenu), I18n::Get(StringId::MenuEngine).c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 6. Modes and toggles
+    // ---- F4/F5. the two 1-level quick toggles ---------------------------
+    // V10F keeps both at the TOP level (the most-repeated switches after the
+    // pair itself) instead of nesting them one level deeper. Ids, check states
+    // and dispatch arms are unchanged; the back-translation row stays directly
+    // below the auto-send row (the WS3 order pin).
     ::AppendMenuW(hMenu, MF_STRING | (auto_send_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_AUTOSEND, I18n::Get(StringId::MenuAutoSend).c_str());
     // 261108_0002 (WS3): floating back-translation verification card toggle,
     // directly below the auto-send row (its natural neighbour in the toggles
     // group). Checkable row; the card itself is drawn by the UI layer.
     ::AppendMenuW(hMenu, MF_STRING | (back_translation_enabled_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_BACK_TRANSLATE, I18n::Get(StringId::MenuBackTranslation).c_str());
-    ::AppendMenuW(hMenu, MF_STRING | (sound_enabled_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_SOUND, I18n::Get(StringId::MenuSoundFeedback).c_str());
-    ::AppendMenuW(hMenu, MF_STRING | (badge_visible_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_BADGE, I18n::Get(StringId::MenuShowBadge).c_str());
-
-    // 7. Start with Windows
-    bool startWithWin = I18n::IsStartWithWindowsEnabled();
-    ::AppendMenuW(hMenu, MF_STRING | (startWithWin ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_START_WITH_WINDOWS, I18n::Get(StringId::MenuStartWithWindows).c_str());
     ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    // 8. About, Cheat Sheet and Exit
-    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, I18n::Get(StringId::MenuAbout).c_str());
+    // ---- F6. settings container (title + remaining legacy rows) ---------
+    // The three legacy toggles keep their ids, check states and dispatch arms;
+    // only their depth changed. "Windows 시작 시 자동 실행" is read FRESH at
+    // menu-build time (I18n::IsStartWithWindowsEnabled) exactly as before, and
+    // `startWithWin` stays in scope for the dispatch arm that flips it.
+    ::AppendMenuW(hSettingsMenu, MF_STRING | (sound_enabled_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_SOUND, I18n::Get(StringId::MenuSoundFeedback).c_str());
+    ::AppendMenuW(hSettingsMenu, MF_STRING | (badge_visible_ ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_BADGE, I18n::Get(StringId::MenuShowBadge).c_str());
+    bool startWithWin = I18n::IsStartWithWindowsEnabled();
+    ::AppendMenuW(hSettingsMenu, MF_STRING | (startWithWin ? MF_CHECKED : MF_UNCHECKED), ID_TRAY_START_WITH_WINDOWS, I18n::Get(StringId::MenuStartWithWindows).c_str());
+    ::AppendMenuW(hSettingsMenu, MF_SEPARATOR, 0, nullptr);
+    // V10F (UX-1 Option B): the two "내 언어" management rows move from the top
+    // level into the settings container - they manage the "내 언어" GROUPS the
+    // four language submenus render, so settings is their honest home, and
+    // keeping them here (one append each) preserves the documented
+    // "appended exactly once" contract. BOTH still open modal dialogs, so both
+    // remain PLAIN items (no check geometry) and BOTH still DEFER their open to
+    // the controller in the dispatch below (the kMsgOpenGgufManager REQ-047 D3
+    // contract). Labels unchanged: the add row reuses the P9b-1 dialog title,
+    // the manage row the group's own name, each with the dialog-opening
+    // ellipsis.
+    ::AppendMenuW(hSettingsMenu, MF_STRING, ID_TRAY_USER_LANG_ADD,
+                  (I18n::Get(StringId::UserLangAddTitle) + L"\u2026").c_str());
+    ::AppendMenuW(hSettingsMenu, MF_STRING, ID_TRAY_USER_LANG_MANAGE,
+                  (I18n::Get(StringId::UserLangsGroup) + L"\u2026").c_str());
+    {
+        const std::wstring settingsLabel = I18n::Get(StringId::MenuSettings);
+        ::AppendMenuW(hMenu, MF_POPUP, reinterpret_cast<UINT_PTR>(hSettingsMenu), settingsLabel.c_str());
+    }
+    ::AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
+
+    // ---- F7/F8/F9. help, about, exit ------------------------------------
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_CHEATSHEET, I18n::Get(StringId::MenuCheatSheet).c_str());
+    ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_ABOUT, I18n::Get(StringId::MenuAbout).c_str());
     ::AppendMenuW(hMenu, MF_STRING, ID_TRAY_EXIT, I18n::Get(StringId::MenuExit).c_str());
 
     POINT pt = {};
@@ -1536,6 +1777,63 @@ void SystemTray::ShowContextMenu() {
         // synchronously here, while the TrackPopupMenuEx modality tear-down
         // may still be in flight, is the REQ-047 D3 root cause.
         callbacks_.on_open_engine_load_settings();
+    } else if (cmd == ID_TRAY_OPENAI_SETTINGS) {
+        // V10F (261122_0002 P3-C1, UX-1 Option B): the engine submenu's OpenAI
+        // settings row. The radio item above (ID_TRAY_ENGINE_OPENAI) is the
+        // instant engine switch; THIS row owns the dialog.
+        //   * on_open_openai_settings set  -> main.cpp wave B owns the seeded
+        //     deferred open (it must snapshot config.openai + the profile
+        //     library next to the post, exactly as its on_select_engine(2)
+        //     branch does today, because the kMsgOpenOpenAiSettings handler
+        //     reads those GUI-thread stores).
+        //   * unset                        -> fall back to on_select_engine(2),
+        //     which IS today's behavior (pick OpenAI -> deferred settings open,
+        //     engine switches only on Save). The row therefore never becomes a
+        //     dead command before wave B lands, and never opens an UNSEEDED
+        //     dialog (a bare PostMessageW(WM_APP+0x500) from here would show
+        //     default-constructed fields: the seed lives in main.cpp).
+        if (callbacks_.on_open_openai_settings) {
+            callbacks_.on_open_openai_settings();
+        } else if (callbacks_.on_select_engine) {
+            callbacks_.on_select_engine(2);
+        }
+    } else if (cmd == ID_TRAY_SETTINGS_HUB) {
+        // V10F (P3-C1): the settings container's first row. Two seams, same
+        // action: SetOpenSettingsHubCallback (the tray-owned slot main.cpp
+        // wires once at startup) wins over the Callbacks aggregate member, the
+        // same precedence SetOnThemeSelectCallback established for the theme
+        // callback. Unset = nothing happens; the container's OTHER rows (every
+        // legacy settings command) keep working regardless, so no feature
+        // depends on the hub existing.
+        if (open_settings_hub_) {
+            open_settings_hub_();
+        } else if (callbacks_.on_open_settings_hub) {
+            callbacks_.on_open_settings_hub();
+        }
+    } else if (cmd >= kTrayRecentLangBase && cmd < kTrayRecentLangBandEnd) {
+        // V10F (P3-C1): one dispatch mapping for BOTH pair slots. The command
+        // decodes back to (pair, row index), the index selects the row from the
+        // SAME `recent_rows` vector the menu was built from (the build-time
+        // payload discipline every language band on this surface follows), and
+        // the payload is that row's name_en - byte-identical to a registry-row
+        // pick, so main.cpp cannot tell a recent pick from a list pick. The
+        // row then re-enters the MRU at the front (a repeat pick must not
+        // accumulate duplicates). Bounds check is defensive: the ids are only
+        // appended for rows that exist, so a stale id writes nothing.
+        const TrayRecentLangCommandRef recent_cmd = DecodeTrayRecentLangCommand(cmd);
+        if (recent_cmd.decoded && recent_cmd.index < recent_rows.size()) {
+            const std::string recent_payload = recent_rows[recent_cmd.index].payload;
+            RememberRecentLanguage(recent_languages_, recent_rows[recent_cmd.index].code);
+            if (recent_cmd.pair == TrayRecentPair::Typing) {
+                if (callbacks_.on_select_target_lang) {
+                    callbacks_.on_select_target_lang(recent_payload);
+                }
+            } else {
+                if (callbacks_.on_select_drag_target_lang) {
+                    callbacks_.on_select_drag_target_lang(recent_payload);
+                }
+            }
+        }
     } else if (cmd == ID_TRAY_USER_LANG_ADD) {
         // 261116_0003 P9b-3 U4a: "내 언어 추가…" — open the add-language dialog
         // (U2's ShowUserLanguageDialogEx). The modal open is DEFERRED to the
@@ -1594,6 +1892,10 @@ void SystemTray::ShowContextMenu() {
         }
     } else if (cmd >= ID_TRAY_TGT_BASE && cmd < ID_TRAY_TGT_BASE + tgtMenu.registry.size()) {
         size_t idx = cmd - ID_TRAY_TGT_BASE;
+        // V10F (P3-C1): a TARGET pick made through this surface is the MRU's
+        // one and only record source, so the two pair submenus' "최근 사용 언어"
+        // block is literally "the last few targets I switched to here".
+        RememberRecentLanguage(recent_languages_, tgtMenu.registry[idx]->code);
         if (callbacks_.on_select_target_lang) {
             callbacks_.on_select_target_lang(tgtMenu.registry[idx]->name_en);
         }
@@ -1605,6 +1907,10 @@ void SystemTray::ShowContextMenu() {
         }
     } else if (cmd >= ID_TRAY_DRAG_TGT_BASE && cmd < ID_TRAY_DRAG_TGT_BASE + tgtMenu.registry.size()) {
         size_t idx = cmd - ID_TRAY_DRAG_TGT_BASE;
+        // V10F (P3-C1): the drag pair records into the SAME MRU (one list, two
+        // surfaces - see tray.hpp); the row that results applies to the drag
+        // pair's target role because the pair's command id says so.
+        RememberRecentLanguage(recent_languages_, tgtMenu.registry[idx]->code);
         if (callbacks_.on_select_drag_target_lang) {
             callbacks_.on_select_drag_target_lang(tgtMenu.registry[idx]->name_en);
         }
@@ -1697,6 +2003,12 @@ void SystemTray::ShowContextMenu() {
                     }
                     break;
                 case TrayUserLangSurface::TypingTarget:
+                    // V10F (P3-C1): a "내 언어" TARGET pick is a target pick like
+                    // any other, so it feeds the same MRU. RememberRecentLanguage
+                    // drops an entry whose code does not resolve to a registry
+                    // language (code-less user names normalize to AUTO), so the
+                    // recent block never renders a row it cannot re-dispatch.
+                    RememberRecentLanguage(recent_languages_, user_view.user_group[user_cmd.user_index].user->code);
                     if (callbacks_.on_select_target_lang) {
                         callbacks_.on_select_target_lang(name);
                     }
@@ -1707,6 +2019,8 @@ void SystemTray::ShowContextMenu() {
                     }
                     break;
                 case TrayUserLangSurface::DragTarget:
+                    // V10F (P3-C1): same MRU rule for the drag pair's target.
+                    RememberRecentLanguage(recent_languages_, user_view.user_group[user_cmd.user_index].user->code);
                     if (callbacks_.on_select_drag_target_lang) {
                         callbacks_.on_select_drag_target_lang(name);
                     }

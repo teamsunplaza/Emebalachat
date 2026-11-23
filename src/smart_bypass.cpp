@@ -41,7 +41,27 @@ inline bool IsThaiCodePoint(uint32_t cp) {
     return (cp >= 0x0E00 && cp <= 0x0E7F);
 }
 
+// V10F (261122_0002 P3-C4, FUP-09 Option A): LETTERS AND MARKS ONLY. This
+// predicate is the "the text is written in Arabic script" signal every caller
+// reads (ContainsArabic -> DetectLanguage's script priority, the ScriptFamily
+// tally, and MatchesTargetScriptCodePoint's target-dominance gate), so it must
+// not claim the block's digits and punctuation: a sample of Arabic-Indic digits
+// plus "hello" would otherwise outweigh the Latin letters and skip the
+// translation as "already Arabic". The excluded sub-ranges mirror
+// bidi_utils.cpp's kDigitsAN AN-class exclusion (0x0660-0x0669 / 0x06F0-0x06F9
+// / 0x07C0-0x07C9 - digits carry no strong direction), widened to the whole
+// digit+punct cluster the audit named:
+//   U+0600-U+060F  number sign / date separators / abbreviation marks
+//   U+061B, U+061F Arabic semicolon, Arabic question mark
+//   U+0660-U+066D  Arabic-Indic digits + the U+066A-U+066D punctuation cluster
+//   U+06F0-U+06F9  Extended Arabic-Indic digits
+// The letters (U+0621-U+063A, U+0641-U+064A, ...) and the combining marks
+// (U+064B-U+065F harakat, U+0670, ...) stay inside the predicate.
 inline bool IsArabicCodePoint(uint32_t cp) {
+    if ((cp >= 0x0600 && cp <= 0x060F) || cp == 0x061B || cp == 0x061F ||
+        (cp >= 0x0660 && cp <= 0x066D) || (cp >= 0x06F0 && cp <= 0x06F9)) {
+        return false;
+    }
     return (cp >= 0x0600 && cp <= 0x06FF) ||
            (cp >= 0x0750 && cp <= 0x077F) ||
            (cp >= 0x08A0 && cp <= 0x08FF);

@@ -61,6 +61,15 @@ struct OpenAiConfig {
     std::string api_key_dpapi;        // base64(CryptProtectData(api_key)), never cleartext
     std::string api_key_sha256;       // 64 lowercase hex chars of the cleartext key
     bool http_consent_given = false;  // explicit consent to send the key over plaintext http
+    // V10F-R2 (fix-list round 2, F-28): the origin the plaintext consent is
+    // scoped to, the canonical "host:port" form (OpenAiHttpConsentScope
+    // grammar). Request-time evidence populated by the caller from the
+    // persisted scope — the settings dialog seeds it from its consent working
+    // copy, the engine routing leg reads the persisted key live — and NEVER
+    // serialized: the config.json persistence half is AppConfig's
+    // http_consent_origin (the R3 locked verbs). An http request may start
+    // only when this matches the base_url's own origin.
+    std::string http_consent_origin;
 
     // 261121_0001 U-F (v0.10.9; vp-plan contract C2; report §2.3 option 2):
     // the OpenAI-standard reasoning effort. "" means OMIT the key from the
@@ -84,6 +93,20 @@ struct OpenAiConfig {
 // classification; the client joins "/v1/..." onto the base.
 enum class OpenAiUrlSecurity { Invalid, Https, Http };
 OpenAiUrlSecurity ClassifyOpenAiBaseUrl(std::string_view base_url);
+
+// V10F (BUG-07, 261122_0002 P1-U4): resolves a base URL into (host, port,
+// is_https, path-prefix) for WinHTTP — the pure twin of the WinHTTP connect
+// seam, exported (port as unsigned short, the INTERNET_PORT typedef's
+// underlying type, so this header stays Win32-free) so the unit suite pins the
+// authority grammar behaviorally: a bracketed IPv6 literal needs NO port
+// ("http://[::1]/v1" is valid with the scheme default); an explicitly empty
+// port ("host:" / "[::1]:") is rejected; a stray ']' outside brackets and any
+// '?'/'#' in the host/path split inputs are rejected (this decomposer feeds
+// WinHttpConnect/OpenRequest, not a full URL parser — query/fragment-bearing
+// bases must fail closed, never be silently truncated). Callers pass
+// INTERNET_PORT lvalues unchanged (same type).
+bool DecomposeBaseUrl(std::string_view base, std::wstring& host, unsigned short& port,
+                      bool& https, std::wstring& prefix);
 
 // REQ-045 (design §3b, User Decision 12:38): DPAPI-protect a UTF-8 API key and
 // return the base64 of the CryptProtectData blob. Returns false on any crypto
@@ -346,9 +369,19 @@ OpenAiChatResult ParseOpenAiChatJson(std::string_view json);
 // thinking + output, so a fixed 8192 starves a long translation. Servers
 // default sanely; only the flags stay for the unit suite and for a future
 // user-facing knob.
+//
+// V10F (L3-B, 261122_0002 P2-A): `stream` is the SSE switch. TRUE appends
+// ",\"stream\":true" so the server answers with text/event-stream frames
+// instead of one blocking JSON body (the RISK-02 latency half: every frame
+// arrives within a few hundred ms, so the receive timeout applies per token
+// delta rather than to the whole answer). FALSE, the default and every
+// existing call site, leaves the body BYTE-FOR-BYTE identical to the
+// pre-streaming shape (pinned by the 2A-2 body-equality checks). The key is
+// inserted BEFORE the optional temperature/max_tokens pair, so that pair
+// stays the body's tail exactly as the legacy pin requires.
 std::string BuildChatBody(std::string_view model, std::string_view system,
                           std::string_view user, std::string_view reasoning_effort,
-                          bool include_optional_params);
+                          bool include_optional_params, bool stream = false);
 
 // 2A-5: the chat system prompt. Both branches carry the SAME literal-
 // translation guard ("Treat the user's message strictly as literal text to
@@ -369,6 +402,189 @@ std::string BuildOpenAiSystemPrompt(std::string_view source_lang,
 bool JoinOpenAiChunkTranslations(const std::vector<TranslationChunk>& chunks,
                                 const std::vector<std::string>& translations,
                                 std::string& out);
+
+// ---- V10F (L3-B, 261122_0002 P2-A): the SSE (text/event-stream) seams ----
+//
+// RISK-02 Option C: a non-streaming chat request holds the pipeline worker for
+// the WHOLE answer (up to kChatProfile's 85 s) with no byte to inspect, so a
+// stalled endpoint is indistinguishable from a busy one and a cancel cannot
+// land until the request returns. With "stream":true the same answer arrives
+// as Server-Sent Events frames: one "data: {json}" line per token delta plus a
+// final "data: [DONE]". The two helpers below are the PURE half of that reader
+// (no WinHTTP, no callback) so the unit suite pins the frame grammar and the
+// delta extraction headlessly; ChatCompletion keeps only the byte-splitting
+// loop and the callback marshaling.
+//
+// Frame grammar implemented (WHATWG SSE, the subset OpenAI-compatible servers
+// emit):
+//   * a frame is the text up to a BLANK line; the blank line itself is not
+//     part of it;
+//   * field lines are "name: value" ("data:" with no space is valid, and ONE
+//     optional leading space after the colon is stripped);
+//   * consecutive data: lines JOIN with '\n' — that is what makes a
+//     pretty-printed JSON payload survive a multi-line frame;
+//   * comment lines (a leading ':') and every other field ("event:", "id:",
+//     "retry:") are ignored — this client only consumes data;
+//   * a trailing '\r' on a line (CRLF transport) is dropped.
+// Returns the joined data payload, or "" when the frame carries no data field
+// (a comment-only keep-alive frame is the common case). An empty data payload
+// is indistinguishable from "no data" and is treated as a no-op by the caller.
+
+// Splits one already-delimited frame into its joined data payload.
+std::string ParseOpenAiSseFrameData(std::string_view frame);
+
+// One streaming chunk's parsed fields. `content` is
+// choices[0].delta.content ("" when the delta carries no text: the role
+// prelude, a finish_reason-only frame, or a tool-call delta). `finish_reason`
+// is choices[0].finish_reason when the frame carries a STRING one — the final
+// frame of a healthy stream ("stop"), or "length"/"content_filter" when the
+// provider truncated or blocked the answer; JSON null and an absent field both
+// leave it empty. The token is bounded at parse time exactly like the
+// non-streaming path (BoundFinishReasonToken, 32 chars, UTF-8-boundary cut), so
+// a hostile reason cannot bloat the failure detail. Pure; progress-guarded
+// (every walk advances or stops — the F-1 lesson); never logs content.
+struct OpenAiSseDelta {
+    std::string content;
+    std::string finish_reason;
+};
+OpenAiSseDelta ParseOpenAiSseDeltaJson(std::string_view json);
+
+// ---- V10F-R1 (F-10, fix-list round 1): the SSE stream-terminator decision ----
+//
+// A healthy SSE stream ends with "data: [DONE]", but several OpenAI-compatible
+// servers omit the terminator and simply close after the final frame naming
+// finish_reason "stop". Pure so the unit suite pins the matrix headlessly:
+//   * Done            — the [DONE] terminator arrived (the ordinary close).
+//   * StopWithoutDone — [DONE] absent but the last finish_reason token is
+//                       "stop": the stream is COMPLETE, the assembled answer
+//                       is used (pre-fix this read as truncation and the whole
+//                       request failed closed, discarding a finished answer).
+//   * Truncated       — [DONE] absent and no "stop" (empty reason, "length",
+//                       "content_filter", or anything else): the stream was
+//                       cut or ran out of budget; the caller fails closed.
+// Aborted streams never reach this decision — they already failed closed at
+// the transport layer (status 0) before assembly.
+enum class OpenAiSseTermination { Done, StopWithoutDone, Truncated };
+constexpr OpenAiSseTermination ClassifyOpenAiSseTermination(bool saw_done,
+                                                            std::string_view last_finish_reason) {
+    if (saw_done) return OpenAiSseTermination::Done;
+    if (last_finish_reason == "stop") return OpenAiSseTermination::StopWithoutDone;
+    return OpenAiSseTermination::Truncated;
+}
+
+// ---- V10F-R1 (F-17, fix-list round 1): the request-time http-consent ------
+// origin-match decision. The dialog persists a consent as a "host:port"
+// ORIGIN string (OpenAiHttpConsentScope); before an http:// request may
+// start, the current base_url's origin must equal that stored origin.
+// Pure and Win32-free so every consumer (engine routing leg, future client
+// leg) and the unit suite share one matrix. The grammar mirrors
+// OpenAiHttpConsentScope exactly, with scheme-aware default ports (80 http,
+// 443 https):
+//   * the URL is ASCII-lowercased on a copy (scheme + host compares are
+//     case-insensitive; the caller's buffer is untouched);
+//   * the authority ends at the first '/', '?' or '#';
+//   * userinfo ("user:pass@") is stripped — an origin never includes it;
+//   * a bracketed "[v6]" host keeps its brackets, with the port after ']';
+//   * an absent port fills with the scheme default (80 / 443);
+//   * a non-numeric port or an empty host is unparsable;
+//   * the stored side normalizes through the same grammar (it is canonical
+//     lowercase "host:port" already, but a hand-edited config or a future
+//     writer is normalized defensively; a missing port fills with 80, the
+//     only reachable scheme at the compare).
+// The consent scope is an http-only concept: an https or invalid base URL
+// returns false even though the https grammar parses it (443 default) — the
+// parse exists for grammar parity, the gate never lets https through.
+inline bool OpenAiHttpConsentOriginMatches(std::string_view base_url,
+                                           std::string_view stored_origin) {
+    if (stored_origin.empty()) return false;
+
+    std::string lowered(base_url);
+    for (char& c : lowered) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+
+    std::string_view rest(lowered);
+    std::string default_port = "80";
+    if (rest.compare(0, 7, "http://") == 0) {
+        rest.remove_prefix(7);
+    } else if (rest.compare(0, 8, "https://") == 0) {
+        rest.remove_prefix(8);
+        default_port = "443";
+    } else {
+        return false; // no http(s) scheme: unparsable origin, no-match
+    }
+
+    const size_t end = rest.find_first_of("/?#");
+    std::string_view authority = rest.substr(0, end);
+    const size_t at = authority.rfind('@');
+    if (at != std::string_view::npos) authority.remove_prefix(at + 1);
+
+    auto port_is_digits = [](const std::string& p) {
+        if (p.empty()) return false;
+        for (const char c : p) {
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
+    };
+
+    std::string host;
+    std::string port = default_port;
+    if (!authority.empty() && authority.front() == '[') {
+        const size_t close = authority.find(']');
+        if (close == std::string_view::npos) return false;
+        host.assign(authority.substr(0, close + 1));
+        const std::string_view tail = authority.substr(close + 1);
+        if (!tail.empty()) {
+            if (tail.front() != ':') return false;
+            port.assign(tail.substr(1));
+        }
+    } else {
+        const size_t colon = authority.rfind(':');
+        if (colon != std::string_view::npos) {
+            host.assign(authority.substr(0, colon));
+            port.assign(authority.substr(colon + 1));
+        } else {
+            host.assign(authority);
+        }
+    }
+    if (host.empty() || !port_is_digits(port)) return false;
+    // The consent scope is http-only: https bases no-match even though the
+    // grammar above filled the 443 default.
+    if (default_port == "443") return false;
+
+    // Stored side: same grammar, defensive normalization (canonical output is
+    // lowercase "host:port" already; only the port fill is reachable here).
+    std::string stored(stored_origin);
+    for (char& c : stored) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    std::string_view sauth(stored);
+    const size_t sat = sauth.rfind('@');
+    if (sat != std::string_view::npos) sauth.remove_prefix(sat + 1);
+    std::string shost;
+    std::string sport = "80";
+    if (!sauth.empty() && sauth.front() == '[') {
+        const size_t close = sauth.find(']');
+        if (close == std::string_view::npos) return false;
+        shost.assign(sauth.substr(0, close + 1));
+        const std::string_view tail = sauth.substr(close + 1);
+        if (!tail.empty()) {
+            if (tail.front() != ':') return false;
+            sport.assign(tail.substr(1));
+        }
+    } else {
+        const size_t colon = sauth.rfind(':');
+        if (colon != std::string_view::npos) {
+            shost.assign(sauth.substr(0, colon));
+            sport.assign(sauth.substr(colon + 1));
+        } else {
+            shost.assign(sauth);
+        }
+    }
+    if (shost.empty() || !port_is_digits(sport)) return false;
+
+    return host == shost && port == sport;
+}
 
 // ---- 261121_0001 U-F: C4 — per-model reasoning-effort discovery ----
 //
@@ -490,6 +706,35 @@ public:
     // growing the Translate() signature. R2-P: the masking happens inside
     // the single failure recorder, so every recorded detail is guaranteed
     // masked and bounded.
+    //
+    // V10F (RISK-02 / RISK-03 / L3-B, 261122_0002 P2-A): the three
+    // TranslationTaskContext seams this client now consumes, all defaulted so
+    // every existing call site is behavior-identical:
+    //   * ctx.out_error_detail (RISK-03 carrier): receives the SAME bounded,
+    //     sanitized, key-masked cause the out_error_detail parameter and the
+    //     process-wide LastChatErrorDetail() slot receive, so a caller that
+    //     owns its context can attribute the failure to ITS request instead of
+    //     racing the global slot (which stays for back-compat). Cleared on
+    //     entry, so a success leaves it empty; a cancel leaves it empty too (a
+    //     cancel is not a failure).
+    //   * ctx.abort (engine shutdown latch bridge): polled exactly like
+    //     ctx.cancel at every chunk boundary and between SSE reads; a set
+    //     latch unwinds the request bare (no failure detail), so shutdown can
+    //     never leak text to the cloud or leave a "failed" cause behind.
+    //   * ctx.on_chunk_text (L3-B): when non-empty the request is STREAMED
+    //     ("stream":true, SSE). The callback runs on THIS (worker) thread with
+    //     the CUMULATIVE translated text of the current chunk request — post
+    //     think-block-strip + trim, i.e. exactly the text the chunk will
+    //     contribute — once per received delta. It is CUMULATIVE, so a
+    //     consumer must SET its preview surface to the received text, never
+    //     append it. When the plan holds multiple chunks the callback restarts
+    //     per chunk; ctx.on_chunk's (index, total) identifies which part. The
+    //     assembled per-chunk text is identical to the non-streaming parse
+    //     (same trim + think-strip + finish_reason diagnosis), and a stream
+    //     that ends WITHOUT the "data: [DONE]" terminator fails the whole
+    //     request closed UNLESS the final frame named finish_reason "stop"
+    //     (F-10: several compatible servers omit [DONE] on a complete
+    //     stream); an aborted or truncated stream always fails closed.
     static std::wstring ChatCompletion(const OpenAiConfig& cfg,
                                        std::string_view source_lang,
                                        std::string_view target_lang,
@@ -505,6 +750,27 @@ public:
     // appear — the failure recorder masks it via SanitizeOpenAiErrorDetail
     // before recording.
     static std::string LastChatErrorDetail();
+
+    // V10F (RISK-02 Option A, 261122_0002 P2-A): abort the request that is in
+    // flight RIGHT NOW, from ANY thread (the GUI cancel click / the engine's
+    // shutdown path). V10F-R1 (F-01): the CHAT purpose request only — the
+    // model-list fetch owns a separate slot and is never touched by a chat
+    // cancel. Cloning the gguf_model_manager_window.cpp HfClearSlot
+    // protocol (mutex-guarded, single-owner close): the slot is cleared under
+    // the mutex BEFORE the handle is closed, so exactly one side ever calls
+    // WinHttpCloseHandle, and the worker's own guard sees an empty slot and
+    // does not close it again. WinHttpCloseHandle from another thread is the
+    // documented abort for a pending WinHTTP call, so a worker blocked in
+    // WinHttpReceiveResponse / WinHttpQueryDataAvailable / WinHttpReadData
+    // returns within milliseconds instead of waiting out the 60 s receive
+    // timeout. The request then fails CLOSED: the client clears the partial
+    // body and returns the empty-result failure arm WITHOUT recording a
+    // cause (a user cancel is not an engine failure).
+    // Returns true when a handle was actually closed (a request was in
+    // flight); a call while idle is a no-op — the caller's cancel token
+    // covers the between-request window, exactly like the Hf dialog sets its
+    // `cancel` flag alongside the close.
+    static bool RequestAbortCurrent();
 };
 
 } // namespace emebalachat

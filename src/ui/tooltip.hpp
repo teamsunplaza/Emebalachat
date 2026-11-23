@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint> // R6 Phase 2 (B1-H1): uint64_t generation ids
+#include <deque>  // V10F-R1 F-08: the preview coalesce helper's queue type
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,84 @@ namespace emebalachat {
 
 // Returns the Windows LCID for a given language code or name. Returns 0 if unknown.
 DWORD GetLcidForLanguage(std::string_view target_lang_name_or_code);
+
+// ---- V10F FUP-06: BCP-47 -> LCID resolution (TTS voice selection) ---------
+// The pre-V10F resolver was a 36-row hand-maintained IF-CHAIN keyed on the
+// canonical registry code. It was structurally unable to answer for the 53
+// registry rows added after it was written (Cantonese, Filipino, Khmer,
+// Burmese and the whole P2/P3 tranche fell through to 0), so "no voice for
+// this language" was the answer for most of the 89 targets. The resolver now
+// reads the row's OWN `LanguageInfo::bcp47` column (config.cpp) and hands the
+// tag to LocaleNameToLCID(name, LOCALE_ALLOW_NEUTRAL_NAMES): ONE table feeds
+// DWrite font fallback (P4 B-2) and TTS voice matching, so the two can never
+// drift, and every new registry row resolves without touching this file.
+//
+// The resolver is a FUNCTION POINTER so the rule is unit-testable headlessly
+// (tests/p2_c_tests.inc injects a fake and asserts the exact tag handed over,
+// the override precedence, and the 0-for-unknown contract).
+using LocaleNameToLcidFn = DWORD (*)(const wchar_t* bcp47_name);
+
+// Explicit overrides, checked BEFORE the bcp47 lookup. These four rows are the
+// ones whose Windows mapping is not what bcp47 alone yields: YUE's registry tag
+// is "zh-HK" (a Chinese sublanguage, not a Cantonese locale) and needs the
+// Cantonese LCID; FIL/ZH-CN/ZH-TW are the classic neutral-name traps
+// (LocaleNameToLCID can return 0 or the wrong sublanguage for a bare or
+// script-only tag). Values are the shipped pre-V10F LCIDs, verbatim.
+//
+// 261122_0002 Wave-C integrator: ES and BN join the table after the phase build
+// caught a resolver regression. Their bare tags answer a DIFFERENT sublanguage
+// than the shipped chain did (LocaleNameToLCID("es", 0) -> 0x0C0A Traditional
+// Sort vs the shipped 0x040A Modern Sort; "bn" -> 0x0845 India vs the shipped
+// 0x0445 Bangladesh), and every other one of the 36 legacy languages only
+// matched because the resolver now asks for the SPECIFIC locale first (see
+// LocaleNameToLcidAllowNeutral in tooltip.cpp). Pinning these two keeps the
+// pre-V10F exact-LCID contract byte-identical for all 36 legacy rows.
+inline constexpr DWORD kLcidCantoneseYue = 0x0C04;
+inline constexpr DWORD kLcidFilipinoFil = 0x0464;
+inline constexpr DWORD kLcidChineseSimplified = 0x0804;
+inline constexpr DWORD kLcidChineseTraditional = 0x0404;
+inline constexpr DWORD kLcidSpanishEs = 0x040A;
+inline constexpr DWORD kLcidBengaliBn = 0x0445;
+
+// Pure override table over a NORMALIZED code (NormalizeLanguageCode output).
+inline constexpr bool TryLcidOverride(std::string_view normalized_code, DWORD& out_lcid) {
+    if (normalized_code == "YUE") {
+        out_lcid = kLcidCantoneseYue;
+        return true;
+    }
+    if (normalized_code == "FIL") {
+        out_lcid = kLcidFilipinoFil;
+        return true;
+    }
+    if (normalized_code == "ZH-CN" || normalized_code == "ZH") {
+        out_lcid = kLcidChineseSimplified;
+        return true;
+    }
+    if (normalized_code == "ZH-TW") {
+        out_lcid = kLcidChineseTraditional;
+        return true;
+    }
+    // 261122_0002 Wave-C integrator: the two bcp47-ambiguous legacy rows (see
+    // the table comment above). Normalized codes only, so every spelling that
+    // reaches the row ("Spanish"/"ES"/"es-MX") maps exactly like pre-V10F.
+    if (normalized_code == "ES") {
+        out_lcid = kLcidSpanishEs;
+        return true;
+    }
+    if (normalized_code == "BN") {
+        out_lcid = kLcidBengaliBn;
+        return true;
+    }
+    return false;
+}
+
+// The resolver itself, with the Win32 call injected. Order: hex prefix ->
+// normalize (names, native names, aliases) -> explicit override -> registry
+// bcp47 -> bare-hex fallback ("409"). Empty/unknown answers 0, exactly like the
+// pre-V10F contract every caller already handles (`SelectVoiceForLanguage`
+// returns false and SpeakCurrentText shows the localized no-voice notice).
+DWORD GetLcidForLanguageWithResolver(std::string_view target_lang_name_or_code,
+                                     LocaleNameToLcidFn resolve);
 
 // 261111_0001 (v0.10.7) fix-list round 2, G-06: the tooltip card's
 // show/dismiss publication state. ONE mutex makes {visible, dismissal-owed,
@@ -206,6 +285,25 @@ inline TooltipUserLangCommandRef DecodeTooltipUserLangCommand(UINT cmd) {
     return ref;
 }
 
+// V10F FUP-03: the retranslate queue's CARRIED source code for a source-menu
+// pick. The worker resolves the effective source as
+// ResolveEffectiveSource(persisted_drag_source, job.src_code), and
+// ResolveEffectiveSource returns the carried code VERBATIM while the persisted
+// source reads as AUTO (config.cpp) - so when the user picks "Auto Detect" the
+// stale carried detection code ("KO") would be fed to the engine and the
+// run_retranslate empty-path re-detect (main.cpp) would never run. An AUTO
+// pick therefore clears the carry to "" (the existing re-detect safety net
+// then re-detects from the held text); any concrete pick keeps the carried
+// code verbatim (pinned-persisted wins, AUTO falls back to it - F3-3).
+// Pure (NormalizeLanguageCode is a registry lookup), unit-testable headlessly.
+inline std::string CarriedSourceCodeForSourcePick(std::string_view carried_detection_code,
+                                                  std::string_view new_source_pick) {
+    if (NormalizeLanguageCode(new_source_pick) == "AUTO") {
+        return {};
+    }
+    return std::string(carried_detection_code);
+}
+
 class TooltipWindow {
 public:
     using LanguageChangeCallback = std::function<void(std::string_view new_target_lang)>;
@@ -254,12 +352,16 @@ public:
     // ---- REQ-R08 (audit §3.2): transient message-bubble mode ----
     // Lightweight "state changed" notice (used for the Win+F9 toggle feedback):
     // compact D2D card with a header line and a body line; no copy/TTS/language
-    // buttons. Auto-hides after kMessageAutohideMs unless dismissed sooner.
+    // buttons. Auto-hides after `autohide_ms` (default kMessageAutohideMs)
+    // unless dismissed sooner; the typing-error notice passes the dedicated
+    // kTypingErrorAutohideMs (V10F-R1 F-06), leaving the shared constant and
+    // every other notice's timing untouched.
     // Same thread affinity as ShowTranslation (GUI thread only).
     // R6 Phase 2 (B1-H1): same generation guard as ShowTranslation - a failure
     // notice from a superseded translate request must not replace newer content.
     void ShowMessage(int x, int y, std::wstring_view header, std::wstring_view body,
-                     uint64_t generation = kGenNone);
+                     uint64_t generation = kGenNone,
+                     DWORD autohide_ms = kMessageAutohideMs);
 
     // ---- REQ-R10 companions: thread-safe marshaling seams ----
     // Cross-thread ShowWindow()/D2D calls are unsafe from hook threads
@@ -281,7 +383,8 @@ public:
     // marshal-queue reordering (a stale payload that overtakes a fresh one is
     // still dropped on arrival).
     void ShowMessageThreadSafe(int x, int y, std::wstring_view header, std::wstring_view body,
-                               uint64_t generation = kGenNone);
+                               uint64_t generation = kGenNone,
+                               DWORD autohide_ms = kMessageAutohideMs);
     void ShowTranslationThreadSafe(
         int x, int y,
         std::wstring_view source_text,
@@ -291,6 +394,62 @@ public:
         uint64_t generation = kGenNone
     );
     void DismissThreadSafe();
+
+    // ---- V10F L1-B: pin ("고정") -------------------------------------------
+    // The card's header carries a pin toggle. A PINNED card ignores the
+    // outside-click dismissal (mouse-hook -> Dismiss()) and both autohide
+    // timers; the card's OWN ✕ still closes it (DismissExplicit below), so a
+    // pinned card is never a trap. The pin is per-card state: every fresh
+    // Show* publishes an unpinned card and TeardownCard clears it, which keeps
+    // "unpinned == the pre-V10F behavior" true by construction.
+    //
+    // Cross-thread read: IsVisible()/Dismiss() run on the hook threads, so the
+    // flag is atomic (same discipline as the card-visibility triple).
+    bool IsPinned() const { return pinned_.load(std::memory_order_relaxed); }
+
+    // The card's own close affordances (✕ on the translation card, ✕ on the
+    // back-translation card) call this instead of Dismiss(): an explicit click
+    // on the card always wins over the pin. GUI THREAD ONLY (it tears the card
+    // down inline, exactly like the on-thread Dismiss() tail).
+    void DismissExplicit();
+
+    // ---- V10F L2: editor / window hand-off hooks ---------------------------
+    // Two header buttons ("수정 · 재번역" / "창으로 열기") invoke these. Both are
+    // wired by main.cpp (P2-E) to the P2-G translation-editor window; the
+    // tooltip itself owns no editor state. A callback that was never
+    // registered renders its button dimmed and inert (the click is logged and
+    // dropped) instead of
+    // hiding it, so the header geometry never reflows between a build with and
+    // without the editor.
+    void SetEditRequestCallback(std::function<void()> cb) { edit_request_cb_ = std::move(cb); }
+    void SetOpenInWindowCallback(std::function<void()> cb) { open_in_window_cb_ = std::move(cb); }
+
+    // ---- V10F L3-B: progressive (chunk-by-chunk) preview surface -----------
+    // Long translations are split into chunks by the engine coordinator; the
+    // cloud/engine clients now emit the CUMULATIVE text as each chunk lands.
+    // The tooltip shows it in a live card (body = cumulative text, a thin
+    // progress line under the header) so a multi-second run is no longer a
+    // blank screen. All three entry points are thread-safe: off-GUI-thread
+    // calls marshal through g_tt_preview_queue by value (the SEC-ADJ
+    // Blocker-5 contract the four Show* seams already use) and the posted
+    // kChunkPreviewMessage is a pure (0, 0) wake-up.
+    //
+    // Contract: Begin -> N x AppendChunkPreviewText -> End. `total_chunks` <= 1
+    // still draws a card (one-chunk runs keep the plain "Translating…" label);
+    // an Append after End(true) or any op after End(false)/dismissal is
+    // IGNORED, so a late emission from a superseded request can never resurrect
+    // a retired card. End(true) freezes the card with the last cumulative text
+    // (the caller's ShowTranslation then replaces it); End(false) retires it.
+    void BeginChunkPreview(int total_chunks);
+    void AppendChunkPreviewText(const std::wstring& cumulative);
+    void EndChunkPreview(bool success);
+
+    // Test/inspection seams (GUI-thread written; marshal tests pump first).
+    enum class ChunkPreviewPhase { Inactive = 0, Running = 1, Finished = 2 };
+    bool IsChunkPreviewActive() const { return preview_phase_ != ChunkPreviewPhase::Inactive; }
+    int GetChunkPreviewIndexForTest() const { return preview_index_; }
+    int GetChunkPreviewTotalForTest() const { return preview_total_; }
+    const std::wstring& GetChunkPreviewTextForTest() const { return preview_text_; }
 
     // ---- 261108_0002 (WS3, v0.10.6): floating back-translation card ----
     // User intent (verbatim): "역번역 플로팅 확인 UI: 번역 결과(BBBBB)를 원문
@@ -327,6 +486,17 @@ public:
     // ---- R6 Phase 2 (B1-H1): translation-request generation guard ----
     // Sentinel 0 = "generation-unmanaged show" (renders unconditionally).
     static constexpr uint64_t kGenNone = 0;
+
+    // Message-mode auto-hide budgets. Public so the headless suite pins the
+    // values (the F-06 static_asserts in r4_fix_tests); production reads them
+    // as class constants exactly as before.
+    static constexpr DWORD kMessageAutohideMs = 1800; // auto-hide delay for message-mode cards (F-17/R5/toggle notices)
+    // V10F-R1 F-06: the TYPING-ERROR notice's own auto-hide budget. The plan
+    // mandates 3 s for this card (the error detail + fix hint needs a longer
+    // read than a one-line toggle confirmation), so it gets a DEDICATED
+    // constant instead of stretching the shared kMessageAutohideMs every other
+    // message-mode notice uses.
+    static constexpr DWORD kTypingErrorAutohideMs = 3000;
 
     // Stamp a NEW translate request and return its monotonic generation id.
     // Call at TRIGGER time (before any thread spawn / clipboard work) on the
@@ -375,6 +545,11 @@ public:
     // show, posted by ShowBackTranslationThreadSafe from the back-translation
     // worker thread. Same by-value queue + parameter-less wake-up contract.
     static constexpr UINT kShowBackTranslationMessage = WM_APP + 0x206;
+    // V10F L3-B: marshaled progressive-preview request (Begin / Append / End),
+    // posted by the thread-safe preview seams. Same by-value queue + parameter-
+    // less wake-up contract as the four above. This is the +0x207 slot the P6b
+    // note above reserved as the next free value in this band.
+    static constexpr UINT kChunkPreviewMessage = WM_APP + 0x207;
     // 261116_0003 P6b: the two language dropdowns' "검색…" row latches a
     // language-picker request and wakes THIS window with the picker module's
     // OWN id — language_palette's kMsgOpenLanguagePalette (WM_APP + 0x503,
@@ -477,6 +652,102 @@ public:
         if (w < kHeaderTargetMinWidthDip) w = kHeaderTargetMinWidthDip;
         if (w > max_width) w = max_width;
         return {x, w};
+    }
+
+    // ---- V10F L1-B: content-scaled card width + work-area height cap -------
+    // The card shipped as a FIXED 360 DIP column, so a 2,000-character
+    // translation wrapped into a ~50-line strip inside a 520 DIP window and the
+    // reader scrolled a narrow ribbon. The width now follows the TRANSLATED
+    // content length in three whole-DIP tiers (measured length, not a
+    // heuristic: the same string the body layout wraps):
+    //   * <= 400 chars  -> 360 DIP (byte-identical to the pre-V10F card)
+    //   * <= 1200 chars -> 480 DIP
+    //   * else          -> 620 DIP
+    // Widths stay BELOW a 640 DIP comfortable-measure ceiling so a body line
+    // never exceeds the ~75-character reading span these three tiers bracket.
+    static constexpr int kCardWidthNarrowDip = 360;
+    static constexpr int kCardWidthMediumDip = 480;
+    static constexpr int kCardWidthWideDip = 620;
+    static constexpr std::size_t kCardWidthMediumMinChars = 401;  // > 400
+    static constexpr std::size_t kCardWidthWideMinChars = 1201;   // > 1200
+
+    static constexpr int CardWidthDipForContentChars(std::size_t content_chars) {
+        if (content_chars < kCardWidthMediumMinChars) return kCardWidthNarrowDip;
+        if (content_chars < kCardWidthWideMinChars) return kCardWidthMediumDip;
+        return kCardWidthWideDip;
+    }
+
+    // Vertical ceiling: 70% of the anchoring monitor's WORK AREA (taskbar and
+    // any docked app bar excluded), so the card never covers the whole screen
+    // on a short work area (a 768 px laptop at 125% has 576 DIP of work height
+    // -> a 403 DIP card). `work_h_px` is the physical work-rect height and
+    // `dpi` the monitor DPI; the result is DIP, floored at the pre-V10F 140 DIP
+    // minimum so a tiny work area still yields a usable card.
+    static constexpr int kCardHeightWorkAreaPct = 70;
+    static constexpr int kCardHeightMinDip = 140;
+
+    static constexpr int MaxCardHeightDipForWorkArea(int work_h_px, UINT dpi) {
+        const UINT safe_dpi = (dpi >= 96) ? dpi : 96;
+        if (work_h_px <= 0) return kCardHeightMinDip;
+        const long long dip =
+            static_cast<long long>(work_h_px) * 96LL * kCardHeightWorkAreaPct /
+            (static_cast<long long>(safe_dpi) * 100LL);
+        if (dip < kCardHeightMinDip) return kCardHeightMinDip;
+        if (dip > 100000) return 100000;
+        return static_cast<int>(dip);
+    }
+
+    // ---- V10F L2/L1-B: the header's right-anchored action cluster ----------
+    // [📌 pin][✎ edit/retranslate][⧉ open in window][✕ close], right to left
+    // from the close button's left edge. Two presentations exist because a 360
+    // DIP card physically cannot carry three localized labels next to the
+    // source tag, the arrow and the target pill:
+    //   * labels fit in the space left of the pill's minimum position
+    //     -> each button is its measured label + 14 DIP padding;
+    //   * they do not (the narrow tier in every shipped locale)
+    //     -> icon-only 20 DIP boxes.
+    // The decision is one constexpr function so measure and render agree by
+    // construction, exactly like PlanHeaderTargetButton above (which receives
+    // `plan.left + 32` as its card width, so its own clamp keeps the pill clear
+    // of this cluster).
+    static constexpr float kHeaderActionGapDip = 6.0f;
+    static constexpr float kHeaderActionIconDip = 20.0f;
+    static constexpr float kHeaderActionLabelPadDip = 14.0f;
+    // Total right-side reserve one pin box costs on the back-translation card's
+    // header row (the box + the gap before the ✕). The row planner is fed
+    // `kBackTransCardWidthDip - kHeaderPinSlotDip` as its width, which keeps
+    // the verdict pill and the ✕ clear of the pin box by construction.
+    static constexpr int kHeaderPinSlotDip = 26;
+
+    struct HeaderActionClusterPlan {
+        float left;    // cluster's left edge (pill clamp basis)
+        float pin_w;   // the three button widths, right-anchored in this order
+        float edit_w;
+        float open_w;
+        bool labels;   // true = draw the localized label inside each button
+    };
+
+    static constexpr HeaderActionClusterPlan PlanHeaderActionCluster(
+        float close_left, float min_left,
+        float pin_label_w, float edit_label_w, float open_label_w) {
+        const float right = close_left - kHeaderCloseGapDip;
+        const float pin_nat = pin_label_w + kHeaderActionLabelPadDip;
+        const float edit_nat = edit_label_w + kHeaderActionLabelPadDip;
+        const float open_nat = open_label_w + kHeaderActionLabelPadDip;
+        const float labelled_total =
+            pin_nat + edit_nat + open_nat + 2.0f * kHeaderActionGapDip;
+        const bool labels = labelled_total <= (right - min_left);
+        HeaderActionClusterPlan plan{};
+        plan.labels = labels;
+        plan.pin_w = labels ? (pin_nat < kHeaderActionIconDip ? kHeaderActionIconDip : pin_nat)
+                            : kHeaderActionIconDip;
+        plan.edit_w = labels ? (edit_nat < kHeaderActionIconDip ? kHeaderActionIconDip : edit_nat)
+                             : kHeaderActionIconDip;
+        plan.open_w = labels ? (open_nat < kHeaderActionIconDip ? kHeaderActionIconDip : open_nat)
+                             : kHeaderActionIconDip;
+        plan.left = right - (plan.pin_w + plan.edit_w + plan.open_w +
+                             2.0f * kHeaderActionGapDip);
+        return plan;
     }
 
     // ---- 261108_0002 (WS3, v0.10.6): pure back-translation card math ----
@@ -664,6 +935,42 @@ public:
         p.max_scroll_offset = over > 0 ? over : 0;
         return p;
     }
+
+    // ---- V10F FUP-05: the comparison card's view toggle --------------------
+    // The two-panel card is cramped whenever either side is long, and the two
+    // bodies answer different questions ("did the meaning survive?" vs "what
+    // did I actually write?"). The two section LABELS are now a toggle: picking
+    // one gives that panel the whole body area, picking it again returns to the
+    // split view. No new geometry: a solo view is the SAME tested planner with
+    // the other panel's measured height passed as 0 — that panel then keeps
+    // only its label band, which IS the clickable toggle row — so the
+    // "panels always close the card exactly" invariant holds in every view and
+    // the frozen PlanBackTransPanels contract is untouched.
+    enum class BackTransView { Split = 0, BackOnly = 1, RefOnly = 2 };
+
+    static constexpr BackTransPanelPlan PlanBackTransViewPanels(BackTransView view,
+                                                                int back_content_h_dip,
+                                                                int ref_content_h_dip,
+                                                                int header_extra_h_dip = 0) {
+        switch (view) {
+            case BackTransView::BackOnly:
+                return PlanBackTransPanels(back_content_h_dip, 0, header_extra_h_dip);
+            case BackTransView::RefOnly:
+                return PlanBackTransPanels(0, ref_content_h_dip, header_extra_h_dip);
+            case BackTransView::Split:
+            default:
+                return PlanBackTransPanels(back_content_h_dip, ref_content_h_dip,
+                                           header_extra_h_dip);
+        }
+    }
+
+    // Which panel a wheel scroll / thumb drag addresses. The two offsets are
+    // INDEPENDENT since V10F: the pre-V10F card shared ONE offset, so scrolling
+    // the original dragged the back-translation along with it under the reader.
+    enum class BackTransScrollPane { Back = 0, Ref = 1 };
+
+    // The section label band a click toggles (split <-> that panel's solo view).
+    enum class BackTransLabelTarget { None = 0, Back = 1, Ref = 2 };
 
     // ---- 261108_0002 (FIX-WS3B, v0.10.6): header-row layout planner ----
     // The card row is [header text] [verdict pill] [✕] inside a FIXED 360 DIP
@@ -954,6 +1261,11 @@ public:
         std::wstring header;
         std::wstring body;
         uint64_t generation = kGenNone;
+        // V10F-R1 F-06: the per-notice auto-hide budget (kMessageAutohideMs for
+        // every legacy caller; kTypingErrorAutohideMs for the typing-error
+        // notice). Travels with the value so the GUI-thread ShowMessage arms
+        // exactly the delay the producer asked for.
+        DWORD autohide_ms = kMessageAutohideMs;
     };
     // R6 B3: marshaled RefreshTargetLanguageFromConfig payload (value-queue
     // transport, same SEC-ADJ contract as the seams above).
@@ -974,6 +1286,31 @@ public:
         HWND target_hwnd = nullptr;
         HWND badge_hwnd = nullptr;
     };
+    // V10F L3-B: marshaled progressive-preview payload. One struct covers all
+    // three operations (the `op` discriminator says which); the cumulative text
+    // and the chunk counter travel BY VALUE, never as an LPARAM pointer.
+    enum class ChunkPreviewOp { Begin = 0, Append = 1, End = 2 };
+    struct ChunkPreviewPayload {
+        ChunkPreviewOp op = ChunkPreviewOp::End;
+        bool success = false;
+        int total_chunks = 0;
+        std::wstring cumulative;
+    };
+    // V10F-R1 F-08: the LATEST-WINS merge rule for the marshaled preview queue,
+    // lifted out of PostChunkPreviewPayload so the unit suite drives the exact
+    // production rule headlessly. A Begin REPLACES everything queued before it
+    // (a new run supersedes the old one). An Append/End MERGES with a pending
+    // Begin instead of coalescing it away: the un-applied Begin (which carries
+    // total_chunks) stays at the front and the newest Append/End rides behind
+    // it, so the drain applies Begin FIRST and the Appends are not dropped as
+    // "preview inactive". Older pending Appends/Ends are dropped (latest-wins
+    // within the run); the queue never holds more than one Begin + one op.
+    // V10F-R2 (F-29): an incoming End with no cumulative of its own adopts the
+    // newest pending Append's text before the erase, so the drain's End arm
+    // always lands the latest body (an End carries success only; the payload's
+    // cumulative field is the final text's carrier into the drain).
+    static void CoalesceChunkPreviewPayload(std::deque<ChunkPreviewPayload>& queue,
+                                            ChunkPreviewPayload incoming);
     // Test/inspection seam: injects a caller-provided payload VALUE into the
     // same value queue the hook/worker threads use for `msg`, then posts the
     // identical parameter-less wake-up notification. The WndProc drains and
@@ -1148,6 +1485,25 @@ public:
     // by the marshaling unit tests to assert a posted payload reached the model.
     const std::wstring& GetTranslatedText() const { return translated_text_; }
 
+    // ---- V10F FUP-02: the language-picker source snapshot ------------------
+    // The pill picker's retranslate callbacks (main.cpp) read the card's source
+    // state AFTER the modal picker closes. A mid-session dismissal empties
+    // source_text_/source_lang_code_ (TeardownCard), which used to starve the
+    // pick's retranslate (retranslate_skip_empty). Latch() captures the state
+    // on the GUI thread right BEFORE ShowLanguageSearchPalette; the picker arm
+    // Clear()s it after the pick dispatches (committed or not). Callers prefer
+    // the LIVE state and consult the snapshot only as the empty-state fallback,
+    // so a card refreshed mid-session still retranslates its newest content.
+    // GUI thread only, like the state it mirrors.
+    struct LanguagePickerSourceSnapshot {
+        bool valid = false;
+        std::wstring source_text;
+        std::string source_lang_code;
+    };
+    void LatchLanguagePickerSourceSnapshot();
+    LanguagePickerSourceSnapshot GetLanguagePickerSourceSnapshot() const;
+    void ClearLanguagePickerSourceSnapshot();
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     // 261111_0001 U1 (v0.10.7, audit D1a/D1b): the GUI-side teardown half of
@@ -1216,6 +1572,64 @@ private:
     // re-shows the card with fresh content).
     void HideBackTranslationCard();
 
+    // ---- V10F FUP-05: view toggle + per-pane scroll -------------------------
+    // Re-plans the measured two-panel geometry for `view` (split / back-only /
+    // original-only) from the SHOW-TIME measurements, re-clamps both pane
+    // offsets against the new viewports, resizes the card and repaints. No
+    // DirectWrite work: the two content heights are stored when the card is
+    // shown (backtrans_measured_*_h_), so a toggle is an integer planner call.
+    void ApplyBackTransView(BackTransView view);
+    BackTransView NextBackTransViewForLabel(BackTransLabelTarget label) const {
+        const BackTransView target = label == BackTransLabelTarget::Ref
+                                         ? BackTransView::RefOnly
+                                         : BackTransView::BackOnly;
+        return backtrans_view_ == target ? BackTransView::Split : target;
+    }
+
+    // ---- V10F FUP-05: RTL for the comparison card --------------------------
+    // Direction + locale for ONE backtrans body format. `slot` is the live
+    // format pointer (clone-swap on a bcp47 change, exactly like
+    // ShowTranslation's body_format_ path); direction and alignment are set on
+    // the surviving format either way, so a failed clone degrades to correct
+    // direction with the previous font hint rather than to no RTL at all.
+    void ApplyBackTransBodyFormat(IDWriteTextFormat*& slot, bool rtl,
+                                  const std::string& norm_code);
+
+    // ---- V10F FUP-08: cached body text layout ------------------------------
+    // Builds (or keeps) the IDWriteTextLayout Render() draws the translation
+    // body with, keyed by (content pointer, content length, column width,
+    // reading direction) plus a content hash. Rebuilt at show-measure time and
+    // whenever the key changes; released by ReleaseBodyTextLayout() from
+    // TeardownCard, Destroy and the rebuild path itself. A null layout makes
+    // Render fall back to DrawText, i.e. the pre-V10F path, so a failed
+    // CreateTextLayout is a visual no-op instead of a blank card.
+    void EnsureBodyTextLayout(int width_dip);
+    void ReleaseBodyTextLayout();
+    // V10F FUP-08: the DPI of the monitor the card will actually appear on,
+    // resolved from the ANCHOR WINDOW (target hwnd -> badge hwnd -> cursor).
+    // The pre-V10F ShowBackTranslation took the CURSOR's monitor DPI, which is
+    // a different monitor whenever the pointer rests elsewhere (the reported
+    // "card renders at the wrong scale over a secondary display").
+    UINT AnchorMonitorDpi(HWND target_hwnd, HWND badge_hwnd) const;
+
+    // ---- V10F L3-B: progressive preview card -------------------------------
+    // Geometry shared by the layout and the renderer (measure/render lockstep,
+    // same rule as the two-panel card): the body ends kPreviewFooterReserveDip
+    // above the card's bottom edge and the thin progress line fills that band.
+    // Reuses kBodyTopDip (48) for the body's top, so the preview card and the
+    // translation card share one vertical rhythm.
+    static constexpr float kPreviewFooterReserveDip = 21.0f; // gap 8 + bar 3 + pad 10
+    static constexpr float kPreviewBarHeightDip = 3.0f;
+    // GUI-thread halves of the three preview seams (the seams themselves only
+    // marshal when called off-thread). LayoutChunkPreviewCard() measures the
+    // cumulative text, sizes/repositions the card (cursor anchor, tier width,
+    // work-area height cap) and publishes it; RenderChunkPreview() paints the
+    // live card from the same state.
+    void ApplyChunkPreviewOp(ChunkPreviewOp op, int total_chunks,
+                             const std::wstring& cumulative, bool success);
+    void LayoutChunkPreviewCard();
+    void RenderChunkPreview();
+
     // ---- v0.10.9 (U-B, report §4 Option 2): two-panel scroll plumbing ----
     // Measured height (DIP) of `text` laid out at `column_w` with `format`.
     // Returns 0 when DWrite or the format is unavailable; the caller then uses
@@ -1224,13 +1638,58 @@ private:
     float MeasureBackTransTextHeight(const std::wstring& text, IDWriteTextFormat* format,
                                      float column_w, float fallback_line_h,
                                      float* out_line_height_dip = nullptr) const;
-    // The viewport the SINGLE shared scroll offset clamps against: backtrans
-    // mode clamps against the taller of its two panel viewports (one offset,
-    // two clips); every other mode keeps the REQ-002 body formula.
+    // The viewport the ACTIVE scroll target clamps against: backtrans mode
+    // clamps against the pane the wheel last addressed (V10F FUP-05: the two
+    // panes have INDEPENDENT offsets, so the clamp basis follows the pane);
+    // every other mode keeps the REQ-002 body formula. V10F-R1 F-07: a LIVE
+    // progressive-preview card clamps against ITS OWN body band
+    // (kBodyTopDip + kPreviewFooterReserveDip = h-69), not the translation
+    // card's h-92 footer band — the preview reserves 21 DIP for the progress
+    // line, and the wheel/thumb clamp on the h-92 basis under-reported the
+    // scrollable range by exactly that 23 DIP.
     float ActiveScrollViewportDip() const {
-        return is_backtrans_mode_
-                   ? static_cast<float>(backtrans_panel_plan_.shared_viewport_h)
-                   : BodyViewportHeightDip(current_height_);
+        if (!is_backtrans_mode_) {
+            if (preview_phase_ != ChunkPreviewPhase::Inactive) {
+                // V10F-R1 F-07: the preview body band (h-69).
+                return static_cast<float>(current_height_) - kBodyTopDip -
+                       kPreviewFooterReserveDip;
+            }
+            return BodyViewportHeightDip(current_height_);
+        }
+        return BackTransPaneViewportDip(backtrans_scroll_pane_);
+    }
+    // V10F FUP-05: per-pane extents, straight out of the measured panel plan.
+    float BackTransPaneViewportDip(BackTransScrollPane pane) const {
+        return pane == BackTransScrollPane::Ref
+                   ? static_cast<float>(backtrans_panel_plan_.ref_view_h)
+                   : static_cast<float>(backtrans_panel_plan_.back_view_h);
+    }
+    float BackTransPaneContentDip(BackTransScrollPane pane) const {
+        return pane == BackTransScrollPane::Ref
+                   ? static_cast<float>(backtrans_panel_plan_.ref_content_h)
+                   : static_cast<float>(backtrans_panel_plan_.back_content_h);
+    }
+    // The offset slot the pane scrolls. The BACK pane keeps the pre-V10F
+    // `scroll_offset_dip_` field so every existing scroll test/pin that names
+    // it still reads the primary pane.
+    float& BackTransPaneOffset(BackTransScrollPane pane) {
+        return pane == BackTransScrollPane::Ref ? backtrans_ref_offset_dip_ : scroll_offset_dip_;
+    }
+    // Which pane a pointer position addresses (the wheel/drag target): the
+    // pane whose VIEWPORT contains y, else the pane the view is soloing, else
+    // the back-translation (the card's primary content).
+    BackTransScrollPane TargetBackTransPaneForPoint(float y_dip) const {
+        const BackTransPanelPlan& p = backtrans_panel_plan_;
+        if (p.ref_view_h > 0 && y_dip >= static_cast<float>(p.ref_view_top) &&
+            y_dip <= static_cast<float>(p.ref_view_top + p.ref_view_h)) {
+            return BackTransScrollPane::Ref;
+        }
+        if (p.back_view_h > 0 && y_dip >= static_cast<float>(p.back_view_top) &&
+            y_dip <= static_cast<float>(p.back_view_top + p.back_view_h)) {
+            return BackTransScrollPane::Back;
+        }
+        return backtrans_view_ == BackTransView::RefOnly ? BackTransScrollPane::Ref
+                                                         : BackTransScrollPane::Back;
     }
     // Shared scrollbar thumb drag (REQ-002 behaviour, now also reachable in
     // backtrans mode). Returns true when a drag actually started.
@@ -1275,6 +1734,11 @@ private:
     std::string source_lang_code_;
     std::string target_lang_;
     std::wstring translated_text_;
+    // V10F FUP-02: the picker-session snapshot of the two fields above (see the
+    // accessor block). GUI-thread-only state.
+    bool lang_picker_snapshot_valid_ = false;
+    std::wstring lang_picker_snapshot_text_;
+    std::string lang_picker_snapshot_code_;
 
     // ---- R6 Phase 2 (B1-H1): generation-guard state ----
     // latest_request_gen_: bumped by BeginTranslationRequest() on ANY thread
@@ -1394,6 +1858,74 @@ private:
     bool backtrans_close_hover_ = false;
     D2D1_RECT_F backtrans_close_rect_ = {};
 
+    // ---- V10F FUP-05: comparison-card view + independent pane scroll -------
+    // The BACK pane's offset stays `scroll_offset_dip_` (the pre-V10F field the
+    // pinned scroll math names); the ORIGINAL pane gets its own offset here.
+    // `backtrans_view_` is the split/solo toggle; the two measured heights are
+    // the show-time DirectWrite results a toggle re-plans from, so switching
+    // views never re-measures the text from a different column width than the
+    // one it was shown at.
+    BackTransView backtrans_view_ = BackTransView::Split;
+    BackTransScrollPane backtrans_scroll_pane_ = BackTransScrollPane::Back;
+    float backtrans_ref_offset_dip_ = 0.0f;
+    int backtrans_measured_back_h_ = 0;
+    int backtrans_measured_ref_h_ = 0;
+    int backtrans_header_extra_h_ = 0;
+    D2D1_RECT_F backtrans_ref_track_rect_ = {};
+    D2D1_RECT_F backtrans_ref_thumb_rect_ = {};
+    // The two section-label bands: the toggle's hit zones (hover tints them).
+    D2D1_RECT_F backtrans_back_label_rect_ = {};
+    D2D1_RECT_F backtrans_ref_label_rect_ = {};
+    bool backtrans_back_label_hover_ = false;
+    bool backtrans_ref_label_hover_ = false;
+    // The card's own pin toggle (same header cluster math as the translation
+    // card: one pin box, 8 DIP clear of the ✕).
+    D2D1_RECT_F backtrans_pin_rect_ = {};
+    bool backtrans_pin_hover_ = false;
+
+    // ---- V10F L1-B: pin state ---------------------------------------------
+    // Atomic because Dismiss()/IsVisible() are read from the keyboard/mouse
+    // hook threads; written only on the GUI thread (pin click / show / teardown).
+    std::atomic<bool> pinned_{false};
+
+    // ---- V10F L2: header action buttons (pin / edit / open) ----------------
+    D2D1_RECT_F pin_btn_rect_ = {};
+    D2D1_RECT_F edit_btn_rect_ = {};
+    D2D1_RECT_F open_btn_rect_ = {};
+    // Measured label widths + the label key (C2 cache discipline: one
+    // CreateTextLayout per label change, zero per steady-state render).
+    float pin_btn_label_w_ = 0.0f;
+    float edit_btn_label_w_ = 0.0f;
+    float open_btn_label_w_ = 0.0f;
+    std::wstring header_action_key_;
+    HeaderActionClusterPlan header_action_plan_ = {0.0f, 0.0f, 0.0f, 0.0f, false};
+    std::function<void()> edit_request_cb_;
+    std::function<void()> open_in_window_cb_;
+
+    // ---- V10F FUP-08: cached body text layout -----------------------------
+    // The translation body's IDWriteTextLayout, built at show-measure time so
+    // Render draws it with DrawTextLayout instead of re-shaping every frame
+    // (every wheel notch, hover repaint and DPI change used to re-run the full
+    // DirectWrite shaping pipeline). The key is (content pointer, length,
+    // column width DIP, reading direction): a content edit, a width-tier
+    // change or a direction flip rebuilds it; nothing else does.
+    IDWriteTextLayout* body_text_layout_ = nullptr;
+    const wchar_t* body_layout_text_ptr_ = nullptr;
+    std::size_t body_layout_text_len_ = 0;
+    int body_layout_width_dip_ = 0;
+    int body_layout_direction_ = 0;
+    std::uint64_t body_layout_content_hash_ = 0;
+
+    // ---- V10F L3-B: progressive preview state -----------------------------
+    ChunkPreviewPhase preview_phase_ = ChunkPreviewPhase::Inactive;
+    int preview_index_ = 0;
+    int preview_total_ = 0;
+    std::wstring preview_text_;
+    int preview_x_ = 0;
+    int preview_y_ = 0;
+    D2D1_RECT_F preview_progress_track_rect_ = {};
+    D2D1_RECT_F preview_progress_fill_rect_ = {};
+
     // SAPI TTS Voice COM interface
     ISpVoice* voice_ = nullptr;
     ISpObjectToken* default_voice_token_ = nullptr;
@@ -1412,7 +1944,8 @@ private:
 
     static constexpr UINT_PTR kTimerCopiedFeedback = 4001;
     static constexpr UINT_PTR kTimerMessageAutohide = 4002;
-    static constexpr DWORD kMessageAutohideMs = 1800; // auto-hide delay for message-mode cards (F-17/R5/toggle notices)
+    // (kMessageAutohideMs / kTypingErrorAutohideMs moved to the public
+    // constants block with kGenNone — the headless suite static_asserts them.)
     // 261108_0002 (WS3, v0.10.6): floating back-translation card auto-dismiss.
     // Reused for the hover GRACE countdown too (one timer, two delays - the
     // PlanBackTransTimer planner owns which).

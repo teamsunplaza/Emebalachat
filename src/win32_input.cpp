@@ -435,6 +435,38 @@ const std::wstring_view kEditorApps[] = {
     L"VSCodium.exe", L"opencode.exe", L"claude.exe", L"codex.exe"
 };
 
+// V10F FUP-01: terminal-emulator exe names for IsConsoleCaptureUnsafe's
+// process-name fallback. These emulators own their top-level GUI window with
+// an emulator-specific window class (not a recognizable console class), so
+// the class table alone misses them; a synthetic Ctrl+C in any of them is
+// still a SIGINT-style hazard, not a copy. The conhost / Windows Terminal
+// hosted shells (cmd.exe, powershell.exe, pwsh.exe under conhost/WT) are
+// caught by kConsoleWindowClasses instead; pwsh.exe is listed here for the
+// standalone / hosted-in-emulator case (its window class is not a console
+// class there). Case-insensitive compare via ExeNameEqualsCi.
+const std::wstring_view kTerminalApps[] = {
+    L"mintty.exe",       // Mintty (Cygwin / MSYS2 / Git-Bash)
+    L"alacritty.exe",    // Alacritty
+    L"wezterm-gui.exe",  // WezTerm
+    L"pwsh.exe"          // PowerShell Core (standalone / emulator-hosted)
+};
+
+// V10F D3/FUP-01: the console/terminal window-class table, hoisted out of
+// IsConsoleCaptureUnsafe so the pure matcher IsKnownConsoleWindowClass and
+// the hwnd predicate share ONE definition (static storage duration, no
+// per-call cost). The first three rows are the Phase 8 originals; the rest
+// are the common third-party terminal emulators (defense-in-depth: their
+// synthetic Ctrl+C is the same SIGINT-class hazard).
+const wchar_t* const kConsoleWindowClasses[] = {
+    L"ConsoleWindowClass",            // conhost (classic console host)
+    L"CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal hosting frame
+    L"PseudoConsoleWindow",           // OpenConsole / pseudo-console surface
+    L"mintty",                        // Mintty (Cygwin / MSYS2 / Git-Bash)
+    L"PuTTY",                         // PuTTY session window
+    L"Alacritty",                     // Alacritty (winit-registered class)
+    L"org.wezfurlong.wezterm"         // WezTerm (winit-registered class)
+};
+
 } // namespace
 
 bool IsChatAppExeNameForEnterTranslation(std::wstring_view basename) {
@@ -447,6 +479,27 @@ bool IsChatAppExeNameForEnterTranslation(std::wstring_view basename) {
 bool IsEditorExeNameForEnterExclusion(std::wstring_view basename) {
     for (const auto& app : kEditorApps) {
         if (ExeNameEqualsCi(basename, app)) return true;
+    }
+    return false;
+}
+
+// V10F FUP-01: pure matcher behind IsConsoleCaptureUnsafe's process-name
+// fallback (kTerminalApps). Case-insensitive, same discipline as the two
+// matchers above.
+bool IsTerminalExeNameForConsoleUnsafe(std::wstring_view basename) {
+    for (const auto& app : kTerminalApps) {
+        if (ExeNameEqualsCi(basename, app)) return true;
+    }
+    return false;
+}
+
+// V10F D3: pure window-class matcher behind IsConsoleCaptureUnsafe
+// (kConsoleWindowClasses, hoisted to namespace scope above). Case-insensitive
+// via the shared ExeNameEqualsCi fold; class_name must be null-terminated
+// (the callers pass a GetClassNameW buffer).
+bool IsKnownConsoleWindowClass(std::wstring_view class_name) {
+    for (const auto* name : kConsoleWindowClasses) {
+        if (ExeNameEqualsCi(class_name, std::wstring_view(name))) return true;
     }
     return false;
 }
@@ -487,6 +540,17 @@ AppCategory ClassifyAppWindow(HWND hwnd) {
 }
 
 bool IsEnterTranslateExcludedApp(HWND hwnd) {
+    // V10F FUP-01: consoles/terminals join the editor exclusion. A console
+    // surface interprets the CategoryB capture's synthetic Ctrl+C chords as
+    // SIGINT (up to 3 interrupts per Enter), and the swallowed bare/IME Enter
+    // never reaches the shell - so the Enter must pass through untouched and
+    // CopySelectedText must abort before any selection primitive. Class-based
+    // detection (conhost/WT/pseudo-console + third-party terminal classes)
+    // with the terminal-emulator exe-name fallback; fails open exactly like
+    // the editor check below.
+    if (IsConsoleCaptureUnsafe(hwnd)) {
+        return true;
+    }
     std::wstring basename;
     DWORD gle = 0;
     // Fail OPEN (returns false = not excluded) on any resolution failure:
@@ -507,16 +571,18 @@ bool IsEnterTranslateExcludedApp(HWND hwnd) {
 // or a nested child (PseudoConsoleWindow under Windows Terminal). Fail-open:
 // any query failure returns false so non-terminal apps keep the exact
 // pre-Phase-8 clipboard path (regression blocker by construction).
+// V10F FUP-01/D3: the class list gained the third-party terminal emulators
+// (mintty / PuTTY / Alacritty / WezTerm) and an exe-name fallback for the
+// emulators that own a non-console-class window; the predicate now also
+// guards the ENTER translate pipeline via IsEnterTranslateExcludedApp (the
+// double-Ctrl+C path stays deliberately ungated: user-initiated keystrokes).
 bool IsConsoleCaptureUnsafe(HWND hwnd) {
     if (!hwnd || !::IsWindow(hwnd)) {
         return false; // fail-open: invalid handle keeps existing behavior
     }
-    static const wchar_t* const kConsoleWindowClasses[] = {
-        L"ConsoleWindowClass",            // conhost (classic console host)
-        L"CASCADIA_HOSTING_WINDOW_CLASS", // Windows Terminal hosting frame
-        L"PseudoConsoleWindow"            // OpenConsole / pseudo-console surface
-    };
-    // No capture needed: kConsoleWindowClasses has static storage duration.
+    // No capture needed: kConsoleWindowClasses has static storage duration
+    // (hoisted to namespace scope, V10F D3, so it is shared with the pure
+    // matcher IsKnownConsoleWindowClass).
     auto class_is_console = [](HWND w) -> bool {
         wchar_t cls[64] = {};
         // Local, no cross-thread send (same cost profile as the hook-thread
@@ -525,12 +591,7 @@ bool IsConsoleCaptureUnsafe(HWND hwnd) {
         if (::GetClassNameW(w, cls, static_cast<int>(sizeof(cls) / sizeof(cls[0]))) == 0) {
             return false;
         }
-        for (const auto* name : kConsoleWindowClasses) {
-            if (::lstrcmpiW(cls, name) == 0) {
-                return true;
-            }
-        }
-        return false;
+        return IsKnownConsoleWindowClass(cls);
     };
 
     if (class_is_console(hwnd)) {
@@ -541,6 +602,20 @@ bool IsConsoleCaptureUnsafe(HWND hwnd) {
     // the extra check is simply skipped, fail-open preserved).
     const HWND root = ::GetAncestor(hwnd, GA_ROOT);
     if (root && root != hwnd && class_is_console(root)) {
+        return true;
+    }
+    // V10F FUP-01: exe-name fallback for terminal emulators whose window
+    // class is not a recognizable console class (mintty / Alacritty / WezTerm
+    // / standalone pwsh): those own their top-level GUI window directly, so
+    // the class checks above miss them. Same fail-open polarity: a process
+    // resolution failure keeps the pre-V10F class-only behavior. Deliberately
+    // NOT hwnd-cached: HWNDs are recycled by the system, so a hwnd-keyed
+    // verdict cache could serve a stale process identity; the class check is
+    // the cheap fast path and the process query runs only on a class miss.
+    std::wstring basename;
+    DWORD gle = 0;
+    if (ResolveImageBasename(hwnd, basename, gle) == ImageResolveStatus::Ok &&
+        IsTerminalExeNameForConsoleUnsafe(basename)) {
         return true;
     }
     return false;
@@ -1839,7 +1914,15 @@ thread_local PasteCaptureFocus t_paste_capture_focus;
 
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                               EnterCaptureResult* capture_result,
-                              RescueProvenance* provenance) {
+                              RescueProvenance* provenance,
+                              std::wstring* out_raw_rescue_text) {
+    // V10F FUP-04 (session 261122_0002 P2-D): the raw-rescue carrier is filled
+    // ONLY on the two over-guard rescue verdicts below (EmptyTail / GuardAbort
+    // of a SelectAll-rescued capture); every other exit leaves it empty, so a
+    // caller that always passes it sees a strict opt-in contract.
+    if (out_raw_rescue_text) {
+        out_raw_rescue_text->clear();
+    }
     // Input P1-4 (fix-list F-03): snapshot the focus control of the captured
     // window's thread BEFORE the selection chord, so the PasteAndRestore gate
     // of this task can detect a focus drift to a sibling control. Recorded
@@ -1915,8 +1998,12 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
     // path). Fail-open: a resolution failure returns false (not excluded),
     // where the capture-size guard (WIN32_INPUT/CopySelectedText/006) is the
     // last line of defense.
+    // V10F FUP-01: the same check now also covers consoles/terminals (via
+    // IsEnterTranslateExcludedApp -> IsConsoleCaptureUnsafe): the synthetic
+    // Ctrl+C chords of the CategoryB capture path would be read by a console
+    // as SIGINT, so the abort must fire before the first chord.
     if (category == AppCategory::CategoryB && IsEnterTranslateExcludedApp(hwnd)) {
-        DIAG_F("WIN32_INPUT/CopySelectedText/005: editor/IDE app excluded from Enter translate (hwnd=%p category=%d); returning empty\n",
+        DIAG_F("WIN32_INPUT/CopySelectedText/005: editor/IDE/terminal app excluded from Enter translate (hwnd=%p category=%d); returning empty\n",
                reinterpret_cast<void*>(hwnd), static_cast<int>(category));
         report(EnterCaptureResult::EditorExcluded);
         return {};
@@ -2220,6 +2307,15 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
                 DIAG_F("WIN32_INPUT/CopySelectedText/008: whole capture %zu chars over guard; current block empty (capture ends at a separator run, K=%d); returning empty (reason=empty_tail)\n",
                        text.size(), k_block);
                 report(EnterCaptureResult::EmptyTail);
+                // V10F FUP-04: hand the raw rescued payload out (see the
+                // out_raw_rescue_text contract in win32_input.hpp). The RETURN
+                // value stays empty - the engine must not receive an
+                // over-guard document - but the worker can now consume the
+                // still-live whole-document selection instead of treating
+                // this as "the user selected nothing".
+                if (provenance_local.rescued && out_raw_rescue_text) {
+                    *out_raw_rescue_text = text;
+                }
                 return {};
             case EnterCaptureResult::GuardAbort:
                 break; // falls through to the /006 abort below
@@ -2231,6 +2327,14 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
         DIAG_F("WIN32_INPUT/CopySelectedText/006: capture exceeds Enter guard even after block slice (chars=%zu newlines=%zu category=%d K=%d); aborting translate\n",
                text.size(), nl_final, static_cast<int>(category), k_block);
         report(EnterCaptureResult::GuardAbort);
+        // V10F FUP-04: same raw-rescue handoff as the empty-tail arm above.
+        // This is the arm that used to leave the live Ctrl+A selection with no
+        // consumer at all (the worker's empty-capture hold only released it
+        // with the heuristic VK_RIGHT); the worker now consumes the reported
+        // payload with the identity paste before handing the Enter over.
+        if (provenance_local.rescued && out_raw_rescue_text) {
+            *out_raw_rescue_text = text;
+        }
         return {};
     }
     if (text.empty()) {
@@ -2240,6 +2344,84 @@ std::wstring CopySelectedText(HWND hwnd, int shift_enter_count,
         // the worker log separates it from a chord failure or a guard abort.
         report(EnterCaptureResult::EmptySelection);
     }
+    return text;
+}
+
+// V10F (L4-C, session 261122_0002 P2-D): the explicit selection-translate
+// flow's capture seam - see the contract block in win32_input.hpp. Deliberately
+// selection-primitive-free: plain Ctrl+C over whatever the user has selected,
+// nothing else. Placed after CopySelectedText so every structural pin over that
+// function's body (the /005-before-the-loop ordering, the retry-driver bounds)
+// keeps addressing the Enter seam it describes.
+std::wstring CopyUserSelectionText(HWND hwnd, EnterCaptureResult* capture_result) {
+    // Input P1-4: snapshot the focus control of the captured window's thread
+    // BEFORE the chord, so PasteAndRestore's gate can detect a focus drift to a
+    // sibling control during the translation (identical record to
+    // CopySelectedText - same thread_local, same worker thread, same task).
+    t_paste_capture_focus.valid = false;
+    t_paste_capture_focus.focus_hwnd = nullptr;
+    if (hwnd) {
+        DWORD focus_pid = 0;
+        const DWORD focus_tid = ::GetWindowThreadProcessId(hwnd, &focus_pid);
+        GUITHREADINFO focus_gti{};
+        focus_gti.cbSize = sizeof(focus_gti);
+        if (focus_tid != 0 && ::GetGUIThreadInfo(focus_tid, &focus_gti)) {
+            t_paste_capture_focus.valid = true;
+            t_paste_capture_focus.focus_hwnd = focus_gti.hwndFocus; // null possible
+        }
+    }
+    auto report = [&](EnterCaptureResult r) {
+        if (capture_result) { *capture_result = r; }
+    };
+    report(EnterCaptureResult::Ok);
+
+    // FUP-01 interlock: the same editor/terminal exclusion the Enter seam runs
+    // before its first selection primitive. Here it also protects the chord
+    // itself - an injected Ctrl+C is SIGINT inside a console.
+    if (IsEnterTranslateExcludedApp(hwnd)) {
+        DIAG_F("WIN32_INPUT/CopyUserSelectionText/001: editor/IDE/terminal app excluded from the selection-translate flow (hwnd=%p); returning empty\n",
+               reinterpret_cast<void*>(hwnd));
+        report(EnterCaptureResult::EditorExcluded);
+        return {};
+    }
+
+    // The plain chord. CopyChordWithSettledRetry is the shared, field-proven
+    // retry driver (REQ-051): every attempt re-baselines the clipboard sequence
+    // immediately before its own Ctrl+C, so a late commit from an earlier chord
+    // can never be read as stale text. It performs NO selection primitive,
+    // which is exactly this flow's contract, and it leaves the user's selection
+    // live for the caller's PasteAndRestore overwrite.
+    const bool copy_confirmed =
+        CopyChordWithSettledRetry(kDragCopyChordAttempts, kDragCopyRetryBackoffMs);
+    if (!copy_confirmed) {
+        DIAG_F("WIN32_INPUT/CopyUserSelectionText/002: Ctrl+C of the current selection not confirmed (hwnd=%p); returning empty\n",
+               reinterpret_cast<void*>(hwnd));
+        report(EnterCaptureResult::CopyChordFailed);
+        return {};
+    }
+
+    std::wstring text = GetClipboardText();
+    size_t nl = 0;
+    for (wchar_t c : text) { if (c == L'\n' || c == L'\r') ++nl; }
+    DIAG_F("WIN32_INPUT/CopyUserSelectionText/003: captured %zu chars (%zu newline chars) from the user selection\n",
+            text.size(), nl);
+    if (text.empty()) {
+        // The chord committed but nothing was selected: distinct from a dropped
+        // chord so the worker can surface the honest no-selection notice.
+        report(EnterCaptureResult::EmptySelection);
+        return {};
+    }
+    // V3 abuse-defense parity with the Enter capture: a deliberate selection
+    // that is document-sized is refused BEFORE it reaches the engine. Unlike
+    // the Enter path there is no block slice to re-vet - the user selected
+    // exactly this span - so an over-guard selection is a plain refusal.
+    if (!EnterCaptureWithinGuard(text.size(), nl)) {
+        DIAG_F("WIN32_INPUT/CopyUserSelectionText/004: selection exceeds the translate guard (chars=%zu newlines=%zu); refusing to translate\n",
+               text.size(), nl);
+        report(EnterCaptureResult::GuardAbort);
+        return {};
+    }
+    report(EnterCaptureResult::Ok);
     return text;
 }
 

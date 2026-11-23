@@ -334,6 +334,13 @@ AppCategory ClassifyAppWindow(HWND hwnd);
 // resolution failure returns FALSE (not excluded), so the app flows through
 // normal classification where the capture-size guard (EnterCaptureWithinGuard)
 // remains the last line of defense. Never consulted by the drag path.
+// V10F FUP-01: consoles/terminals are ALSO excluded (IsConsoleCaptureUnsafe:
+// the conhost / Windows Terminal / pseudo-console window classes plus the
+// mintty / PuTTY / Alacritty / WezTerm classes and the mintty.exe /
+// alacritty.exe / wezterm-gui.exe / pwsh.exe exe-name fallback): a bare or
+// IME-composing Enter passes through untouched and CopySelectedText aborts
+// BEFORE any selection primitive / synthetic Ctrl+C (a console reads those
+// chords as SIGINT).
 bool IsEnterTranslateExcludedApp(HWND hwnd);
 
 // Pure basename matchers over the classifier tables, exposed for the headless
@@ -341,6 +348,17 @@ bool IsEnterTranslateExcludedApp(HWND hwnd);
 // EnterCaptureWithinGuard). Case-insensitive.
 bool IsChatAppExeNameForEnterTranslation(std::wstring_view basename);
 bool IsEditorExeNameForEnterExclusion(std::wstring_view basename);
+// V10F FUP-01: terminal-emulator exe names matched by IsConsoleCaptureUnsafe's
+// process-name fallback (kTerminalApps): mintty.exe / alacritty.exe /
+// wezterm-gui.exe / pwsh.exe. The class-based consoles (conhost / Windows
+// Terminal, incl. the cmd.exe / powershell.exe shells hosted inside them)
+// are caught by IsKnownConsoleWindowClass instead.
+bool IsTerminalExeNameForConsoleUnsafe(std::wstring_view basename);
+// V10F D3: pure window-class matcher behind IsConsoleCaptureUnsafe
+// (kConsoleWindowClasses): ConsoleWindowClass / CASCADIA_HOSTING_WINDOW_CLASS
+// / PseudoConsoleWindow + mintty / PuTTY / Alacritty / org.wezfurlong.wezterm.
+// Case-insensitive.
+bool IsKnownConsoleWindowClass(std::wstring_view class_name);
 
 // F4 (A2 W2 결정 4): Enter-pipeline capture-size guard. Language-neutral
 // thresholds (UTF-16 char count + newline-char count - no script/language
@@ -1117,8 +1135,12 @@ inline SameLinePrefixSplit SplitSameLineTargetPrefix(std::wstring_view line,
 // Fails OPEN (returns false = keep existing behavior) on null/invalid hwnd
 // or any class-query failure, so every non-terminal app retains the exact
 // pre-Phase-8 clipboard capture path (regression blocker by construction).
-// This gate is for the DRAG CAPTURE path only (run_drag_translate); the
-// double-Ctrl+C path is deliberately not gated (user-initiated keystrokes).
+// This gate was introduced for the DRAG CAPTURE path (run_drag_translate);
+// the double-Ctrl+C path is deliberately not gated (user-initiated
+// keystrokes). V10F FUP-01/D3 additionally routes it into the ENTER translate
+// pipeline via IsEnterTranslateExcludedApp, and extends detection with the
+// third-party terminal window classes plus a terminal-emulator exe-name
+// fallback for emulators that own a non-console-class window (see the .cpp).
 bool IsConsoleCaptureUnsafe(HWND hwnd);
 
 // Sends Ctrl+A to select all text in the active control.
@@ -1776,9 +1798,52 @@ bool EditCaretTracker_TrySelfCorrectReSelect(HWND hwnd);
 // instead of claiming the whole document as the translation block (see the
 // EffectiveBlockSliceK contract above), and may print provenance.origin on
 // the /043 //044 DIAG lines. Shape-only; never carries user content.
+// out_raw_rescue_text (V10F FUP-04 Option C, session 261122_0002 P2-D):
+// optional out-param, cleared at entry. The RETURNED capture still collapses to
+// empty on the two over-guard rescue verdicts (EmptyTail / GuardAbort) exactly
+// as before - no translation input changes - but a RESCUED capture additionally
+// hands its raw captured payload out through this pointer. Rationale: on those
+// two arms the live Ctrl+A whole-document selection is still in the target app,
+// and the worker used to take the R5 "no selection" hold - a false notice for a
+// capture that in fact held the whole document, while the paste-window arm
+// could hand the Enter through over that LIVE selection (Enter replaces it).
+// The worker consumes the reported payload with the BUG-005 identity paste
+// before any send-through (RescueRawPayloadNeedsConsume, worker.hpp), so the
+// selection can never be replaced by the handed-through Enter. Non-rescued
+// captures never fill it (their empty verdicts keep the R5/036 behavior
+// byte-identical), and non-empty captures never fill it either (the returned
+// capture already carries the payload).
 std::wstring CopySelectedText(HWND hwnd, int shift_enter_count = 0,
                               EnterCaptureResult* capture_result = nullptr,
-                              RescueProvenance* provenance = nullptr);
+                              RescueProvenance* provenance = nullptr,
+                              std::wstring* out_raw_rescue_text = nullptr);
+
+// V10F (L4-C, session 261122_0002 P2-D): capture ONLY the text the USER has
+// selected - the explicit "translate my selection, in place" flow's seam.
+// Unlike CopySelectedText this function performs NO selection primitive at all:
+// no SelectAll (CategoryA), no EditCaretTracker EM_SETSEL, no
+// SelectMessageBlock keyboard geometry, and no SelectAll rescue. It sends the
+// plain Ctrl+C chord (through the shared CopyChordWithSettledRetry driver, so
+// every attempt re-baselines the clipboard sequence - the REQ-R04 stale-read
+// invariant) and reads the clipboard, leaving the user's selection live for the
+// caller's PasteAndRestore overwrite.
+//   * Editor/terminal exclusion: the same IsEnterTranslateExcludedApp gate as
+//     CopySelectedText (/005). The injected Ctrl+C of this flow would be read
+//     as SIGINT by a console (FUP-01) and an editor document is not ours to
+//     translate; both refuse with EditorExcluded before any chord.
+//   * Capture-size guard: the deliberate-selection equivalent of the Enter
+//     path's V3 abuse defense. A selection over EnterCaptureWithinGuard is
+//     refused with GuardAbort (a whole document is never shipped to the
+//     engine), the same bound the Enter capture applies to whole captures.
+//   * capture_result reports the shape-only verdict: Ok / EmptySelection (the
+//     chord committed but the payload was empty - nothing selected),
+//     CopyChordFailed (the chord never committed), EditorExcluded, GuardAbort.
+//     Never carries user content.
+// The capture-time focus control is recorded for the PasteAndRestore Input P1-4
+// gate exactly like CopySelectedText does (same thread_local, same worker
+// thread).
+std::wstring CopyUserSelectionText(HWND hwnd,
+                                   EnterCaptureResult* capture_result = nullptr);
 
 // High-level pipeline helper:
 // Sets translated text to clipboard, sends Ctrl+V, sleeps the minimal paste settle

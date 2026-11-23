@@ -52,6 +52,7 @@
 
 #include <chrono> // fix-list-round15 R15-11: the shutdown-join bound type
 #include <condition_variable> // fix-list-round15 R15-11: the worker-completion signal
+#include <atomic> // V10F BUG-09 (261122_0002 P1-U4): the per-probe cancel token
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -78,6 +79,18 @@ namespace emebalachat {
 using UserLanguageProbeTransport = std::function<std::wstring(
     std::string_view sentence, std::string_view engine_id,
     std::string_view model, std::string_view target_name)>;
+
+// ---- V10F (BUG-09, 261122_0002 P1-U4): the production transport factory -----
+// Wraps TranslationManager::Translate (the status-aware form). The two-arg
+// form takes the per-service cancel token the transport hands to Translate as
+// ctx.cancel (owned by UserLanguageProbeService::SharedState, tripped by
+// BeginShutdown()); the one-arg form keeps the pre-V10F source contract with
+// no token (the legacy/test wiring — a nullptr token reproduces the
+// byte-identical default TranslationTaskContext).
+UserLanguageProbeTransport MakeProductionUserLanguageProbeTransport(
+    TranslationManager& engine, const std::atomic<bool>* shutdown_token);
+UserLanguageProbeTransport MakeProductionUserLanguageProbeTransport(
+    TranslationManager& engine);
 
 // The completion wake-up. WM_APP + 0x600 sits above every allocated id (the
 // controller's 0x300..0x502 block, main.cpp:424-661, and the surfaces' own
@@ -269,6 +282,16 @@ private:
         std::mutex workers_mu;
         std::condition_variable workers_cv;
         std::size_t active_workers = 0;
+        // V10F (BUG-09, 261122_0002 P1-U4): the per-service cancel token the
+        // production transport hands to Translate as ctx.cancel. Tripped by
+        // BeginShutdown() (which main.cpp already latches at the top of the
+        // shutdown sweep, before the bounded ShutdownJoinWorkers), so an
+        // in-flight probe unwinds through the manager's per-request cancel
+        // seam — the LocalCancelForwarder fires the host cancel with the
+        // probe's wire id and every post-pipe gate honors the token — instead
+        // of running to the full pipe/cloud budget inside the 2 s join bound.
+        // Atomic: written on the GUI thread, read on the probe worker.
+        std::atomic<bool> cancel_token{false};
     };
 
     static std::string InFlightKey(std::string_view stored_name,

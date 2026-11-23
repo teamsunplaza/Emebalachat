@@ -30,6 +30,16 @@ struct PipelineTask {
     bool is_shift_enter = false;
     HWND target_hwnd = nullptr;
     int shift_enter_count = 0;
+    // V10F (L4-C, session 261122_0002 P2-D): the task KIND. false (the default,
+    // and the value the 3-field aggregate in PostTask produces) is the
+    // intercepted-Enter pipeline described by every predicate in this header.
+    // true is the explicit "translate the user's selection and replace it in
+    // place" flow posted by PostSelectionReplaceTask: ExecuteTask hands it to
+    // ExecuteSelectionReplaceTask after the shared prologue, so K, the
+    // REQ-041/042 ledger clamps, the smart bypass and the Enter send gate are
+    // all bypassed by construction rather than by a new condition inside the
+    // Enter path (which must stay byte-identical).
+    bool selection_replace = false;
 };
 
 // 261108_0002 (WS3): successful-paste handoff for in-memory back-translation.
@@ -521,6 +531,112 @@ constexpr bool CancelOutcomeSuppressesEnter(TranslationStatus s) {
     return s == TranslationStatus::Canceled;
 }
 
+// V10F FUP-04 (Option C, session 261122_0002 P2-D): the out-of-band
+// raw-payload consume gate. FUP-04's shape is a SelectAll-RESCUED over-guard
+// capture that the capture seam collapsed to EMPTY (EmptyTail / GuardAbort) -
+// yet the whole-document Ctrl+A selection is still LIVE in the target app.
+// RescueLiveSelectionNeedsConsume above cannot describe it: its second input is
+// "the RETURNED capture is non-empty", which is false here by construction (its
+// own truth table pins `RescueLiveSelectionNeedsConsume(true, false) == false`
+// with the rationale "an empty rescue capture left no whole-document span to
+// consume"). The span does exist, it is just reported through CopySelectedText's
+// out_raw_rescue_text instead of the return value - so the rule needs its own
+// third operand. ONE definition shared by worker.cpp and the unit tests (same
+// pure-predicate discipline as the gates above).
+//   - select_all_rescued:  the capture came from the BUG-002 SelectAll rescue,
+//                          i.e. the live selection IS document-sized.
+//   - returned_capture_empty: the seam returned {} (nothing for the engine) -
+//                          the only shape this arm may handle; a non-empty
+//                          capture keeps every existing arm byte-identical.
+//   - raw_payload_present: the seam actually reported the payload; without it
+//                          there is nothing byte-safe to paste back, so the
+//                          legacy R5/036 handling must stay in charge.
+constexpr bool RescueRawPayloadNeedsConsume(bool select_all_rescued,
+                                            bool returned_capture_empty,
+                                            bool raw_payload_present) {
+    return select_all_rescued && returned_capture_empty && raw_payload_present;
+}
+
+// V10F (L4-C, session 261122_0002 P2-D): the explicit selection-translate
+// flow's capture verdict, as ONE pure definition shared by worker.cpp and the
+// unit tests. The flow captures ONLY the user's selection
+// (CopyUserSelectionText: plain Ctrl+C, no selection primitive, no rescue), so
+// the shape-only EnterCaptureResult reports exactly what happened:
+//   - Ok / BlockSliced -> the selection is usable; translate it. (BlockSliced
+//     cannot be produced by this seam - it performs no whole-capture slicing -
+//     and is mapped to the usable arm defensively so a future seam reuse can
+//     never fall through to a silent no-op.)
+//   - EmptySelection / EmptyTail -> the user selected nothing (or the seam saw
+//     an empty payload): surface the EXISTING TooltipNoSelection notice. No
+//     new StringId: the Enter path's R5 surface is the right wording.
+//   - CopyChordFailed / CopyChordDropped -> the chord never committed: the
+//     EXISTING TooltipCopyFailed notice ("couldn't copy the selection").
+//   - EditorExcluded / GuardAbort -> deliberately refused before any engine
+//     call (editor/terminal class, or an over-guard document-sized selection):
+//     the copy-failed notice is the honest, actionable surface (the selection
+//     was not captured), and it never claims "you selected nothing".
+// No arm collapses, releases or otherwise touches the user's selection: that
+// selection is the USER's own (not a synthetic span this app created), so a
+// refused translate must leave it exactly as the user left it.
+struct SelectionCaptureVerdict {
+    bool translate = false;
+    bool notify_no_selection = false;
+    bool notify_copy_failed = false;
+};
+
+constexpr SelectionCaptureVerdict PlanSelectionCapture(EnterCaptureResult capture) {
+    switch (capture) {
+        case EnterCaptureResult::Ok:
+        case EnterCaptureResult::BlockSliced:
+            return SelectionCaptureVerdict{true, false, false};
+        case EnterCaptureResult::EmptySelection:
+        case EnterCaptureResult::EmptyTail:
+            return SelectionCaptureVerdict{false, true, false};
+        case EnterCaptureResult::CopyChordFailed:
+        case EnterCaptureResult::CopyChordDropped:
+        case EnterCaptureResult::EditorExcluded:
+        case EnterCaptureResult::GuardAbort:
+            return SelectionCaptureVerdict{false, false, true};
+    }
+    return SelectionCaptureVerdict{false, false, true}; // unreachable; keeps the seam total
+}
+
+// V10F (L4-C): the post-engine paste verdict of the same flow, as ONE pure
+// definition shared by worker.cpp and the unit tests.
+//   - canceled: a user cancel wins outright - no paste, no tone (the engine is
+//     healthy, the user changed their mind; the translation-cancelled notice is
+//     the whole surface, exactly like the Enter path's Canceled branch).
+//   - translated_empty: the engine produced no result (failure / consent
+//     block): no paste, and the established audible failure tone (the Enter
+//     path's PlaySoundAsync(SoundType::Disable) class). No modal, no streak:
+//     those two are Enter-path repair surfaces (REQ-047 D1 / REQ-051 B-2)
+//     whose wording and latches describe a swallowed Enter, not this command.
+//   - translated_equals_source: the engine returned the selection unchanged.
+//     Nothing is pasted (a replacement with identical bytes would only churn
+//     the clipboard and the editor's undo stack); the user's selection is left
+//     to the app's own semantics.
+// Anything else pastes: the translation replaces the selection in place (the
+// caller reuses PasteAndRestore, whose Ctrl+V consumes the live selection).
+struct SelectionReplaceOutcome {
+    bool paste = false;
+    bool play_error_tone = false;
+};
+
+constexpr SelectionReplaceOutcome PlanSelectionReplaceOutcome(bool canceled,
+                                                              bool translated_empty,
+                                                              bool translated_equals_source) {
+    if (canceled) {
+        return SelectionReplaceOutcome{false, false};
+    }
+    if (translated_empty) {
+        return SelectionReplaceOutcome{false, true};
+    }
+    if (translated_equals_source) {
+        return SelectionReplaceOutcome{false, false};
+    }
+    return SelectionReplaceOutcome{true, false};
+}
+
 class PipelineWorker {
 public:
     PipelineWorker(AppConfig& config, TranslationManager& engine, FloatingBadge& badge);
@@ -664,9 +780,60 @@ public:
         first_multichunk_hint_cb_ = std::move(cb);
     }
 
+    // V10F (RISK-03, session 261122_0002 P2-D): the typing-mode error-detail
+    // seam. Called (on the worker thread) exactly when the Enter path's
+    // Translate() reports TranslationStatus::EngineFailed on an OpenAI leg AND a
+    // non-empty per-request cause is available, so the user learns WHY the
+    // Enter did not translate (HTTP 401 / 404 / 429 / consent, key-masked and
+    // bounded by the client) instead of only hearing the error tone - the audit
+    // found the typing path had no text surface at all.
+    // The registered wrapper MUST marshal to the GUI thread itself (main.cpp
+    // registers a TooltipWindow::ShowMessageThreadSafe wrapper with the 3 s
+    // autohide timer; the worker never touches a window). Same registration
+    // contract as the other SetXxxCallback seams: registered once at startup
+    // BEFORE Start(), read-only afterwards, so the worker thread reads it
+    // without a lock. The detail string is the per-request carrier
+    // (TranslationTaskContext::out_error_detail) with the client's process-wide
+    // slot as the fallback; it is UTF-16 by the time it reaches the callback.
+    void SetOnTypingError(std::function<void(const std::wstring&)> cb) {
+        typing_error_cb_ = std::move(cb);
+    }
+
+    // V10F (L4-C, session 261122_0002 P2-D): posts the explicit
+    // "translate my selection and replace it in place" task. Same acceptance
+    // contract as PostTask (true = accepted, false = a task is already in
+    // flight; the single-slot worker model is unchanged): the caller decides
+    // what to do when busy. The task runs on the pipeline worker thread with
+    // the same clipboard backup / restorer / busy-guard prologue as the Enter
+    // path, then ExecuteSelectionReplaceTask:
+    //   1. CopyUserSelectionText  - plain Ctrl+C of the LIVE user selection only
+    //                               (no SelectAll / SelectMessageBlock /
+    //                               EM_SETSEL, no SelectAll rescue, editor and
+    //                               terminal classes refused, over-guard
+    //                               selections refused),
+    //   2. engine_.Translate(selection, ...) with the type-pair snapshot and the
+    //      same per-task cancel token / chunk-progress wiring as the Enter
+    //      path (a badge click can cancel it),
+    //   3. PasteAndRestore      - the Ctrl+V replaces the still-live selection,
+    //   4. the ledger/last-paste bookkeeping is refreshed on success exactly like
+    //      the Enter paste branch (so the next Enter sees a live ledger entry),
+    //      and the user's selection is left untouched on every failure arm.
+    // No Enter is ever injected by this flow (the user did not press Enter), so
+    // K / the REQ-041/042 clamps / the smart bypass / the send gate are all
+    // out of the picture by construction.
+    bool PostSelectionReplaceTask(HWND target_hwnd);
+
 private:
     void WorkerLoop(std::stop_token stop_token);
     void ExecuteTask(const PipelineTask& task);
+    // V10F (L4-C): the selection-replace body (pipeline worker thread). Takes
+    // over AFTER ExecuteTask's shared prologue (clipboard backup, RAII
+    // restorer, busy guard, IME flush) - see the PostSelectionReplaceTask
+    // contract above. restorer_active is the caller's scope-exit RAII guard
+    // flag: the flow disarms it only when PasteAndRestore confirmed the original
+    // clipboard was restored (the same F7 algebra as the Enter paste branch).
+    void ExecuteSelectionReplaceTask(const PipelineTask& task, const ClipboardBackup& backup,
+                                     bool& restorer_active);
     // 261121_0002 (T5): worker-thread one-shot evaluator for the multi-chunk
     // hint above (called from the TranslationTaskContext on_chunk slot; no-op
     // for single-chunk plans and after the first firing).
@@ -715,6 +882,10 @@ private:
     // above. Single-worker-thread reads inside ExecuteTask.
     std::function<void()> translation_cancelled_cb_;
     std::function<void()> first_multichunk_hint_cb_;
+
+    // V10F (RISK-03): set once at startup via SetOnTypingError (see the
+    // contract there). Single-worker-thread read inside ExecuteTask.
+    std::function<void(const std::wstring&)> typing_error_cb_;
 
     // 261121_0002 (T5): the one-shot latch for the multi-chunk hint. Only the
     // pipeline worker thread touches it (the on_chunk slot), so a plain bool

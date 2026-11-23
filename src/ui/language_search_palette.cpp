@@ -23,6 +23,7 @@
 
 #include "ui/language_search_palette.hpp"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <utility>
@@ -75,11 +76,14 @@ language_palette::PickerInit s_pending_init[kPickerSlotCount];
 // 261116_0003 P6c fix round (PR6-42): the single-instance guard for the modal
 // picker, hoisted from a function-local static inside ShowLanguageSearchPalette
 // to module scope so LanguagePickerShowing() can expose it. Same
-// GUI-THREAD-ONLY discipline as the latch arrays above: the picker's modal
-// loop, both deferred-open arms, and this flag all live on the one GUI thread,
-// so a plain bool is race-free without a mutex. One picker process-wide is the
-// design (the tray and the tooltip share the module).
-bool s_palette_open = false;
+// GUI-THREAD-ONLY discipline as the latch arrays above for the WRITE side
+// (the modal loop, both deferred-open arms).
+// V10F FUP-02: the flag is now std::atomic<bool> — main.cpp's ESC and
+// dismissal callbacks on the keyboard/mouse HOOK threads read it while the
+// picker is modal (acquire/release; the state is a lone bool, no payload
+// travels with the ordering). One picker process-wide is the design (the tray
+// and the tooltip share the module).
+std::atomic<bool> s_palette_open{false};
 
 // Defensive surface->slot mapping. The enum is closed (four values, zero
 // holes) and every producer passes a literal, so the false branch is
@@ -96,7 +100,11 @@ bool PickerSlotFor(language_palette::PickerSurface surface, std::size_t* slot) {
 }
 
 // ---- window class --------------------------------------------------------
-constexpr wchar_t kPaletteClassName[] = L"Emebalachat_LanguageSearchPalette";
+// V10F FUP-02: the class string itself lives in SECTION A of the header (one
+// shared definition, consumed by the pure IsLanguagePaletteWindowClass
+// predicate); this alias keeps the three Win32 use sites below unchanged.
+constexpr const wchar_t* kPaletteClassName =
+    language_palette::kLanguagePaletteWindowClass;
 
 // WM_COMMAND / child control ids (module-local: the picker owns its own window,
 // so it must not collide with the tray's 2001..2600+ menu band or the settings
@@ -744,7 +752,10 @@ std::optional<language_palette::PickerInit> TakeDeferredLanguagePaletteOpen(
 }
 
 bool LanguagePickerShowing() {
-    return s_palette_open;
+    // V10F FUP-02: acquire load — readers on the hook threads (main.cpp's ESC /
+    // dismissal exemptions) must see the flag set by the GUI thread's release
+    // store before ShowLanguageSearchPalette entered its modal loop.
+    return s_palette_open.load(std::memory_order_acquire);
 }
 
 LanguagePickerResult ShowLanguageSearchPalette(HWND owner,
@@ -757,15 +768,18 @@ LanguagePickerResult ShowLanguageSearchPalette(HWND owner,
     // Single instance: a picker already open swallows a second open (the
     // deferred latch normally prevents this; a direct call can still race a
     // modal loop pumped from the same thread). The flag is module-scope since
-    // the PR6-42 fix round (LanguagePickerShowing reads it).
-    if (s_palette_open) {
+    // the PR6-42 fix round (LanguagePickerShowing reads it); V10F FUP-02 made
+    // it atomic so the hook-thread readers join the acquire/release pairing.
+    if (s_palette_open.load(std::memory_order_acquire)) {
         DIAG_LOG("UI", "lang_palette_open result=already_open");
         return result;
     }
-    s_palette_open = true;
+    // V10F FUP-02: release store — publishes "the modal loop is running" to
+    // the hook-thread readers before any picker state exists.
+    s_palette_open.store(true, std::memory_order_release);
     struct OpenGuard {
-        bool* flag;
-        ~OpenGuard() { *flag = false; }
+        std::atomic<bool>* flag;
+        ~OpenGuard() { flag->store(false, std::memory_order_release); }
     } open_guard{&s_palette_open};
 
     POINT pt = {};

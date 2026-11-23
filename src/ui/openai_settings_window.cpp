@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>  // V10F BUG-05: ASCII lowercase/digit tests in the consent scope parser
 #include <deque>   // R1-9: by-value fetch-result queue (SEC-B5 house transport)
 #include <functional> // 261122_0001 B-U6fix: the dropped-width plan's measurer
 #include <memory>
@@ -490,6 +491,66 @@ std::wstring FormatOpenAiProfileLimitNotice(std::wstring_view message, std::size
     }
 }
 
+// V10F BUG-05 (261122_0002 P1-U3): origin-scoped cleartext-HTTP consent, the
+// pure half of the shared ResolveHttpConsent gate (declaration: the header).
+// OpenAiHttpConsentScope parses the EXACT origin a consent is scoped to; the
+// empty string means "no http scope" and, because it can never equal a real
+// origin's scope, keeps every gate decision on the re-ask side.
+std::string OpenAiHttpConsentScope(std::string_view base_url) {
+    // ASCII-lowercase a COPY: the scheme test and the host compare are both
+    // case-insensitive, and the caller's buffer must not be touched.
+    std::string lowered(base_url);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    constexpr std::string_view kHttpPrefix = "http://";
+    if (lowered.compare(0, kHttpPrefix.size(), kHttpPrefix) != 0) return {};
+    std::string_view authority(lowered);
+    authority.remove_prefix(kHttpPrefix.size());
+    const std::size_t end = authority.find_first_of("/?#");
+    if (end != std::string_view::npos) authority = authority.substr(0, end);
+    // Drop any userinfo ("user:pass@"): an origin never includes it.
+    const std::size_t at = authority.rfind('@');
+    if (at != std::string_view::npos) authority = authority.substr(at + 1);
+    std::string host;
+    std::string port = "80";
+    if (!authority.empty() && authority.front() == '[') {
+        const std::size_t close = authority.find(']');
+        if (close == std::string_view::npos) return {};
+        host.assign(authority.substr(0, close + 1));
+        const std::string_view tail = authority.substr(close + 1);
+        if (!tail.empty()) {
+            if (tail.front() != ':') return {};
+            port.assign(tail.substr(1));
+        }
+    } else {
+        const std::size_t colon = authority.rfind(':');
+        if (colon == std::string_view::npos) {
+            host.assign(authority);
+        } else {
+            host.assign(authority.substr(0, colon));
+            port.assign(authority.substr(colon + 1));
+        }
+    }
+    if (host.empty()) return {};
+    const bool port_is_digits =
+        !port.empty() && std::all_of(port.begin(), port.end(), [](unsigned char c) {
+            return std::isdigit(c) != 0;
+        });
+    if (!port_is_digits) return {};
+    return host + ":" + port;
+}
+
+// V10F BUG-05: the pure consent-carry decision — see the header declaration
+// for the rule. https/invalid URLs never carry http consent, so the scope
+// comparison (which yields "" for them) can only match a recorded "" scope,
+// and a recorded scope is never "" while a real YES is on record (the gate
+// stores the parsed scope on every grant).
+bool OpenAiHttpConsentCarries(std::string_view base_url, bool current_consent,
+                              std::string_view consent_origin) {
+    if (!current_consent || consent_origin.empty()) return false;
+    return OpenAiHttpConsentScope(base_url) == consent_origin;
+}
+
 // The [저장] key-handling matrix (design item 9.4). `key_edit` is the API-key
 // edit's UTF-8 text and is SCRUBBED IN PLACE on every path that touched a
 // cleartext (the REQ-050/OF-01 contract: ProtectOpenAiApiKey scrubs the caller's
@@ -578,6 +639,23 @@ struct OpenAiModelCatalog {
     std::vector<OpenAiModelCapability> capabilities;   // subset the server described
 };
 
+// V10F-R2 (fix-list round 2, F-30): the fetch generation is SESSION-GLOBAL,
+// not per dialog instance. The F-18 teardown bump retires the destroyed
+// session's counter, but a per-instance counter died with its instance: a
+// fresh dialog restarted at 0, so a detached completion that survived every
+// drain sweep carried a generation the new session's first fetch could bump
+// to again — and the completion filter would accept it as current. One
+// process-wide atomic (the modal dialog allows exactly one live instance, so
+// the within-session single-flight semantics are unchanged) makes the
+// teardown bump visible to the NEXT session for good: its completions fail
+// the generation filter no matter when their wake-up lands. GUI thread only,
+// exactly like the per-instance field it replaces; the worker reads a BY
+// VALUE copy taken at spawn.
+std::atomic<unsigned long long>& OpenAiFetchGenerationGlobal() {
+    static std::atomic<unsigned long long> g{0};
+    return g;
+}
+
 struct OpenAiDialogState {
     OpenAiConfig* cfg;   // in/out; key DPAPI-protected on save
     bool saved = false;
@@ -591,7 +669,11 @@ struct OpenAiDialogState {
     // REQ-052 (async fetch): single-flight generation — every spawn
     // increments it; a completion carrying an older generation is stale (a
     // newer fetch superseded it) and is dropped. GUI thread only.
-    unsigned long long fetch_generation = 0;
+    // V10F-R2 (F-30): a REFERENCE to the session-global counter (see
+    // OpenAiFetchGenerationGlobal) bound at construction — the per-instance
+    // field it replaced died with its instance, which made the F-18 teardown
+    // bump inert against a later dialog session.
+    std::atomic<unsigned long long>& fetch_generation = OpenAiFetchGenerationGlobal();
     // REQ-052 (async fetch): spawn origin. The call site sets it
     // immediately before spawning (both call sites are GUI-thread) and the
     // spawn copies it into the worker args: a manual completion may show
@@ -662,6 +744,22 @@ struct OpenAiDialogState {
     // edits are discarded and the caller keeps its stored library. GUI thread
     // only.
     bool profiles_edited = false;
+    // V10F BUG-05 (261122_0002 P1-U3): the EXACT http origin (the
+    // OpenAiHttpConsentScope form: "host:port" lowercase, port default-filled)
+    // the consent on record was granted for. Seeded from the persisted config
+    // (the F-17 channel below) at WM_INITDIALOG, re-scoped by the shared
+    // ResolveHttpConsent gate on every YES, and re-derived on every profile
+    // adoption. http consent is
+    // origin-scoped: an edit pointing at another http origin — or at https,
+    // which never carries http consent — must re-ask instead of inheriting a
+    // YES given for a different endpoint. GUI thread only.
+    std::string http_consent_origin;
+    // V10F-R1 F-17: the caller's in/out consent-origin channel (the fifth
+    // ShowOpenAiSettingsDialogEx parameter the state was constructed with; null
+    // for the deprecated entries). IN value seeds http_consent_origin at
+    // WM_INITDIALOG; IDOK writes the re-scoped value back; [설정 삭제] clears
+    // it. GUI thread only.
+    std::string* consent_origin_channel = nullptr;
 };
 
 std::wstring GetCtrlText(HWND dlg, int id) {
@@ -723,10 +821,11 @@ struct OpenAiFetchResult {
 // worker may finish after the dialog is gone and must still have a valid
 // object to enqueue into. Scope note copied from the tooltip contract: this
 // dialog is modal on the GUI thread, so one instance is live at a time; the
-// WM_INITDIALOG drain discards anything a post-teardown worker left behind, so
-// no entry is ever applied to a later instance (its generation is >= 1, and a
-// fresh dialog starts at 0, so even the in-band path drops it). Sole
-// consumers: the GUI-thread completion drain and the teardown sweeps
+// WM_INITDIALOG drain discards anything a post-teardown worker left behind,
+// so no entry is ever applied to a later instance (the session-global
+// generation keeps a destroyed session's completions stale forever, and the
+// drain is the deterministic guarantee). Sole consumers: the GUI-thread
+// completion drain and the teardown sweeps
 // (WM_INITDIALOG / WM_DESTROY / dialog-return).
 std::mutex g_openai_fetch_mu;
 std::deque<OpenAiFetchResult> g_openai_fetch_queue;
@@ -900,7 +999,14 @@ std::string ReasoningEffortSelection(HWND dlg, const OpenAiDialogState* st) {
 // the model combo, keeping the current pick whenever the new list still offers
 // it. Called at WM_INITDIALOG and on every model change / fetch completion, so
 // the list always belongs to the model the user is looking at.
-void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st) {
+// V10F BUG-03 (261122_0002 P1-U3): `model_override` lets the CBN_SELCHANGE
+// branch name the JUST-SELECTED item directly — on this CBS_DROPDOWN the edit
+// text can still hold the PREVIOUS model when the notification runs, and a
+// control-text read there populated the reasoning list for the wrong model.
+// Every other caller (and the no-selection fallback) leaves it null and reads
+// the control text, exactly as before.
+void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st,
+                           const std::string* model_override = nullptr) {
     HWND combo = ::GetDlgItem(dlg, IDC_REASONING_COMBO);
     if (!combo) return;
     // Capture what the dialog carries BEFORE the reset. The state value, not a
@@ -909,7 +1015,8 @@ void RefreshReasoningCombo(HWND dlg, OpenAiDialogState* st) {
     // one, and losing that distinction here is exactly the silent preference
     // loss this fix removes.
     const std::string previous = st->reasoning_effort;
-    const std::string model = ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
+    const std::string model =
+        model_override ? *model_override : ToUtf8(GetCtrlText(dlg, IDC_MODEL_COMBO));
     const std::vector<std::string>* advertised =
         FindAdvertisedReasoningEfforts(st->catalog, model);
     const std::vector<std::string> no_efforts;
@@ -1059,6 +1166,28 @@ void ApplyOpenAiProfileSelection(HWND dlg, OpenAiDialogState* st) {
                    "the integrity check; the key field was cleared for re-entry\n");
         }
     }
+    // V10F BUG-04 (261122_0002 P1-U3): the model list + catalog belong to the
+    // PREVIOUS endpoint/keys, so a profile switch retires them BEFORE the new
+    // text lands:
+    //   * CB_RESETCONTENT empties the IDC_MODEL_COMBO list (on this
+    //     CBS_DROPDOWN it also wipes the edit text, which is why it must run
+    //     BEFORE the model SetCtrlText below — the old list could otherwise
+    //     present the previous endpoint's models against the new profile);
+    //   * the catalog reset makes RefreshReasoningCombo fall back to the
+    //     standard list until the new endpoint's own fetch completes;
+    //   * ++fetch_generation retires any in-flight fetch: its completion is
+    //     dropped as stale by the kOpenAiMsgFetchDone filter (V10F BUG-06
+    //     keeps that branch from touching the button), so the fetch button is
+    //     restored right here. The EN_CHANGE the base-URL SetCtrlText raises
+    //     re-arms the debounced auto-fetch when the new profile qualifies; the
+    //     non-https/no-key suppression paths below it stay as they are.
+    if (HWND model_combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
+        ::SendMessageW(model_combo, CB_RESETCONTENT, 0, 0);
+    }
+    st->catalog = OpenAiModelCatalog{};
+    ++st->fetch_generation;
+    st->fetch_button_busy = false;
+    ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
     SetCtrlText(dlg, IDC_BASE_URL, ToUtf16(profile.cfg.base_url));
     SetCtrlText(dlg, IDC_MODEL_COMBO, ToUtf16(profile.cfg.model));
     if (pair_adopted) {
@@ -1066,9 +1195,54 @@ void ApplyOpenAiProfileSelection(HWND dlg, OpenAiDialogState* st) {
     }
     SecureZeroMemory(key.data(), key.size());
     st->cfg->http_consent_given = profile.cfg.http_consent_given;
+    // V10F BUG-05: the adopted consent is scoped to the profile's OWN http
+    // origin (https profiles adopt no scope), so a later edit to a different
+    // origin re-asks instead of inheriting this YES.
+    st->http_consent_origin = profile.cfg.http_consent_given
+                                  ? OpenAiHttpConsentScope(profile.cfg.base_url)
+                                  : std::string();
     PlanOpenAiReasoningReseed(profile.cfg.reasoning_effort, st->reasoning_effort,
                               st->reasoning_effort_pending);
     RefreshReasoningCombo(dlg, st);
+}
+
+// V10F BUG-05 (261122_0002 P1-U3): the ONE consent gate every path that sends
+// or saves a base URL runs through (DoFetchModels / [저장] / IDOK). The audit
+// finding: consent was a bare flag — [저장] copied it without asking, a fetch
+// YES only reached the throwaway probe, and an https edit kept an http YES on
+// record forever. Rules (OpenAiHttpConsentCarries is the pure core the suite
+// pins; OpenAiHttpConsentScope parses the origin):
+//   * http URL with consent on record for THIS exact origin -> proceed,
+//     no prompt;
+//   * any other http URL -> ask the OpenAiHttpWarning question; a YES records
+//     consent scoped to that http://host:port origin, a NO aborts the caller's
+//     action and changes nothing;
+//   * https URL -> proceed and CLEAR the record: https never stores http
+//     consent, so a later http edit can never inherit a stale YES;
+//   * invalid URL -> proceed untouched (the caller's own validity gate owns
+//     the refusal; a half-typed URL must not wipe a stored consent).
+// Returns false ONLY when the user declines.
+bool ResolveHttpConsent(HWND dlg, OpenAiDialogState* st, const std::string& base_url) {
+    const OpenAiUrlSecurity sec = ClassifyOpenAiBaseUrl(base_url);
+    if (sec == OpenAiUrlSecurity::Https) {
+        st->cfg->http_consent_given = false;
+        st->http_consent_origin.clear();
+        return true;
+    }
+    if (sec != OpenAiUrlSecurity::Http) {
+        return true; // invalid: not this gate's refusal to make
+    }
+    if (OpenAiHttpConsentCarries(base_url, st->cfg->http_consent_given,
+                                 st->http_consent_origin)) {
+        return true;
+    }
+    const int rc = ::MessageBoxW(dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
+                                 I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
+                                 MB_YESNO | MB_ICONWARNING);
+    if (rc != IDYES) return false;
+    st->cfg->http_consent_given = true;
+    st->http_consent_origin = OpenAiHttpConsentScope(base_url);
+    return true;
 }
 
 // REQ-050 (auto-fetch) / REQ-052 (async): the model-list fetch shared by the
@@ -1109,22 +1283,24 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
         ProtectOpenAiApiKey(keyUtf8, probe.api_key_dpapi);
     }
     key_utf8_scrub.ScrubNow();
-    // REQ-050: the pre-save fetch hit the same http consent gate as
-    // IDOK, but the probe never set http_consent_given, so an http://
-    // base URL was always rejected before any network I/O. Mirror the
-    // IDOK flow: ask the SAME consent question when the probed base
-    // URL is http and no consent is on record; abort the fetch on NO.
-    const OpenAiUrlSecurity probe_sec = ClassifyOpenAiBaseUrl(probe.base_url);
-    if (probe_sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
-        const int rc = ::MessageBoxW(
-            dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
-            I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
-            MB_YESNO | MB_ICONWARNING);
-        if (rc != IDYES) return false; // user declined: abort the fetch
-        probe.http_consent_given = true;
-    } else {
-        probe.http_consent_given = st->cfg->http_consent_given;
+    // V10F BUG-05 (261122_0002 P1-U3): the SAME shared origin-scoped consent
+    // gate the [저장]/IDOK paths run (ResolveHttpConsent) — the pre-fix fetch
+    // asked its own copy of the question and set ONLY probe.http_consent_given,
+    // so a YES here was lost for the save path. A YES now records consent (and
+    // its exact http origin) on the dialog's in/out copy; a NO aborts the
+    // fetch exactly as before (the manual caller's failure-notice contract is
+    // untouched).
+    if (!ResolveHttpConsent(dlg, st, probe.base_url)) {
+        return false; // user declined: abort the fetch
     }
+    probe.http_consent_given = st->cfg->http_consent_given;
+    // V10F-R2 (fix-list round 2, F-28): hand the fetch the SAME origin-scoped
+    // consent evidence the engine routing leg gates on. ResolveHttpConsent
+    // above is authoritative for probe.base_url: a carry keeps the persisted
+    // scope, a fresh YES stores this base_url's scope, so the working origin
+    // is exactly the consented origin of the fetch (https bases cleared it —
+    // the client's origin gate applies to http bases only).
+    probe.http_consent_origin = st->http_consent_origin;
     // REQ-052: single-flight — bump the generation BEFORE the spawn so the
     // completion handler drops any older in-flight completion (a newer
     // fetch supersedes it; the stale worker only wasted its bounded
@@ -1134,7 +1310,12 @@ bool DoFetchModels(HWND dlg, OpenAiDialogState* st) {
     // the worker BY VALUE — the cleartext key never leaves this thread (it
     // was scrubbed above) and the worker touches no dialog state.
     try {
-        std::thread(OpenAiFetchWorker, st->fetch_alive, dlg, st->fetch_generation,
+        // V10F-R2 integrator note: fetch_generation is now a REFERENCE to the
+        // session-global atomic (F-30); std::thread decays its arguments by
+        // value and std::atomic is non-copyable, so the snapshot is taken
+        // with .load() — the identical by-value generation the worker
+        // received before F-30.
+        std::thread(OpenAiFetchWorker, st->fetch_alive, dlg, st->fetch_generation.load(),
                     st->fetch_manual, std::move(probe))
             .detach();
     } catch (...) {
@@ -1166,8 +1347,8 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // R1-9: a fresh instance starts with an EMPTY queue. A worker from a
         // previous dialog whose post failed leaves its entry behind (the
         // tooltip "left queued" contract); it must never be applied here, so
-        // the leftover is discarded rather than filtered (its generation is
-        // >= 1 against this instance's 0, but the drain is the deterministic
+        // the leftover is discarded rather than filtered (the session-global
+        // generation keeps it stale anyway, but the drain is the deterministic
         // guarantee).
         DrainOpenAiFetchQueue();
         // REQ-047 D3 (architect §C.4 "API입력칸 미노출" verification): the
@@ -1277,6 +1458,31 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             KeyAvailableForFetch(dlg, st->cfg)) {
             ::SetTimer(dlg, kFetchTimerId, kFetchDebounceMs, nullptr);
         }
+        // V10F BUG-05 (261122_0002 P1-U3) + V10F-R1 F-17: seed the consent
+        // scope FROM CONFIG — the persisted "http_consent_origin" next to the
+        // flag is the exact origin the YES was granted for. The caller passes
+        // its stored value through the state's consent_origin_channel; a
+        // null/empty handoff (or a caller that cannot name the AppConfig) falls
+        // back to reading the persisted config file through a second AppConfig
+        // instance (the [설정 삭제] precedent). Only when neither channel yields
+        // a value AND a legacy consent flag sits on a stored http base_url is
+        // the scope re-derived from that base_url — the pre-F-17 configs
+        // carried no origin, and this one-time derivation keeps their saved
+        // consent usable until the next save re-persists it explicitly. A
+        // stored flag on an https URL seeds an empty scope, which can never
+        // match a real origin, so any later http edit re-asks instead of
+        // inheriting it.
+        if (st->consent_origin_channel != nullptr && !st->consent_origin_channel->empty()) {
+            st->http_consent_origin = *st->consent_origin_channel;
+        } else {
+            AppConfig persisted;
+            if (persisted.LoadFromFile()) {
+                st->http_consent_origin = persisted.GetHttpConsentOrigin();
+            }
+            if (st->http_consent_origin.empty() && st->cfg->http_consent_given) {
+                st->http_consent_origin = OpenAiHttpConsentScope(st->cfg->base_url);
+            }
+        }
         // 261122_0001 B-U4 (design item 9.2): list the working library's
         // display names in the profile picker, with NO selection — the dialog
         // always opens on the active block above, never on a stored profile, so
@@ -1304,14 +1510,46 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         return FALSE;
     case WM_COMMAND:
         // 261121_0001 U-H (contract C4): the reasoning list belongs to the
-        // selected model, so a model change repopulates it. CBN_SELCHANGE is
-        // the pick from the fetched list; CBN_EDITCHANGE covers the combo's
-        // free-text leg (CBS_DROPDOWN), where a hand-typed id is by definition
-        // absent from every fetched list and therefore gets the fallback list.
-        if (st && LOWORD(wp) == IDC_MODEL_COMBO &&
-            (HIWORD(wp) == CBN_SELCHANGE || HIWORD(wp) == CBN_EDITCHANGE)) {
-            RefreshReasoningCombo(dlg, st);
-            return TRUE;
+        // selected model, so a model change repopulates it.
+        // V10F BUG-03 (261122_0002 P1-U3): the two notifications carry the
+        // model differently. CBN_SELCHANGE is the pick from the fetched list —
+        // read the JUST-SELECTED item straight off the listbox (CB_GETCURSEL +
+        // CB_GETLBTEXT), because this CBS_DROPDOWN's edit text can still show
+        // the PREVIOUS model when the notification is processed. A raised
+        // CBN_SELCHANGE with no current selection (the CB_RESETCONTENT of a
+        // refill does that) falls back to the control text, exactly the old
+        // behavior. CBN_EDITCHANGE IS the edit-text change: it reads the
+        // control text as before — a hand-typed id is by definition absent
+        // from every fetched list and therefore gets the fallback list.
+        if (st && LOWORD(wp) == IDC_MODEL_COMBO) {
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                std::wstring selected;
+                if (HWND combo = ::GetDlgItem(dlg, IDC_MODEL_COMBO)) {
+                    const LRESULT sel = ::SendMessageW(combo, CB_GETCURSEL, 0, 0);
+                    if (sel != CB_ERR) {
+                        // CB_GETLBTEXT copies len chars PLUS the terminating
+                        // NUL, hence the len+1 buffer (the GetCtrlText idiom).
+                        const LRESULT len = ::SendMessageW(combo, CB_GETLBTEXTLEN, sel, 0);
+                        if (len != CB_ERR && len > 0) {
+                            selected.assign(static_cast<size_t>(len) + 1, L'\0');
+                            ::SendMessageW(combo, CB_GETLBTEXT, sel,
+                                           reinterpret_cast<LPARAM>(selected.data()));
+                            selected.resize(static_cast<size_t>(len));
+                        }
+                    }
+                }
+                if (!selected.empty()) {
+                    const std::string model = ToUtf8(selected);
+                    RefreshReasoningCombo(dlg, st, &model);
+                } else {
+                    RefreshReasoningCombo(dlg, st);
+                }
+                return TRUE;
+            }
+            if (HIWORD(wp) == CBN_EDITCHANGE) {
+                RefreshReasoningCombo(dlg, st);
+                return TRUE;
+            }
         }
         // Fix round 1 (F-4): a pick in the reasoning combo is the user's explicit
         // choice, so it ends the pending restoration — including a deliberate
@@ -1410,18 +1648,15 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                               MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
-            if (sec == OpenAiUrlSecurity::Http && !st->cfg->http_consent_given) {
-                const int rc = ::MessageBoxW(
-                    dlg, I18n::Get(StringId::OpenAiHttpWarningBody).c_str(),
-                    I18n::Get(StringId::OpenAiHttpWarningTitle).c_str(),
-                    MB_YESNO | MB_ICONWARNING);
-                if (rc != IDYES) {
-                    return TRUE;
-                }
-                out.http_consent_given = true;
-            } else {
-                out.http_consent_given = st->cfg->http_consent_given;
+            // V10F BUG-05 (261122_0002 P1-U3): the shared origin-scoped gate
+            // (ResolveHttpConsent) — https never stores http consent (the gate
+            // clears the record, so a later http edit re-asks), an http URL
+            // asks unless a YES is on record for THIS exact origin, and a NO
+            // keeps the dialog open with nothing saved — the pre-fix contract.
+            if (!ResolveHttpConsent(dlg, st, out.base_url)) {
+                return TRUE; // declined: stay open, nothing saved
             }
+            out.http_consent_given = st->cfg->http_consent_given;
 
             if (IsMaskedPlaceholder(keyUtf8, RenderedOpenAiKeyPlaceholder(*st->cfg))) {
                 out.api_key_dpapi = st->cfg->api_key_dpapi;
@@ -1480,6 +1715,15 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             }
 
             *st->cfg = std::move(out);
+            // V10F-R1 F-17: hand the consent origin out with the saved block.
+            // The shared gate already re-scoped it for out.base_url (a grant
+            // set it, https cleared it, a carry left the seeded origin), so
+            // this is exactly the scope to persist next to http_consent_given.
+            // The caller applies it through the locked SetHttpConsentOrigin
+            // verb before its single save.
+            if (st->consent_origin_channel != nullptr) {
+                *st->consent_origin_channel = st->http_consent_origin;
+            }
             st->saved = true;
             ::EndDialog(dlg, IDOK);
             return TRUE;
@@ -1539,6 +1783,10 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 // explicit [] and the migration cannot re-synthesize later.
                 persisted.SetOpenAiProfiles(std::move(kept_profiles));
             }
+            // V10F-R1 F-17: the cleared block carries no http consent, so its
+            // persisted origin scope is revoked with it (the locked verb on
+            // the same second instance, before this path's own save).
+            persisted.SetHttpConsentOrigin("");
             if (!persisted.SaveToFile()) {
                 DIAG_F("UI/OpenAiSettings/006: delete requested but config save failed; "
                        "settings left intact\n");
@@ -1550,6 +1798,12 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                    "selection untouched)\n",
                    retired_count);
             *st->cfg = OpenAiConfig{};
+            st->http_consent_origin.clear(); // V10F BUG-05: the cleared block carries no scope
+            // V10F-R1 F-17: the out channel dies with the deleted settings too
+            // (the caller ignores it on kDeleted; cleared for symmetry).
+            if (st->consent_origin_channel != nullptr) {
+                st->consent_origin_channel->clear();
+            }
             st->deleted = true;
             ::EndDialog(dlg, IDC_DELETE_BTN);
             return TRUE;
@@ -1580,6 +1834,15 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             candidate.reasoning_effort = ReasoningEffortSelection(dlg, st);
             if (st->reasoning_effort_pending) {
                 candidate.reasoning_effort = st->reasoning_effort;
+            }
+            // V10F BUG-05 (261122_0002 P1-U3): the shared origin-scoped consent
+            // gate (ResolveHttpConsent), NOT a silent flag copy — [저장] used to
+            // stage whatever consent the dialog carried, so an http profile
+            // could inherit a YES the user never gave for its endpoint (or one
+            // scoped to a different origin). A https profile stores no http
+            // consent; a declined prompt aborts the save and stages nothing.
+            if (!ResolveHttpConsent(dlg, st, candidate.base_url)) {
+                return TRUE; // declined: nothing staged
             }
             candidate.http_consent_given = st->cfg->http_consent_given;
             // Key matrix (design item 9.4): a masked placeholder keeps the pair
@@ -1696,11 +1959,13 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 continue;
             }
             if (result.generation != st->fetch_generation) {
-                // 260922_0001 A6: this exit restores the button too — a
-                // superseded (stale) fetch must not leave it gray while the
-                // newer worker it yielded to is still running.
-                st->fetch_button_busy = false;
-                ::EnableWindow(::GetDlgItem(dlg, IDC_FETCH_BTN), TRUE);
+                // V10F BUG-06 (261122_0002 P1-U3): a stale completion is
+                // DISCARDED ONLY. The button state belongs to the LIVE
+                // generation — its own completion performs the restore, and a
+                // profile switch performs it when the generation bump retires
+                // the in-flight fetch (V10F BUG-04). The old code re-enabled
+                // the button here, un-graying it while the newer fetch it
+                // yielded to was still running.
                 continue; // stale (a newer fetch superseded it) or orphaned
             }
             const bool manual = result.manual;
@@ -1742,6 +2007,19 @@ INT_PTR CALLBACK OpenAiSettingsProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         // of posting to a destroyed hwnd.
         if (st && st->fetch_alive) {
             st->fetch_alive->store(false, std::memory_order_release);
+        }
+        // V10F-R1 F-18 + V10F-R2 (fix-list round 2, F-30): retire the fetch
+        // generation at teardown. The counter is SESSION-GLOBAL (one
+        // process-wide atomic every dialog instance references), so this bump
+        // moves the shared counter past every value this session's workers
+        // may still deliver: a detached completion that survives every drain
+        // sweep fails the completion handler's generation filter in this
+        // session AND in any later session, instead of the destroyed
+        // instance's bump being lost with it. The bump runs BEFORE the queue
+        // drain so the retired counter is in place while the drain still
+        // runs.
+        if (st) {
+            ++st->fetch_generation;
         }
         // R1-9 teardown sweep: discard every result still queued (a superseded
         // fetch, or one whose wake-up will never be dispatched) — REMOVE
@@ -2070,13 +2348,17 @@ void BuildOpenAiTemplate(TemplateBuilder& tb) {
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
                                                  OpenAiDeclaredLanguagesFold& declaration,
-                                                 OpenAiProfilesFold& profiles) {
+                                                 OpenAiProfilesFold& profiles,
+                                                 std::string* http_consent_origin) {
     // 261116_0003 P9c-1c: `declaration` starts cleared on every entry so a
     // caller that never reaches IDOK (Cancel, [삭제], a failed dialog creation)
     // reads edited=false and an empty set - the "nothing to adopt" contract.
     declaration.edited = false;
     declaration.declared_languages.clear();
     OpenAiDialogState st{&cfg, false, false};
+    // V10F-R1 F-17: hand the consent-origin channel to the dialog proc (the
+    // proc sees only the state, never ShowOpenAiSettingsDialogEx's locals).
+    st.consent_origin_channel = http_consent_origin;
     // 261122_0001 B-U4 (design-pick item 9.1): seed the dialog's WORKING library
     // copy from the fold's INPUT half. A deep copy, deliberately not a move: a
     // caller that hands its live vector over and then cancels must still have
@@ -2152,9 +2434,10 @@ OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg,
     // 261122_0001 fix-D (R1-13/e): DEPRECATED FOR PROFILES — this overload has
     // no live caller (main.cpp uses the library-aware entry) and it can never
     // carry staged profile edits out; kept only so the outcome-only contract
-    // survives. No behavior change.
+    // survives. No behavior change. V10F-R1 F-17: no consent-origin channel
+    // either (the dialog seeds from the persisted file itself).
     OpenAiProfilesFold profiles;
-    return ShowOpenAiSettingsDialogEx(parent, cfg, declaration, profiles);
+    return ShowOpenAiSettingsDialogEx(parent, cfg, declaration, profiles, nullptr);
 }
 
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(HWND parent, OpenAiConfig& cfg) {

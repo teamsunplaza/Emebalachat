@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <iomanip>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <windows.h>
 #include <winhttp.h>
@@ -42,6 +43,99 @@ struct WinHttpHandleDeleter {
 };
 
 using ScopedHInternet = std::unique_ptr<void, WinHttpHandleDeleter>;
+
+// ---- V10F (RISK-02 Option A, 261122_0002 P2-A): the abortable request slot ----
+//
+// The Google twin of openai_compatible_client.cpp's g_request_slot (itself the
+// clone of src/ui/gguf_model_manager_window.cpp's HfClearSlot protocol,
+// ~L761-798). Both clients are single-request-per-process at a time — the
+// pipeline worker serializes everything that reaches them — so one slot each is
+// exact; they are deliberately NOT shared, because an abort aimed at a Google
+// GET must never close an OpenAI POST.
+//   * the slot is cleared under the mutex BEFORE the close, and whoever clears
+//     it owns the single close (no handle is closed twice);
+//   * the worker never uses a handle after the cancel path closed it (every
+//     post-close WinHTTP call fails, and the read loop tests the abort flag);
+//   * a request that could not publish (an overlapping request holds the slot)
+//     still owns its own close, so no handle leaks.
+struct RequestAbortSlot {
+    std::mutex mu;
+    HINTERNET request = nullptr;  // published while a request is in flight
+    bool aborted = false;         // sticky per request: set by the abort path
+};
+RequestAbortSlot g_request_slot;
+
+// Single-owner close: true when this side owned (and performed) the close.
+bool ClearRequestSlot(HINTERNET h) {
+    if (!h) return false;
+    bool mine = false;
+    {
+        std::lock_guard<std::mutex> lk(g_request_slot.mu);
+        if (g_request_slot.request == h) {
+            g_request_slot.request = nullptr;
+            mine = true;
+        }
+    }
+    if (mine) ::WinHttpCloseHandle(h);
+    return mine;
+}
+
+// Publishes a freshly created handle, clearing the previous request's sticky
+// abort flag. False when an overlapping request already holds the slot.
+bool PublishRequestSlot(HINTERNET h) {
+    if (!h) return false;
+    std::lock_guard<std::mutex> lk(g_request_slot.mu);
+    if (g_request_slot.request != nullptr) return false;
+    g_request_slot.request = h;
+    g_request_slot.aborted = false;
+    return true;
+}
+
+bool RequestSlotAborted() {
+    std::lock_guard<std::mutex> lk(g_request_slot.mu);
+    return g_request_slot.aborted;
+}
+
+// Aborts the in-flight request: both facts (handle + sticky flag) are taken
+// under the mutex, the close happens outside it.
+bool AbortRequestSlot() {
+    HINTERNET h = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(g_request_slot.mu);
+        h = g_request_slot.request;
+        if (h == nullptr) return false;
+        g_request_slot.request = nullptr;
+        g_request_slot.aborted = true;
+    }
+    ::WinHttpCloseHandle(h);
+    return true;
+}
+
+// RAII owner of ONE abortable request handle; `published_` makes the close
+// exactly-once in both directions (see the OpenAI twin for the full argument).
+class ScopedAbortableRequest {
+public:
+    explicit ScopedAbortableRequest(HINTERNET h) : h_(h) {
+        published_ = PublishRequestSlot(h_);
+    }
+    ~ScopedAbortableRequest() {
+        if (h_ == nullptr) return;
+        if (published_) {
+            ClearRequestSlot(h_);
+        } else {
+            ::WinHttpCloseHandle(h_);
+        }
+    }
+    ScopedAbortableRequest(const ScopedAbortableRequest&) = delete;
+    ScopedAbortableRequest& operator=(const ScopedAbortableRequest&) = delete;
+
+    HINTERNET get() const { return h_; }
+    explicit operator bool() const { return h_ != nullptr; }
+
+private:
+    HINTERNET h_ = nullptr;
+    bool published_ = false;
+};
 
 // Helper: reads a JSON string starting from opening quote
 bool ParseJsonString(std::string_view src, size_t& pos, std::string& out) {
@@ -119,7 +213,11 @@ static_assert(GoogleTranslate::RequestProfileForPath(L"/translate_a/single?clien
 // must present a Chrome UA plus Chrome-typical headers, on the trimmed <= 8 s
 // timeout budget. The gtx fallback endpoint is a public API and keeps the
 // truthful product UA and the previous split.
-bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& response_body) {
+// V10F (RISK-02): `abort` is the caller's shutdown/cancel token, polled between
+// response reads so a long body cannot outlive a shutdown even when no
+// cross-thread RequestAbortCurrent() lands.
+bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& response_body,
+             const std::atomic<bool>* abort = nullptr) {
     const GoogleHttpProfile profile = GoogleTranslate::RequestProfileForPath(path);
     const bool chrome_endpoint = GoogleTranslate::IsDictChromeExEndpoint(path);
 
@@ -174,7 +272,11 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     ));
     if (!hConnect) return false;
 
-    ScopedHInternet hRequest(::WinHttpOpenRequest(
+    // V10F (RISK-02 Option A): the request handle publishes into the abort slot
+    // the instant it exists, so RequestAbortCurrent() from another thread can
+    // close it and unblock a pending WinHTTP call; the guard clears the slot
+    // before any close it performs (exactly-once close).
+    ScopedAbortableRequest hRequest(::WinHttpOpenRequest(
         hConnect.get(),
         L"GET",
         path.c_str(),
@@ -227,7 +329,16 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
     response_body.clear();
     DWORD bytes_avail = 0;
     bool body_overflowed = false;
-    while (::WinHttpQueryDataAvailable(hRequest.get(), &bytes_avail) && bytes_avail > 0) {
+    bool body_aborted = false;
+    while (!body_aborted && ::WinHttpQueryDataAvailable(hRequest.get(), &bytes_avail) &&
+           bytes_avail > 0) {
+        // V10F (RISK-02): the caller's shutdown token and a cross-thread slot
+        // abort both end the read here, so the body can neither outlive a
+        // shutdown nor be parsed half-read (fail-closed below).
+        if (ChunkLoopAbortRequested(abort) || RequestSlotAborted()) {
+            body_aborted = true;
+            break;
+        }
         // F5: bound the buffer BEFORE allocating the next chunk, so a hostile
         // server cannot inflate the pending allocation past the cap; the
         // post-append check covers slow-drip chunking where each individual
@@ -247,6 +358,15 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
         } else {
             break;
         }
+    }
+    if (body_aborted) {
+        // Fail-closed: the partial body is dropped, the caller then skips the
+        // fallback endpoint (TranslateChunkUtf8) and the chunk fails as usual.
+        DIAG_F("GOOGLE_T/HttpGet/005: request aborted (close-on-cancel or caller token); "
+               "partial body discarded, body_len=%zu (fail-closed)\n",
+               response_body.size());
+        response_body.clear();
+        return false;
     }
     if (body_overflowed) {
         // Fail-closed: discard the partial body and report failure. The
@@ -273,22 +393,33 @@ bool HttpGet(const std::wstring& host, const std::wstring& path, std::string& re
 // never masquerades as complete).
 std::wstring TranslateChunkUtf8(const std::string& utf8_chunk,
                                 const std::string& sl,
-                                const std::string& tl) {
+                                const std::string& tl,
+                                const std::atomic<bool>* abort) {
     const std::string encoded_q = GoogleTranslate::UrlEncode(utf8_chunk);
     std::string response;
 
     // Primary: clients5.google.com with dict-chrome-ex
     std::string path_a = "/translate_a/t?client=dict-chrome-ex&sl=" + sl + "&tl=" + tl + "&q=" + encoded_q;
-    if (HttpGet(L"clients5.google.com", ToUtf16(path_a), response)) {
+    if (HttpGet(L"clients5.google.com", ToUtf16(path_a), response, abort)) {
         std::wstring result = GoogleTranslate::ParseResponseJson(response);
         if (!result.empty()) {
             return result;
         }
     }
 
+    // V10F (RISK-02): a cancel/abort that landed during the primary attempt must
+    // NOT launch the fallback GET — that would be a fresh request after the
+    // caller already turned away (and after a shutdown). The chunk fails closed
+    // through the existing {} arm instead.
+    if (ChunkLoopAbortRequested(abort) || RequestSlotAborted()) {
+        DIAG_F("GOOGLE_T/Translate/009: abort landed during the primary attempt; "
+               "fallback GET suppressed (fail-closed)\n");
+        return {};
+    }
+
     // Fallback: translate.googleapis.com with gtx endpoint
     std::string path_b = "/translate_a/single?client=gtx&sl=" + sl + "&tl=" + tl + "&dt=t&q=" + encoded_q;
-    if (HttpGet(L"translate.googleapis.com", ToUtf16(path_b), response)) {
+    if (HttpGet(L"translate.googleapis.com", ToUtf16(path_b), response, abort)) {
         std::wstring result = GoogleTranslate::ParseResponseJson(response);
         if (!result.empty()) {
             return result;
@@ -502,6 +633,13 @@ void GoogleTranslate::SetCloudBlockedForTesting(bool blocked) {
     g_cloud_blocked_for_testing.store(blocked, std::memory_order_release);
 }
 
+bool GoogleTranslate::RequestAbortCurrent() {
+    // V10F (RISK-02 Option A): the abort IS the slot's single-owner close; the
+    // worker's read loop turns the resulting API failures into a fail-closed
+    // return (see g_request_slot).
+    return AbortRequestSlot();
+}
+
 bool GoogleTranslate::IsCloudBlockedForTesting() {
     return g_cloud_blocked_for_testing.load(std::memory_order_acquire);
 }
@@ -512,6 +650,12 @@ std::wstring GoogleTranslate::Translate(
     std::string_view tgt_code,
     const TranslationTaskContext& ctx
 ) {
+    // V10F (RISK-03 carrier): cleared on entry — Google publishes no
+    // per-request cause, so this client never writes it; clearing guarantees a
+    // stale cause left by another engine leg can never be attributed here.
+    if (ctx.out_error_detail) {
+        ctx.out_error_detail->clear();
+    }
     if (text.empty()) {
         return {};
     }
@@ -565,11 +709,12 @@ std::wstring GoogleTranslate::Translate(
         // 261121_0002 T1 (design-pick §Plumbing, Google row): a user cancel is
         // honored at the TOP of the iteration — BEFORE the loop-budget check,
         // before the no-content fold, before any further I/O — so a long run
-        // unwinds within one chunk's request time (an in-flight synchronous
-        // WinHTTP call cannot be aborted; see the design's honest limits). {}
-        // is the EXISTING fail-closed arm; this function does not classify the
-        // outcome — the manager attributes Canceled vs EngineFailed (T3).
-        if (ChunkLoopCancelRequested(ctx.cancel)) {
+        // unwinds within one chunk's request time. {} is the EXISTING
+        // fail-closed arm; this function does not classify the outcome — the
+        // manager attributes Canceled vs EngineFailed (T3).
+        // V10F (RISK-02): the engine shutdown latch (ctx.abort) folds into the
+        // same gate; the in-flight GET half is RequestAbortCurrent().
+        if (ChunkLoopCancelRequested(ctx.cancel) || ChunkLoopAbortRequested(ctx.abort)) {
             DIAG_F("GOOGLE_T/Translate/008: cancel requested at chunk %zu/%zu; "
                    "whole request unwinds (shape-only)\n",
                    i + 1, chunks.size());
@@ -604,7 +749,7 @@ std::wstring GoogleTranslate::Translate(
         if (ShowChunkProgress(chunks.size()) && ctx.on_chunk) {
             ctx.on_chunk(i + 1, chunks.size());
         }
-        const std::wstring piece = TranslateChunkUtf8(chunk.text, sl, tl);
+        const std::wstring piece = TranslateChunkUtf8(chunk.text, sl, tl, ctx.abort);
         if (piece.empty()) {
             // U-G: ANY chunk failure fails the WHOLE request — a partial
             // translation must not masquerade as complete (REQ-048 P3: empty

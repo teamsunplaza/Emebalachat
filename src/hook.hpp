@@ -265,6 +265,81 @@ struct LineBreakTracker {
     }
 };
 
+// ---- FUP-07 (V10F, v0.10.10): epoch-guarded K apply -----------------------
+//
+// WHY: the Ctrl+V arm of LowLevelKeyboardProc hands the pasted block's
+// newline count to the hotkey-fx worker (DispatchHotkeyFx), which applied it
+// with a NON-ATOMIC load+add+store on shift_enter_k_ while the hook thread
+// concurrently zeroes the counter on every Enter-family reset. Two defects:
+//   (1) the Ctrl+V branch re-anchored k_anchor_hwnd_ WITHOUT resetting the
+//       counter, so K accumulated in window A leaked into window B and the
+//       block slice reached back across the window boundary.
+//   (2) the load+add+store could interleave with an Enter-path reset: the
+//       Enter zeroed K, then the stale worker store re-added the paste count
+//       -> K resurrected after the reset, and the NEXT bare Enter over-sliced
+//       the block (translating already-translated lines).
+// WHAT: k_epoch_ is a monotonic generation counter bumped (before the K
+// store, never after) on EVERY K reset / re-anchor: the whole Enter family
+// (Ctrl+Enter, Shift+Enter window re-anchor, composing-Enter promoted and
+// pass-through, bare-Enter gate), Ctrl+A/X/Z, Alt/Win+Enter, any foreground
+// window switch, and the Ctrl+V cross-window reset. The fx worker captures
+// the epoch AT DISPATCH TIME and applies +add via compare_exchange_weak with
+// a PER-ITERATION epoch check; a stale epoch aborts the apply.
+// Reset/apply interleavings (V10F-R1 F-14 corrects the original analysis):
+//   * K > 0 pre-reset: the reset's zero-store lands before the worker's CAS
+//     can publish a value computed from the old K, so the CAS FAILS ON THE
+//     VALUE (expected=N, actual=0), the loop re-validates the epoch, sees it
+//     stale and aborts - the stale add is always dropped.
+//   * K == 0 pre-reset, the REAL residual race: the zero-store changes
+//     nothing (0 -> 0), so the worker's CAS(expected=0, desired=0+add)
+//     SUCCEEDS even when it publishes after the zero-store. The epoch check
+//     and the CAS are two separate atomic steps, so the reset's epoch bump
+//     landing between them cannot retract the already-validated apply. One
+//     stale paste count then sits in K right after the reset and the NEXT
+//     bare Enter over-slices by exactly that one paste count - bounded, never
+//     a crash, and the following reset re-zeroes. (The old comment claimed
+//     the K==0 CAS fails on the value; it does not.)
+// Both helpers are header-inline and take real atomics (no HWNDs) so the
+// full matrix is pinned headlessly.
+
+// The matching reset: bump the epoch BEFORE zeroing K so a concurrent
+// fx-worker CAS apply can never publish a stale adjustment after the reset
+// (the zero-store lands last in every interleave).
+inline void ResetShiftEnterKEpoched(std::atomic<int>& k, std::atomic<uint64_t>& epoch,
+                                    LineBreakTracker& tracker) {
+    epoch.fetch_add(1, std::memory_order_acq_rel);
+    k.store(0, std::memory_order_relaxed);
+    tracker.Reset();
+}
+
+// Applies +add to k (clamped at cap) via a compare_exchange_weak loop that
+// re-validates the epoch on EVERY iteration. Returns the post-apply K, or -1
+// when the captured epoch went stale (a reset / window-switch won the race:
+// the adjustment is dropped, the under-slice direction). Resurrect direction:
+// see the FUP-07 WHY block - the documented K==0 residual race (CAS 0->add
+// succeeding across a reset) is NOT detectable here, by construction: the
+// epoch validated and the CAS both saw the coherent 0-value state.
+inline int ApplyPasteNewlineCount(std::atomic<int>& k, const std::atomic<uint64_t>& epoch,
+                                  uint64_t captured_epoch, int add, int cap) {
+    int current = k.load(std::memory_order_relaxed);
+    for (;;) {
+        if (epoch.load(std::memory_order_acquire) != captured_epoch) {
+            return -1;
+        }
+        int desired = current + add;
+        if (desired > cap) {
+            desired = cap; // the capture guard admits at most this many anyway
+        }
+        if (k.compare_exchange_weak(current, desired,
+                                    std::memory_order_relaxed,
+                                    std::memory_order_relaxed)) {
+            return desired;
+        }
+        // CAS failure: `current` now holds the live value; fall through and
+        // re-validate the epoch before retrying.
+    }
+}
+
 // v0.10.7 E1/E2: the text-producing-key classifier behind
 // LineBreakTracker::OnTextInput. Pure (no Win32 calls) so the full key
 // matrix is pinned headlessly. Modifier chords are COMMANDS, not text
@@ -505,6 +580,26 @@ public:
     void SetDoubleCtrlCCallback(std::function<void()> cb);
     void SetEscCallback(std::function<bool()> cb) { esc_cb_ = std::move(cb); }
 
+    // V10F (L4-C, session 261122_0002 P2-D): the explicit selection-replace
+    // hotkey seam. When the compiled combo (config.hotkey_selection_translate,
+    // default "Ctrl+Alt+T" since V10F-R1 F-05) matches a keydown while the hook
+    // IS ACTIVE, the hook swallows it and hands the CURRENT FOREGROUND window
+    // to this callback OFF the hook thread
+    // (DispatchHotkeyFx, the Input P0-1 discipline - the body captures a
+    // selection, runs inference and pastes: seconds of work that must never run
+    // inside LowLevelKeyboardProc). The callback must marshal to the GUI thread
+    // itself; main.cpp's Phase-2 wave B body posts the selection-replace task
+    // to PipelineWorker::PostSelectionReplaceTask.
+    // Registration contract (identical to SetDoubleCtrlCCallback /
+    // SetEscCallback): registered once at startup BEFORE Start(), read-only
+    // afterwards, so the hook thread and the fx worker read it without a lock.
+    // While unregistered OR while the hook is INACTIVE the combo is NOT
+    // swallowed - the keydown passes through untouched (no dead key, no
+    // phantom capture; V10F-R1 F-05 added the IsActive() half).
+    void SetSelectionReplaceCallback(std::function<void(HWND)> cb) {
+        selection_replace_cb_ = std::move(cb);
+    }
+
     // REQ-R07 (audit §3.1) + REQ-R08 (audit §3.2): invoked from SetActive() on
     // EVERY real active-state change (hook-thread or main-thread context).
     // main.cpp wires it to (a) mouse_hook.SetEnabled(active) for 1:1 sync - the
@@ -594,6 +689,21 @@ public:
         return parsed.valid ? parsed : kDefaultModeHotkey;
     }
 
+    // V10F (L4-C, session 261122_0002 P2-D): the explicit selection-translate
+    // combo (config.hotkey_selection_translate, default "Ctrl+Alt+T" since
+    // V10F-R1 F-05 — the old Ctrl+Shift+T default collided with the
+    // browser-new-tab chord family and was retired; stored user configs keep
+    // their value) and its compiled-in default. Same pure resolve contract as
+    // the rows above: a valid combo is honored as-is (any modifier mix,
+    // including Alt/Win), an empty/invalid raw string falls back to
+    // kDefaultSelectionHotkey, so a malformed config value never disables the
+    // flow.
+    static constexpr HotkeySpec kDefaultSelectionHotkey{ 'T', /*ctrl*/true, /*shift*/false, /*alt*/true, /*win*/false, /*valid*/true };
+    static HotkeySpec ResolveSelectionFromConfig(std::string_view raw) {
+        const HotkeySpec parsed = ParseHotkey(raw);
+        return parsed.valid ? parsed : kDefaultSelectionHotkey;
+    }
+
     // ---- B5 (session 260910_0007, catalog W4): ordered hotkey dispatch ----
     //
     // The three bound combos (toggle / language-cycle / auto-send-toggle) are
@@ -659,6 +769,11 @@ public:
     // Read-only accessor of the compiled toggle combo (set in Start()).
     HotkeySpec ToggleHotkey() const { return toggle_spec_; }
 
+    // V10F (L4-C): read-only accessor of the compiled selection-translate
+    // combo (set in Start()), so the cheat-sheet / tests can display the combo
+    // the hook actually swallows - the established ToggleHotkey contract.
+    HotkeySpec SelectionHotkey() const { return selection_spec_; }
+
     // REQ-R14 test seam: the OS thread id of the running hook thread (0 when
     // not started). Tests prove Reinstall() actually replaced the thread.
     DWORD HookThreadIdForTest() const { return hook_thread_id_.load(std::memory_order_acquire); }
@@ -688,7 +803,12 @@ private:
     // counts the pasted clipboard's real newlines on the hotkey-effects worker
     // thread (a plain int would be a data race). k_anchor_hwnd_ stays a plain
     // member: it is only ever touched from the hook thread.
+    // V10F FUP-07: k_epoch_ is the monotonic generation counter guarding that
+    // cross-thread apply - every reset / window-switch bumps it BEFORE the
+    // zero-store (see ResetShiftEnterKEpoched / ApplyPasteNewlineCount), so a
+    // paste-count lambda dispatched before a reset can no longer resurrect K.
     std::atomic<int> shift_enter_k_{0};
+    std::atomic<uint64_t> k_epoch_{0};
     HWND k_anchor_hwnd_ = nullptr;
 
     // v0.10.7 E1/E2 (session 261111_0001): the LineBreakTracker behind the
@@ -742,10 +862,20 @@ private:
     HotkeySpec toggle_spec_{};
     HotkeySpec lang_spec_{};
     HotkeySpec mode_spec_{};
+    // V10F (L4-C, session 261122_0002 P2-D): the compiled selection-translate
+    // combo (same one-time-compile / read-only-after contract as the three
+    // above). Stored so LowLevelKeyboardProc can match it without re-parsing
+    // the config string on every keydown.
+    HotkeySpec selection_spec_{};
     std::atomic<bool> suppress_win_keyup_{false};
 
     DWORD last_ctrl_c_time_ = 0;
     std::function<void()> double_ctrl_c_cb_;
+    // V10F (L4-C): set once at startup via SetSelectionReplaceCallback (see the
+    // contract there). Read on the hook thread for the match gate and on the fx
+    // worker for the dispatch; both only while running, i.e. after Start(), so
+    // no lock is needed (the double_ctrl_c_cb_ discipline).
+    std::function<void(HWND)> selection_replace_cb_;
     std::function<bool()> esc_cb_;
     std::function<void(bool)> active_change_cb_;
     std::function<void()> lang_cycle_cb_; // R6 B3: see SetLanguageCycleCallback

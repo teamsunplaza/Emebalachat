@@ -459,6 +459,10 @@ bool KeyboardHook::Start() {
     // auto-send-toggle combos; read-only inside LowLevelKeyboardProc after this.
     lang_spec_ = ResolvedLangHotkey();
     mode_spec_ = ResolvedModeHotkey();
+    // V10F (L4-C, session 261122_0002 P2-D): same one-time compile for the
+    // explicit selection-translate combo (read-only in the hook proc after
+    // this; the pure resolver falls back to kDefaultSelectionHotkey).
+    selection_spec_ = ResolveSelectionFromConfig(config_.hotkey_selection_translate);
 
     // REQ-022: drag_hotkey is a gesture-pattern selector, not a ParseHotkey combo
     // (plan §2.3). Only "double_ctrl_c" is supported; anything else falls back to
@@ -927,6 +931,12 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         if (mirror_fg != s_last_mirror_fg) {
             s_last_mirror_fg = mirror_fg;
             s_instance->ime_composing_.store(false, std::memory_order_relaxed);
+            // V10F FUP-07: a window switch retires the K context too - bump
+            // the epoch so a paste-count lambda still queued for the PREVIOUS
+            // window drops its adjustment instead of leaking K across the
+            // window boundary (the Ctrl+V / bare-Enter gates re-anchor the
+            // counter itself; this is the invalidation half).
+            s_instance->k_epoch_.fetch_add(1, std::memory_order_acq_rel);
         }
 
         // REQ-R17 (audit §5 latent item 5): O(1) hook-local IME mirror update
@@ -1046,6 +1056,43 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             return 1; // Consumed (toggle: state change with audio+visual feedback in SetActive)
         }
 
+        // V10F (L4-C, session 261122_0002 P2-D): the explicit selection-replace
+        // combo (config.hotkey_selection_translate, default Ctrl+Alt+T since
+        // V10F-R1 F-05).
+        // Placement: AFTER the three REQ-022/B5 bound rows (their priority is
+        // pinned headlessly by TestBoundHotkeyDispatchOrder and must not
+        // change) and BEFORE the blanket Alt/Win passthrough below, so a
+        // user-configured Alt/Win-bearing combo can still fire - the same
+        // position rule the B5 rows follow.
+        // V10F-R1 F-05: gated on IsActive() FIRST - an INACTIVE hook must
+        // swallow nothing, so the combo keeps its normal app meaning while
+        // translation is off (the toggle row above is the only surface that
+        // may fire in the inactive state). Gated on the registered callback:
+        // with no callback the combo is NOT swallowed either (the keydown
+        // keeps its normal meaning - no dead key while Phase-2 wave B has not
+        // wired the flow yet). The user callback runs on the hotkey-fx worker
+        // (Input P0-1 discipline): it captures a selection, runs inference
+        // and pastes - never on the hook thread.
+        if (s_instance->IsActive() && s_instance->selection_replace_cb_ &&
+            HotkeyMatches(s_instance->selection_spec_, kbd->vkCode, ctrl, shift, alt, win)) {
+            DIAG_LOG("HOTKEY", "selection-translate combo matched (vk=0x%02X modifiers=%s%s%s%s) -> dispatched",
+                     kbd->vkCode, ctrl ? "C" : "-", shift ? "S" : "-", alt ? "A" : "-", win ? "W" : "-");
+            KeyboardHook* self = s_instance;
+            // Foreground captured on the hook thread (cheap user32 call) so the
+            // replaced window is the one the user was looking at when pressing
+            // the combo; the fx worker may already be behind another effect.
+            const HWND selection_target = ::GetForegroundWindow();
+            self->DispatchHotkeyFx([self, selection_target] {
+                if (self->selection_replace_cb_) {
+                    self->selection_replace_cb_(selection_target);
+                }
+            });
+            if (win) {
+                s_instance->suppress_win_keyup_.store(true, std::memory_order_relaxed);
+            }
+            return 1; // Consumed: the selection flow owns the key
+        }
+
         // Always let Alt or Win key combinations pass through immediately
         // (preserves Excel newline Alt+Enter, game fullscreen Alt+Enter, Win shortcuts, etc.)
         if (alt || win) {
@@ -1056,8 +1103,9 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // lines on the next capture (the destruction direction). Only
             // VK_RETURN matters; other Alt/Win combos keep K untouched.
             if (kbd->vkCode == VK_RETURN) {
-                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-                s_instance->line_break_.Reset();
+                // V10F FUP-07: epoch-bumped reset (see ResetShiftEnterKEpoched).
+                ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                        s_instance->line_break_);
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
             }
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -1090,7 +1138,18 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         // own PasteAndRestore, drag path) carry EXTRA_INFO_MARKER and return at
         // the top of this proc - they never reach here.
         if (kbd->vkCode == 'V' && ctrl && !shift && !alt && !win) {
-            s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
+            const HWND v_fg = ::GetForegroundWindow();
+            // V10F FUP-07: a Ctrl+V landing in a DIFFERENT window than the K
+            // anchor used to re-anchor k_anchor_hwnd_ WITHOUT resetting the
+            // counter, leaking window A's separator count into window B. Reset
+            // for the new window context (epoch-bumped, so a paste-count
+            // lambda still queued for the old window drops its adjustment
+            // instead of landing it here).
+            if (v_fg != s_instance->k_anchor_hwnd_) {
+                ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                        s_instance->line_break_);
+            }
+            s_instance->k_anchor_hwnd_ = v_fg;
             // v0.10.7 E2: the paste deposits (an unknown amount of) text on
             // the CURRENT line, so the line is non-empty from here on and a
             // following Backspace must decrement the LINE counter, never K.
@@ -1099,11 +1158,15 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // up by the next keystroke's tracker re-sync.
             s_instance->line_break_.OnTextInput();
             KeyboardHook* self = s_instance;
+            // V10F FUP-07: capture the epoch AT DISPATCH (after the reset
+            // above) so the fx worker can tell a live apply from a stale one.
+            const uint64_t dispatch_epoch =
+                self->k_epoch_.load(std::memory_order_relaxed);
             // NOTE (F-10): nothing here can ever run inline - a not-live
             // worker drops this body (see DispatchHotkeyFx), which is exactly
             // right: this read may block on OpenClipboard and must never run
             // on the hook thread.
-            self->DispatchHotkeyFx([self] {
+            self->DispatchHotkeyFx([self, dispatch_epoch] {
                 const std::wstring clip = GetClipboardText();
                 const int pasted_nl =
                     static_cast<int>(EditCaretTracker_CountNewlineSequences(clip));
@@ -1112,12 +1175,19 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 }
                 const int cap = static_cast<int>(kMaxEnterTranslateNewlines);
                 const int add = pasted_nl > cap ? cap : pasted_nl;
-                int k = self->shift_enter_k_.load(std::memory_order_relaxed) + add;
-                if (k > cap) {
-                    k = cap; // the capture guard admits at most this many anyway
+                // V10F FUP-07: epoch-guarded CAS apply replaces the old
+                // non-atomic load+add+store: an Enter/reset/window-switch
+                // since dispatch made the captured epoch stale, so the
+                // adjustment DROPS instead of resurrecting K after the reset.
+                const int k = ApplyPasteNewlineCount(self->shift_enter_k_, self->k_epoch_,
+                                                     dispatch_epoch, add, cap);
+                if (k >= 0) {
+                    DIAG_LOG("ENTER_GATE", "ctrl_v pasted_newlines=%d K=%d", add, k);
+                } else {
+                    DIAG_LOG("ENTER_GATE",
+                             "ctrl_v pasted_newlines=%d dropped (stale epoch: "
+                             "reset/window-switch won)", add);
                 }
-                self->shift_enter_k_.store(k, std::memory_order_relaxed);
-                DIAG_LOG("ENTER_GATE", "ctrl_v pasted_newlines=%d K=%d", add, k);
             });
             return ::CallNextHookEx(nullptr, nCode, wParam, lParam);
         }
@@ -1148,8 +1218,9 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         }
         if (ctrl && !alt && !win &&
             (kbd->vkCode == 'A' || kbd->vkCode == 'X' || kbd->vkCode == 'Z')) {
-            s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-            s_instance->line_break_.Reset();
+            // V10F FUP-07: epoch-bumped reset (see ResetShiftEnterKEpoched).
+            ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                    s_instance->line_break_);
             s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
         }
 
@@ -1214,8 +1285,9 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // being typed if the app inserts a newline, so K resets
                 // (conservative direction: an uncounted separator can only
                 // UNDER-slice the block - safe - never over-slice it).
-                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-                s_instance->line_break_.Reset();
+                // V10F FUP-07: epoch-bumped reset (see ResetShiftEnterKEpoched).
+                ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                        s_instance->line_break_);
                 s_instance->k_anchor_hwnd_ = ::GetForegroundWindow();
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ctrl_enter active=%d busy=%d "
@@ -1253,8 +1325,16 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 {
                     const HWND k_fg = ::GetForegroundWindow();
                     if (k_fg != s_instance->k_anchor_hwnd_) {
+                        // V10F FUP-07: the foreground moved since the last
+                        // Shift+Enter - the old window's separator count must
+                        // not leak into the new window's block, and the epoch
+                        // bump retires any paste-count lambda still queued for
+                        // the old window (epoch-bumped reset, see
+                        // ResetShiftEnterKEpoched).
+                        ResetShiftEnterKEpoched(s_instance->shift_enter_k_,
+                                                s_instance->k_epoch_,
+                                                s_instance->line_break_);
                         s_instance->k_anchor_hwnd_ = k_fg;
-                        s_instance->line_break_.Reset();
                     }
                     s_instance->line_break_.OnShiftEnter();
                     s_instance->shift_enter_k_.store(s_instance->line_break_.k,
@@ -1309,11 +1389,15 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // (1) "hook-level exclusion", the safety axis of the A2 hybrid;
                 // CopySelectedText's empty-return backstop (A2 결정 2) covers
                 // any task already queued before this gate.
+                // V10F FUP-01: consoles/terminals are excluded here too (via
+                // IsEnterTranslateExcludedApp -> IsConsoleCaptureUnsafe): the
+                // composition commit Enter must reach the shell untouched and
+                // the capture's synthetic Ctrl+C chords would read as SIGINT.
                 const HWND composing_hwnd = ::GetForegroundWindow();
                 const bool editor_excluded =
                     ime_active && IsEnterTranslateExcludedApp(composing_hwnd);
                 if (editor_excluded) {
-                    DIAG_F("HOOK/Enter/005: editor/IDE app composing Enter pass-through "
+                    DIAG_F("HOOK/Enter/005: editor/IDE/terminal app composing Enter pass-through "
                            "(no translate; hwnd=%p)\n",
                            reinterpret_cast<void*>(composing_hwnd));
                 } else if (ImeCommitEnterPromoted(ime_active, ime_busy)) {
@@ -1333,8 +1417,11 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                             : 0;
                     if (s_instance->worker_.PostTask(/*is_shift_enter*/ false,
                                                      composing_hwnd, k_composing)) {
-                        s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-                        s_instance->line_break_.Reset();
+                        // V10F FUP-07: epoch-bumped reset (see
+                        // ResetShiftEnterKEpoched).
+                        ResetShiftEnterKEpoched(s_instance->shift_enter_k_,
+                                                s_instance->k_epoch_,
+                                                s_instance->line_break_);
                         s_instance->k_anchor_hwnd_ = composing_hwnd;
                         DIAG_F("HOOK/Enter/003: composing Enter promoted -> pipeline task "
                                "posted (commit-then-translate, hwnd=%p K=%d)\n",
@@ -1356,8 +1443,9 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // F3: this Enter reaches the app (chat send / editor newline)
                 // and terminates the block, so the counted K is consumed
                 // WITHOUT being carried to a capture (nothing was posted).
-                s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-                s_instance->line_break_.Reset();
+                // V10F FUP-07: epoch-bumped reset (see ResetShiftEnterKEpoched).
+                ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                        s_instance->line_break_);
                 DIAG_LOG("ENTER_GATE",
                          "outcome=pass_through reason=ime_composing_commit active=%d busy=%d "
                          "ime_composing=1 shift=0 (mirror cleared, K consumed by passthrough)",
@@ -1393,8 +1481,11 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 (s_instance->k_anchor_hwnd_ == target_hwnd)
                     ? s_instance->shift_enter_k_.load(std::memory_order_relaxed)
                     : 0;
-            s_instance->shift_enter_k_.store(0, std::memory_order_relaxed);
-            s_instance->line_break_.Reset();
+            // V10F FUP-07: epoch-bumped reset (see ResetShiftEnterKEpoched):
+            // every bare-Enter exit consumes the block, and the bump retires
+            // any paste-count lambda dispatched before this Enter.
+            ResetShiftEnterKEpoched(s_instance->shift_enter_k_, s_instance->k_epoch_,
+                                    s_instance->line_break_);
             s_instance->k_anchor_hwnd_ = target_hwnd;
             // Full decision record EVERY time (file sink; the stderr sites
             // below keep their historical spam discipline unchanged):
@@ -1426,8 +1517,13 @@ LRESULT CALLBACK KeyboardHook::LowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 // never runs on ordinary typing keys. CopySelectedText's
                 // empty-return backstop (A2 결정 2) covers any task already
                 // queued before this gate.
+                // V10F FUP-01: consoles/terminals are excluded here too (via
+                // IsEnterTranslateExcludedApp -> IsConsoleCaptureUnsafe): the
+                // Enter must reach the shell untouched and the capture's
+                // synthetic Ctrl+C chords would read as SIGINT (up to 3
+                // interrupts per Enter on the retry cycle).
                 if (IsEnterTranslateExcludedApp(target_hwnd)) {
-                    DIAG_F("HOOK/Enter/004: editor/IDE app bare Enter pass-through "
+                    DIAG_F("HOOK/Enter/004: editor/IDE/terminal app bare Enter pass-through "
                            "(no translate; hwnd=%p)\n",
                            reinterpret_cast<void*>(target_hwnd));
                     DIAG_LOG("ENTER_GATE",

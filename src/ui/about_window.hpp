@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <windows.h>
@@ -13,6 +14,7 @@
 
 #include "layered_renderer.hpp"
 #include "ui/theme.hpp"
+#include "../i18n.hpp"           // V10F/RISK-02: StringId in the pure zone helpers
 #include "../update_checker.hpp" // REQ-UC: ReleaseInfo + check/download outcomes
 
 namespace emebalachat {
@@ -254,6 +256,41 @@ public:
     static std::wstring ReplaceToken(std::wstring text, std::wstring_view token,
                                      std::wstring_view value);
 
+    // ------------------------------------------------------------------
+    // V10F/RISK-02 (260930_0004 follow-up): the Downloading zone's cancel
+    // routing + label selection, kept pure so the GUI-free decision is
+    // unit-testable. Both read the SAME (zone_state_, download_cancelling_)
+    // pair that Render and WM_LBUTTONUP use, so the painted label and the
+    // live [Cancel] hit area cannot drift.
+    // ------------------------------------------------------------------
+    // True only while a transfer is in flight AND has not begun unwinding:
+    // a second cancel click (or Esc) must not re-issue the handle-close abort.
+    static bool ShouldRequestDownloadCancel(UpdateZoneState state, bool cancelling);
+    // The progress-zone label id: CancellingProgress once the abort was
+    // requested (feedback while the worker unwinds), else the ordinary
+    // progress label. Both StringIds already exist (no new ids).
+    static StringId DownloadZoneLabelId(bool cancelling);
+
+    // ------------------------------------------------------------------
+    // V10F/ABT-U1..U2 (261122_0002 P3-C6): the remaining About-card input
+    // decisions, kept pure so the truth table is unit-testable and the painted
+    // state cannot drift from the routes that answer it.
+    // ------------------------------------------------------------------
+    // ABT-U1: a dismissed UpToDate zone has served its purpose — Dismiss kills
+    // the 6 s auto-return timer, so the state must be cleared THERE or the next
+    // Show re-renders the expired "up to date" panel (only a click inside the
+    // old zone band could clear it). Every other state is either user intent
+    // (Snoozed / Cancelled / the retry arms) or a live job, and survives a hide.
+    static bool ShouldResetZoneOnDismiss(UpdateZoneState state);
+    // ABT-U2(1): the footer reset pill is intro chrome. The Available state
+    // paints a full-card scrim and the consent dialog is modal within the card,
+    // so the pill must not answer the cursor, the hover paint, or a click —
+    // theme_rects_ already sit behind the same state gate.
+    static bool FooterResetInteractive(UpdateZoneState state);
+    // ABT-U2(2): the consent dialog's painted focus ring (dlg_focus_: 0=Later,
+    // 1=Download) owns the default action for Enter AND Space.
+    static bool ConsentConfirmIsDownload(int dlg_focus);
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void ShowAt(int x, int y); // real show path, GUI thread only
@@ -275,6 +312,12 @@ private:
     // REQ-UC seams (GUI thread only).
     void StartUpdateCheck();
     void StartDownload();
+    // V10F/RISK-02: the Downloading [Cancel] click route. Flips the job's
+    // cancel flag, fires the P2-A handle-close abort (job->abort) and swaps
+    // the zone to the "Cancelling..." label. Idempotent while the job unwinds
+    // (ShouldRequestDownloadCancel gates it); the zone state itself changes
+    // only when kUpdateDownloadDoneMessage lands (Cancelled).
+    void RequestDownloadCancel();
     void HandleUpdateCheckDone();
     void HandleUpdateDownloadDone();
     void SetZoneState(UpdateZoneState state);
@@ -295,6 +338,12 @@ private:
         bool download_done = false;
         UpdateDownloadStatus download_status = UpdateDownloadStatus::Failed;
         std::wstring download_path;
+        // V10F/RISK-02: the P2-A handle-close abort request (the
+        // DownloadAbortSlot's AbortCurrent), wired on the GUI thread before the
+        // worker starts so a stalled socket unblocks in ~ms instead of the 30 s
+        // receive timeout. The capture owns the slot, so both the GUI cancel
+        // path and the worker's SlotHandle guards reach the same object.
+        std::function<void()> abort;
     };
 
     HWND hwnd_ = nullptr;
@@ -382,8 +431,23 @@ private:
     // REQ-UC update-zone state (GUI thread only).
     UpdateZoneState zone_state_ = UpdateZoneState::Idle;
     std::shared_ptr<UpdateJob> job_;
+    // V10F/RISK-02: the Downloading sub-state — the user asked to cancel and
+    // the zone paints CancellingProgress until kUpdateDownloadDoneMessage
+    // moves it to Cancelled. Cleared on every SetZoneState transition so a
+    // re-entered download always starts live.
+    bool download_cancelling_ = false;
     updatelogic::ReleaseInfo pending_release_; // the offered release (Available)
+    // V10F-R1 F-16: the release-notes digest of the in-flight/offered download
+    // (GUI thread only). Set in StartDownload; copied into ready_sha256_ when
+    // the download verifies, so the launch-time re-hash has the same digest
+    // the download-time gate used.
+    std::optional<std::string> expected_;
     std::wstring ready_path_;                  // verified installer path (Ready)
+    // V10F-R1 F-16: the release-notes digest that verified the download,
+    // retained for the launch-time re-hash (LaunchVerifiedInstaller) so the
+    // Ready-parked file is re-verified IMMEDIATELY before ShellExecuteW (the
+    // CWE-367 TOCTOU window). Set with ready_path_ from the same download.
+    std::optional<std::string> ready_sha256_;
     float displayed_pct_ = 0.0f;               // smoothed progress (chase target)
     ULONGLONG checking_started_ = 0;           // spinner rotation anchor (ms)
     int dlg_focus_ = 0;                        // consent focus: 0=Later 1=Download

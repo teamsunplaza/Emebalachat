@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <fstream>
 #include <system_error>
+#include <thread>
 #include <windows.h>
 
 namespace emebalachat {
@@ -100,6 +101,19 @@ bool ModelFilePresent() {
     if (dir.empty()) return false;
     std::error_code ec;
     return std::filesystem::is_regular_file(dir / ToUtf16(kModelFilename), ec) && !ec;
+}
+
+// V10F (BUG-10 transport half): the one abort slot a running transfer publishes
+// into. Function-local static = initialized once, thread-safe, and shared by
+// every caller in this TU; only ONE transfer runs at a time (the dialog joins
+// its worker before starting another), so a single slot is exact.
+updatelogic::DownloadAbortSlot& ActiveModelDownloadSlot() {
+    static updatelogic::DownloadAbortSlot slot;
+    return slot;
+}
+
+bool AbortActiveModelDownload() {
+    return ActiveModelDownloadSlot().AbortCurrent();
 }
 
 // R1-12 (code review mimoflash F-03, docs mining N2 cluster): the registry
@@ -206,14 +220,48 @@ FetchOutcome FetchAndInstallModel(
     if (on_phase) {
         opts.phase_cb = [&phase](updatelogic::DownloadPhase) { phase(FetchPhase::Verifying); };
     }
-    // R1-24 (docs mining N4), the cancel bound stated honestly: DownloadUpdate
+    // V10F (BUG-10 transport half, 261122_0002 P2-A): publish the live handles
+    // so the cancel path can close the socket before it joins this worker
+    // (AbortActiveModelDownload).
+    opts.abort = &ActiveModelDownloadSlot();
+    // V10F (BUG-10 transport half): the cancel -> close BRIDGE. The dialog owns
+    // `cancel` and the join, and (per its own comment) must not have to know
+    // about HINTERNET handles, so the pairing lives here: the moment the cancel
+    // flag is set, this watcher calls AbortCurrent() on the published slot and
+    // returns. The worker's blocked WinHttpQueryDataAvailable /
+    // WinHttpReadData then fails immediately instead of waiting out the 30 s
+    // receive timeout, which is what makes the dialog's join() (GUI thread)
+    // return promptly. The 20 ms poll is invisible against a 1.9 GB transfer
+    // and bounds the watcher's own teardown to one interval. The RAII join is
+    // declared AFTER every other local so it runs FIRST on every exit path: the
+    // thread can never outlive the slot or the caller's cancel flag.
+    std::atomic<bool> watch_done{false};
+    updatelogic::DownloadAbortSlot& abort_slot = ActiveModelDownloadSlot();
+    std::thread cancel_watcher([&cancel, &watch_done, &abort_slot]() {
+        constexpr unsigned long kPollMs = 20;
+        while (!watch_done.load(std::memory_order_relaxed)) {
+            if (cancel.load(std::memory_order_relaxed)) {
+                abort_slot.AbortCurrent(); // no-op when nothing is in flight
+                return;
+            }
+            ::Sleep(kPollMs);
+        }
+    });
+    struct CancelWatcherJoin {
+        std::thread& thread;
+        std::atomic<bool>& done;
+        ~CancelWatcherJoin() {
+            done.store(true, std::memory_order_relaxed);
+            if (thread.joinable()) thread.join();
+        }
+    } cancel_watcher_join{cancel_watcher, watch_done};
+    // R1-24 (N4), the cancel bound as it stands AFTER this fix: DownloadUpdate
     // polls `cancel` before every 256 KiB read, so a cancel while bytes are
-    // flowing returns within one chunk. The one unbounded-feeling case is a
-    // STALLED socket: WinHttpQueryDataAvailable() then blocks on the session's
-    // 30 s receive timeout set inside DownloadUpdate, and that wait is outside
-    // this file. Shortening it needs a per-read cancel poll / handle-close seam
-    // in update_checker.hpp (disclosed follow-up, not this unit's boundary);
-    // nothing in THIS file waits on a timer.
+    // flowing returns within one chunk, and the watcher above closes the
+    // published handle, so the STALLED-socket case that used to sit on the
+    // receive timeout returns in milliseconds. The 30 s receive timeout
+    // remains as the outer bound for a stall nobody cancelled. Nothing in
+    // THIS file blocks waiting for that timeout.
     const UpdateDownloadStatus st = DownloadUpdate(
         kModelDownloadUrl, temp_path.wstring(), kModelExpectedBytes,
         std::string(kModelSha256Pin), on_progress, cancel, opts);

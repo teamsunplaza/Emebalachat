@@ -10,12 +10,22 @@
 // already pulls it in transitively; this direct include pins the new
 // dependency so a header reorganization cannot silently drop it.
 #include "translation_chunker.hpp"
+// V10F (261122_0002 P2-B, L5-B): the pure client-side chunk coordinator
+// (frame budget under the frozen 1 MiB wire cap, rolling glossary pairs,
+// partial-result preservation, between-frame cancel). Header-only by design —
+// no new link edge, no CMake change.
+#include "translation_coordinator.hpp"
 // REQ-057: served-vs-expected model-id diagnosis at the local-host seam.
 #include "engine_host_registry.hpp"      // ResolveBundledModelId (the bundled registry id)
 #include "engine_host_config_reader.hpp" // LoadUserModelIdFromConfigLive (the C1-gated live user pin)
 // REQ-060: the live engine_type=="user_gguf" discriminator read reuses the
 // shared store file readers (whole-file read + BOM skip, no new JSON surface).
 #include "engine_host_json_util.hpp"
+// V10F-R2 (fix-list round 2, F-26): OpenAiHttpConsentScope — the consent
+// origin derivation the settings dialog applies to its WM_INITDIALOG seed;
+// the engine's request-time gate reuses it verbatim for the legacy (pre-F-17)
+// consent carry so the two halves can never disagree.
+#include "ui/openai_settings_window.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -127,8 +137,20 @@ public:
         token_ = token;
         stop_.store(false, std::memory_order_release);
         request_id_.store(0, std::memory_order_release);
+        cloud_abort_forwarded_ = false;
         worker_ = std::thread([this] { Run(); });
     }
+
+    // V10F (261122_0002 P2-B Fix 2): the bridged ABORT seam
+    // (TranslationTaskContext::abort — Translate() points it at the REQ-R16
+    // shutdown latch when the caller left it null). Same watch rule as the
+    // user token: either seam tripping fires the cloud clients'
+    // RequestAbortCurrent (P2-A's in-flight HINTERNET close) and then the
+    // engine-host cancel frame for the in-flight pipe id, so a shutdown that
+    // lands mid-request aborts BOTH legs promptly instead of waiting out
+    // their blocking budgets. Call BEFORE Start(); the pointer must outlive
+    // the forwarder (the manager's latch does).
+    void SetAbortToken(const std::atomic<bool>* abort) { abort_ = abort; }
 
     // The publish slot handed to TryTranslate's out_request_id. Valid from
     // Start() until the dtor returns. Non-zero ONLY while a pipe attempt is
@@ -153,6 +175,7 @@ public:
         if (worker_.joinable()) worker_.join();
         request_id_.store(0, std::memory_order_release);
         stop_.store(false, std::memory_order_release);
+        cloud_abort_forwarded_ = false; // V10F (Fix 2): a fresh attempt forwards afresh
         worker_ = std::thread([this] { Run(); });
     }
 
@@ -162,15 +185,39 @@ public:
     }
 
 private:
+    // V10F (261122_0002 P2-B Fix 2): either seam trips the same forwarding
+    // path — the caller token and the bridged abort (shutdown) latch.
+    bool Requested() const {
+        return ChunkLoopCancelRequested(token_) || ChunkLoopAbortRequested(abort_);
+    }
+
+    // V10F (261122_0002 P2-B Fix 2): close the in-flight cloud request. Both
+    // clients keep ONE process-wide in-flight slot (mutex-guarded, single
+    // owner); a call with nothing in flight is a defined no-op, so the two
+    // calls are unconditional and idempotent — and they cost nothing during a
+    // local pipe request. Forwarded at most once per armed attempt.
+    void ForwardCloudAbort() {
+        if (cloud_abort_forwarded_) return;
+        cloud_abort_forwarded_ = true;
+        // Best-effort, exactly like the host cancel frame below: the boolean
+        // ("a request was actually in flight") is never branched on.
+        (void)GoogleTranslate::RequestAbortCurrent();
+        (void)OpenAiCompatibleClient::RequestAbortCurrent();
+    }
+
     void Run() {
         for (;;) {
             if (stop_.load(std::memory_order_acquire)) return;
-            if (ChunkLoopCancelRequested(token_)) {
-                // The user aborted. When no attempt is in flight (the slot
-                // was retracted), the leg's own pre/post checks converge to
-                // Canceled without us — wait (bounded by Stop) for the
-                // CURRENT attempt's published id so a wire-bound request is
-                // aborted too.
+            if (Requested()) {
+                // V10F (Fix 2): first tear the cloud leg down (a blocked
+                // WinHttpReceiveResponse returns once its HINTERNET is
+                // closed), then, when a pipe attempt is in flight, forward the
+                // token to the engine-host cancel seam.
+                ForwardCloudAbort();
+                // When no attempt is in flight (the slot was retracted), the
+                // leg's own pre/post checks converge to Canceled without us —
+                // wait (bounded by Stop) for the CURRENT attempt's published
+                // id so a wire-bound request is aborted too.
                 for (;;) {
                     const std::uint64_t id = request_id_.load(std::memory_order_acquire);
                     if (id != 0) {
@@ -191,8 +238,12 @@ private:
     static constexpr int kPollMs = 10; // cancel-observation latency bound
 
     const std::atomic<bool>* token_ = nullptr;
+    const std::atomic<bool>* abort_ = nullptr; // V10F (Fix 2): bridged abort seam
     std::atomic<std::uint64_t> request_id_{0};
     std::atomic<bool> stop_{false};
+    // V10F (Fix 2): touched ONLY by the watcher thread (and by Start /
+    // RearmForAttempt while no watcher exists) — no atomic needed.
+    bool cloud_abort_forwarded_ = false;
     std::thread worker_;
 };
 } // namespace
@@ -404,6 +455,13 @@ bool TranslationManager::IsCancelRequested() {
     return cancel_requested_.load(std::memory_order_acquire);
 }
 
+// V10F (E1, 261122_0002 P1-U4): the ANY-cancel predicate the local leg's
+// post-pipe / retry / cloud-entry gates consult (see the header contract).
+bool TranslationManager::IsAnyCancelRequested(const TranslationTaskContext& ctx) const {
+    return cancel_requested_.load(std::memory_order_acquire) ||
+           ChunkLoopCancelRequested(ctx.cancel);
+}
+
 // REQ-R16 bounded drain: Translate() (and the Auto->cloud fallback) hold
 // translate_mutex_ for their whole duration, so acquiring it proves no request
 // is in flight. try_lock polling gives a wall-clock-bounded wait for the
@@ -591,6 +649,15 @@ namespace {
 // installer-managed and its id is stable for the session, and the value only
 // feeds this diagnostic comparison — a session-scoped cache keeps the
 // per-translate cost at zero.
+// V10F (E3, 261122_0002 P1-U4): cache ONLY a non-empty id. The first call
+// used to latch "" forever when registry.json was absent (or the installer
+// had not written it yet), pinning the /057 diagnosis to "expected empty"
+// for the whole session even after the registry appeared — and the local
+// leg's request pin (ResolveLocalRequestModelId) lost its bundled fallback
+// in the same way. The empty case now re-reads on every call: the read is
+// a cheap local JSON probe, thread safety rides on the function-local
+// static's init guard for the cached (non-empty) path, and the re-read path
+// is itself stateless (LoadDefaultRegistry builds a fresh value each time).
 std::string BundledModelIdCached() {
     static const std::string id = [] {
         const auto lr = engine_host_registry::LoadDefaultRegistry();
@@ -598,7 +665,13 @@ std::string BundledModelIdCached() {
                    ? engine_host_registry::ResolveBundledModelId(lr.registry)
                    : std::string{};
     }();
-    return id;
+    if (!id.empty()) {
+        return id;
+    }
+    const auto lr = engine_host_registry::LoadDefaultRegistry();
+    return lr.status == engine_host_registry::LoadStatus::Ok
+               ? engine_host_registry::ResolveBundledModelId(lr.registry)
+               : std::string{};
 }
 
 // REQ-060: defined below (kept with the resolver it feeds); forward-declared
@@ -721,6 +794,180 @@ std::string LocalSeamRequestModelId() {
     return ResolveLocalRequestModelId(user_gguf_route, pin, BundledModelIdCached());
 }
 
+// ---- V10F (261122_0002 P2-B Fix 3, L5-B): coordinator-driven local frames ---
+//
+// WHY THIS EXISTS (verified at this HEAD): the local leg above hands the WHOLE
+// source to ONE engine-host request — `ToUtf8(text)` inside a single
+// TryTranslate frame. The frozen host protocol caps a frame body at 1 MiB
+// (engine-repo engine_host_protocol.hpp kMaxFrameBytes = 1 << 20; a larger
+// length prefix is answered bad_request, a PERMANENT failure the REQ-051
+// retry never re-attempts). A large selection whose JSON-ESCAPED source
+// crosses that cap could therefore never be served on-device: under Auto the
+// text silently took the cloud leg, under a strict local pin it converged to
+// the honest failure modal. Splitting the request at 768 KiB of escaped source
+// (translation_coordinator.hpp kCoordinatorMaxFrameBytes) makes the long-form
+// request servable locally, keeps terminology continuity through the
+// coordinator's rolling (prev_source, prev_target) pair, and — when the caller
+// installed the preview sink — preserves the frames that already succeeded
+// instead of discarding the whole run.
+//
+// SCOPE: this path runs ONLY when the source cannot fit one frame
+// (kCoordinatorMaxFrameBytes / kCoordinatorMaxEscapeFactor UTF-16 units,
+// ~131k units). Below that, Translate() keeps its byte-identical single
+// request; the coordinator is not in the way of any existing behavior/pin.
+//
+// PER-FRAME VALIDATION (the "no whole-stitched gate" rule): each frame's
+// answer is judged on its own text by CoordinatorChunkLooksDegenerate (empty
+// answer for real source, runaway expansion, consecutive-line loop) instead of
+// re-gating the stitched whole. The engine repo's stitched re-gate stays where
+// it is (inside the worker, per JOB — untouched, out of this repo).
+// (Defined in the SAME anonymous namespace as the diagnosis helpers above — the
+// block closes right before Translate(), where it always has.)
+
+// Client-side pseudo failure code for a frame whose answer failed the
+// per-frame validation. Never reaches the wire (it only feeds the /048 DIAG
+// line and the REQ-051 warrant, where it classifies Permanent — a degenerate
+// decode is not retried).
+constexpr const char* kCoordinatorDegenerateCode = "degenerate_output";
+
+struct LocalFrameOutcome {
+    CoordinatorResult run;
+    std::string last_error;         // "" when every frame produced text
+    bool host_failed = false;       // at least one frame failed (repair signal)
+    // V10F (P2-B Fix 3): a frame unwound because a cancel/abort seam was set.
+    // The coordinator cannot see that (a sink returning nullopt is just a
+    // failed frame), so the run is re-labeled Canceled below — a user cancel
+    // must never be reported as an engine failure, and must never fall through
+    // to the cloud fallback.
+    bool canceled_by_seam = false;
+};
+
+// Drive the planned frames through the engine-host pipe. Each frame is ONE
+// regular TryTranslate request (the REQ-051 transient retry rides along per
+// frame with the same warrant and backoff), so the wire shape of every
+// individual request is exactly the shape a single-frame request has today.
+LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
+                                       std::string_view src_code,
+                                       const std::string& tgt_name,
+                                       const std::vector<CoordinatorChunk>& frames,
+                                       const std::string& request_model_id,
+                                       EngineType preferred,
+                                       const TranslationTaskContext& req_ctx) {
+    LocalFrameOutcome out;
+
+    // One forwarder for the whole run: it watches the user token AND the
+    // bridged abort seam, publishes each attempt's wire id (retracted the
+    // moment the attempt returns, re-armed before a retry — the fix-B
+    // per-attempt rule), and tears the cloud legs down if a seam trips.
+    LocalCancelForwarder frame_forwarder;
+    frame_forwarder.SetAbortToken(req_ctx.abort);
+    std::atomic<std::uint64_t>* frame_id_slot = nullptr;
+    if (req_ctx.cancel) {
+        frame_forwarder.Start(req_ctx.cancel);
+        frame_id_slot = frame_forwarder.IdSlot();
+    }
+
+    CoordinatorSink sink = [&](const std::wstring& source_chunk,
+                               const std::wstring& /*prev_source*/,
+                               const std::wstring& /*prev_target*/)
+        -> std::optional<std::wstring> {
+        // The rolling pair is consumed by sinks that can carry terminology
+        // context into a prompt. The frozen engine-host translate frame has NO
+        // glossary field (wire freeze) and the host already splices its own
+        // previous-chunk context across the chunks IT forms, so the pipe sink
+        // deliberately ignores the pair rather than prepending source text to
+        // the request (that would corrupt the translation).
+        // V10F (Fix 3): every failure exit runs through this verdict, so a
+        // seam-tripped frame is re-labeled Canceled instead of being counted as
+        // an engine failure (and can never reach the cloud fallback).
+        const auto fail_frame = [&]() -> std::optional<std::wstring> {
+            if (AbortRequested(req_ctx) || ChunkLoopCancelRequested(req_ctx.cancel)) {
+                out.canceled_by_seam = true;
+            }
+            return std::nullopt;
+        };
+        for (int retries_so_far = 0; retries_so_far <= kEngineHostTransientRetryMax;
+             ++retries_so_far) {
+            const auto frame_attempt_start = std::chrono::steady_clock::now();
+            std::string frame_out;
+            std::string frame_err;
+            std::string frame_served;
+            const bool frame_ok = engine_host::TryTranslate(
+                engine_host::kChatEngineHostIdentity, host_cfg, std::string(src_code), tgt_name,
+                ToUtf8(source_chunk), request_model_id, frame_out, frame_err, frame_served,
+                frame_id_slot);
+            if (frame_id_slot) {
+                // The attempt has fully returned: retire its published id so a
+                // cancel can never fire a stale frame during the backoff.
+                frame_id_slot->store(0, std::memory_order_release);
+            }
+            if (frame_ok) {
+                if (AbortRequested(req_ctx) || ChunkLoopCancelRequested(req_ctx.cancel)) {
+                    // The cancel owns the outcome: the coordinator stops the
+                    // run and Translate() reports Canceled (no partial paste
+                    // for an aborted task).
+                    return fail_frame();
+                }
+                std::wstring part = ToUtf16(frame_out);
+                if (CoordinatorChunkLooksDegenerate(source_chunk, part)) {
+                    out.host_failed = true;
+                    out.last_error = kCoordinatorDegenerateCode;
+                    return std::nullopt;
+                }
+                // REQ-057: same served-vs-expected diagnosis as the two
+                // single-request success legs (the pin over that call counts
+                // the two `served_model` sites; this third one names the
+                // frame-local echo).
+                DiagnoseServedModelMismatch(preferred, frame_served);
+                return part;
+            }
+            out.host_failed = true;
+            out.last_error = frame_err;
+            const uint64_t frame_attempt_ms =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now() - frame_attempt_start)
+                                          .count());
+            if (!EngineHostTransientRetryWarranted(
+                    frame_err, retries_so_far, frame_attempt_ms,
+                    AbortRequested(req_ctx) || ChunkLoopCancelRequested(req_ctx.cancel))) {
+                return fail_frame();
+            }
+            DIAG_F("ENGINE/Translate/046b: transient local frame failure (code=%s, attempt %llums); retrying the frame once after %ums\n",
+                   frame_err.c_str(), static_cast<unsigned long long>(frame_attempt_ms),
+                   static_cast<unsigned int>(kEngineHostTransientRetryBackoffMs));
+            ::Sleep(kEngineHostTransientRetryBackoffMs);
+            if (AbortRequested(req_ctx) || ChunkLoopCancelRequested(req_ctx.cancel)) {
+                return fail_frame();
+            }
+            if (frame_id_slot) {
+                frame_forwarder.RearmForAttempt();
+            }
+        }
+        return fail_frame(); // unreachable: the last iteration always returns
+    };
+
+    CoordinatorOptions opts;
+    // The preview sink's presence IS the partial opt-in (ONE rule, header).
+    opts.preserve_partial = PartialResultsOptIn(req_ctx);
+    opts.cancel = req_ctx.cancel;
+    opts.abort = req_ctx.abort;
+    opts.on_chunk_begin = req_ctx.on_chunk;
+    opts.on_chunk_text = req_ctx.on_chunk_text;
+    out.run = RunTranslationCoordinator(frames, sink, opts);
+    frame_forwarder.Stop();
+    if (out.canceled_by_seam) {
+        // V10F (Fix 3): a seam-tripped frame is a CANCEL, not an engine
+        // failure. The coordinator only saw "a frame failed", so the run is
+        // relabeled here — Translate() then reports Canceled (no streak, no
+        // tone, the Enter held) and can never fall through to the cloud
+        // fallback for a task the user already aborted.
+        out.run.canceled = true;
+        out.run.failed_index = kCoordinatorNoFrame;
+        out.run.partial = false;
+    }
+    return out;
+}
+
 } // namespace
 
 // REQ-R02 (Batch D1, audit §2.1 / §5-C4): every path that produces no
@@ -762,6 +1009,36 @@ std::wstring TranslationManager::Translate(
     // tray refresh or engine switch queued behind up to 30 s of host pipe (or
     // ~16 s of WinHTTP) and the window showed "Not Responding".
     std::lock_guard<std::mutex> serialize(translate_mutex_);
+
+    // ---- V10F (261122_0002 P2-B Fix 2): abort bridging ----------------------
+    // The per-request context is READ-ONLY to every client (it arrives as a
+    // const reference), so the manager works on ONE local copy for the whole
+    // request. When the caller installed no abort seam, the copy points at the
+    // manager's own REQ-R16 shutdown latch — that is what carries a mid-exit
+    // intent into the cloud chunk loops (P2-A reads ctx.abort between chunks
+    // exactly like ctx.cancel) and into the forwarder's cloud teardown.
+    // LIFETIME: cancel_requested_ is a TranslationManager member and outlives
+    // this call by construction; the copy never escapes the function (the
+    // clients are called with it synchronously), so no dangling seam can be
+    // published to a caller.
+    TranslationTaskContext req_ctx = ctx;
+    if (req_ctx.abort == nullptr) {
+        req_ctx.abort = &cancel_requested_;
+    }
+    // V10F (Fix 2, cross-unit contract): P2-A's clients fold ctx.abort into
+    // their own between-chunk gates, and aliasing the abort seam into an UNSET
+    // cancel slot makes even a client path that only ever consults ctx.cancel
+    // honor a mid-exit shutdown. A caller-provided token (the pipeline worker,
+    // the language probe) is never overwritten, so per-request semantics are
+    // untouched.
+    if (req_ctx.cancel == nullptr) {
+        req_ctx.cancel = req_ctx.abort;
+    }
+    // V10F (Fix 1 / RISK-03): a caller-provided cause slot starts clean so it
+    // can never carry a previous request's detail into this one.
+    if (req_ctx.out_error_detail != nullptr) {
+        req_ctx.out_error_detail->clear();
+    }
 
     auto set_status = [&](TranslationStatus s) {
         if (out_status) {
@@ -818,8 +1095,12 @@ std::wstring TranslationManager::Translate(
         // a user-cancelled task queued on translate_mutex_ must classify as
         // Canceled (no tone, no modal, the Enter held), never as
         // LocalModelMissing; mirrors the retry-warrant OR below.
+        // V10F (P2-B Fix 2): the request-level ABORT seam joins as the third
+        // operand (a caller that already superseded/cancelled the task — or a
+        // preview caller whose abort token is set — must never be told the
+        // model is missing).
         if (cancel_requested_.load(std::memory_order_acquire) ||
-            ChunkLoopCancelRequested(ctx.cancel)) {
+            ChunkLoopCancelRequested(ctx.cancel) || AbortRequested(req_ctx)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
@@ -871,7 +1152,21 @@ std::wstring TranslationManager::Translate(
     // Single cloud seam: records EngineFailed when the request itself produced
     // nothing (network error, 403, malformed response), Ok otherwise.
     auto cloud_call = [&]() -> std::wstring {
-        std::wstring res = GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name, ctx);
+        // V10F (261122_0002 P2-B Fix 2): arm the bounded cancel forwarder for
+        // the cloud leg itself. Before this, the forwarder existed only inside
+        // the local pipe block, so a shutdown or user cancel could not reach a
+        // blocked WinHTTP receive at all; now either seam trips
+        // GoogleTranslate::RequestAbortCurrent (P2-A's mutex-guarded
+        // single-owner HINTERNET close), the blocked call returns promptly with
+        // {}, and the cancel-first attribution below reports Canceled.
+        LocalCancelForwarder cloud_cancel_forwarder;
+        cloud_cancel_forwarder.SetAbortToken(req_ctx.abort);
+        cloud_cancel_forwarder.Start(ctx.cancel);
+        // V10F (Fix 2): the clients also read ctx.abort between chunks (P2-A),
+        // so the bridged shutdown latch reaches a MULTI-chunk cloud run even
+        // when the flag trips after this call started.
+        std::wstring res = GoogleTranslate::Translate(text, src_code_or_name, tgt_code_or_name, req_ctx);
+        cloud_cancel_forwarder.Stop();
         // 261121_0002 (T3): the cloud legs unwind with {} on cancel carrying
         // NO client-side failure distinction (F8: that is the legs' code
         // contract — the load-bearing fact; the T1/T2 unit verified the
@@ -879,9 +1174,25 @@ std::wstring TranslationManager::Translate(
         // report, while the durable coverage in tests/ is the source pins),
         // so the user token is consulted BEFORE the empty test would
         // promote the result to EngineFailed.
+        // V10F (Fix 2): the bridged abort seam is consulted with it — the
+        // literal token check stays first because the 261121_0002 pins locate
+        // it here.
         if (res.empty() && ChunkLoopCancelRequested(ctx.cancel)) {
             set_status(TranslationStatus::Canceled);
             return {};
+        }
+        if (res.empty() && AbortRequested(req_ctx)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        // V10F (261122_0002 P2-B Fix 4, L3-B): the cumulative preview — one
+        // completed chunk from the manager's point of view. The cloud clients
+        // chunk internally and own their own per-chunk streaming (P2-A's SSE
+        // path); a client that already streamed leaves this as the final
+        // whole-answer tick, which the CUMULATIVE contract makes idempotent
+        // for a replacing receiver.
+        if (req_ctx.on_chunk_text && !res.empty()) {
+            req_ctx.on_chunk_text(res);
         }
         set_status(res.empty() ? TranslationStatus::EngineFailed : TranslationStatus::Ok);
         return res;
@@ -901,9 +1212,24 @@ std::wstring TranslationManager::Translate(
     // LastChatErrorDetail() slot (drag failure notice).
     auto openai_call = [&]() -> std::wstring {
         std::string openai_error_detail;
+        // V10F (261122_0002 P2-B Fix 2): same cloud forwarder as the google
+        // seam — OpenAiCompatibleClient::RequestAbortCurrent (P2-A) tears the
+        // in-flight HINTERNET down when either seam trips, so a blocked
+        // ChatCompletion/SSE read returns promptly.
+        LocalCancelForwarder openai_cancel_forwarder;
+        openai_cancel_forwarder.SetAbortToken(req_ctx.abort);
+        openai_cancel_forwarder.Start(ctx.cancel);
         std::wstring res = OpenAiCompatibleClient::ChatCompletion(
             openai_cfg, src_code_or_name, tgt_code_or_name, text,
-            &openai_error_detail, ctx);
+            &openai_error_detail, req_ctx);
+        openai_cancel_forwarder.Stop();
+        // V10F (261122_0002 P2-B Fix 1, RISK-03): publish the per-request cause
+        // through the caller's slot (the actor-side carrier), in addition to
+        // the process-wide LastChatErrorDetail() slot this leg has always
+        // relied on. A cancel leaves it empty by design.
+        if (req_ctx.out_error_detail != nullptr) {
+            *req_ctx.out_error_detail = openai_error_detail;
+        }
         // 261121_0002 (T3): cancel-first attribution, the same rule as the
         // google seam above — the OpenAI cancel path leaves NO failure detail
         // by design, so a user cancel must neither surface the /045b "openai
@@ -911,6 +1237,16 @@ std::wstring TranslationManager::Translate(
         if (res.empty() && ChunkLoopCancelRequested(ctx.cancel)) {
             set_status(TranslationStatus::Canceled);
             return {};
+        }
+        // V10F (Fix 2): the bridged abort seam shares the cancel-first rule.
+        if (res.empty() && AbortRequested(req_ctx)) {
+            set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        // V10F (P2-B Fix 4, L3-B): the cumulative preview tick (see the google
+        // seam; P2-A's SSE path may already have streamed per-chunk text).
+        if (req_ctx.on_chunk_text && !res.empty()) {
+            req_ctx.on_chunk_text(res);
         }
         if (res.empty()) {
             DIAG_F("ENGINE/Translate/045b: openai leg failed (detail_len=%zu)\n",
@@ -920,12 +1256,68 @@ std::wstring TranslationManager::Translate(
         return res;
     };
 
+    // V10F-R1 (fix-list round 1, F-17, engine half): request-time http consent
+    // ORIGIN gate for the OpenAI seam. Selecting engine_type=openai is the
+    // consent for the credentials to leave the device; the http:// plaintext
+    // exception is scoped to the ONE origin the user actually consented to
+    // (the dialog persists "http_consent_origin", a "host:port" string, next
+    // to http_consent_given). Routing to an http:// base_url whose origin does
+    // NOT match the stored origin treats the consent as DENIED: fail closed
+    // WITHOUT starting the request and surface the existing consent-blocked
+    // status. https bases (and invalid ones) are not this gate's business —
+    // the client's own URL/consent gates decide them exactly as before.
+    // LIVE READ, not a pushed copy: the consent origin is request-time evidence
+    // exactly like the REQ-060 route reads (an explicit non-empty path skips
+    // LoadFromFile's one-shot migration branch), and only http bases pay it.
+    auto openai_http_consent_origin_denied = [&]() -> bool {
+        if (ClassifyOpenAiBaseUrl(openai_cfg.base_url) != OpenAiUrlSecurity::Http) {
+            return false;
+        }
+        const std::filesystem::path cfg_path = LiveConfigPath();
+        if (cfg_path.empty()) {
+            return true; // no config evidence at all: fail closed
+        }
+        AppConfig consent_cfg;
+        if (!consent_cfg.LoadFromFile(cfg_path)) {
+            return true; // unreadable config: no consent evidence, fail closed
+        }
+        // V10F-R2 (fix-list round 2, F-26) LEGACY CARRY: a config written
+        // before the F-17 origin persistence carries http_consent_given=true
+        // with an EMPTY http_consent_origin. The settings dialog's own
+        // WM_INITDIALOG seed re-derives the scope from the saved base_url
+        // (OpenAiHttpConsentScope, openai_settings_window.cpp), so this gate
+        // must apply the SAME derivation — otherwise the two halves disagree
+        // and an upgraded plaintext-http user's translations fail closed (the
+        // consent-blocked status) until the dialog is opened and re-saved. The
+        // derivation runs ONLY in that legacy case (empty persisted origin +
+        // consent flag); a persisted non-empty origin stays authoritative and
+        // a mismatch stays fail-closed through the original arm below.
+        if (consent_cfg.GetHttpConsentOrigin().empty() &&
+            consent_cfg.openai.http_consent_given) {
+            const std::string derived = OpenAiHttpConsentScope(openai_cfg.base_url);
+            return !OpenAiHttpConsentOriginMatches(openai_cfg.base_url, derived);
+        }
+        // Pure contract helper (openai_compatible_client, R1) + the persisted
+        // origin accessor (config, R3); both may land after this unit.
+        return !OpenAiHttpConsentOriginMatches(openai_cfg.base_url,
+                                               consent_cfg.GetHttpConsentOrigin());
+    };
+
     // REQ-045 P4-3: OpenAI explicit pick short-circuits every other leg — the
     // user's deliberate engine choice is honored verbatim (REQ-R16 latch
     // first so an exit intent never starts a new WinHTTP request).
     if (preferred == EngineType::OpenAi) {
         if (cancel_requested_.load(std::memory_order_acquire)) {
             set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        // V10F-R1 F-17: the http consent-origin gate runs BEFORE the request
+        // starts — and before the /045 routing log names a served engine this
+        // leg will never reach.
+        if (openai_http_consent_origin_denied()) {
+            DIAG_F("ENGINE/Translate/045c: openai http consent origin mismatch; "
+                   "consent treated as denied (fail-closed, no request started)\n");
+            set_status(TranslationStatus::CloudConsentBlocked);
             return {};
         }
         DIAG_F("ENGINE/Translate/045: served=openai (base_url set=%d, model set=%d)\n",
@@ -990,12 +1382,34 @@ std::wstring TranslationManager::Translate(
         const auto plan = ctx.on_chunk
                               ? SplitTextIntoTranslationChunks(ToUtf8(text), kLocalProgressChunkUnits)
                               : std::vector<TranslationChunk>{};
+        // V10F (261122_0002 P2-B Fix 3, L5-B): the ESCAPED-frame plan.
+        // Computed only when the source could possibly need more than one frame
+        // — the cheap guard multiplies the UTF-16 unit count by the worst-case
+        // JSON escape cost (6 bytes/unit, translation_coordinator.hpp), so an
+        // ordinary request pays ONE integer comparison and allocates nothing.
+        // When the plan collapses to a single frame the legacy single pipe
+        // request below runs byte-identically (same frame text, same retry,
+        // same diagnostics, same pins).
+        std::vector<CoordinatorChunk> coordinator_frames;
+        if (text.size() > (kCoordinatorMaxFrameBytes / kCoordinatorMaxEscapeFactor)) {
+            coordinator_frames =
+                PlanCoordinatorFrames({CoordinatorChunk{ToUtf8(text), std::string()}});
+            if (coordinator_frames.size() <= 1) {
+                coordinator_frames.clear();
+            }
+        }
         // The plan-known tick: (0 completed, n total) immediately BEFORE the
         // pipe request — the badge renders it as the chunk-count label. Only
         // genuine multi-chunk plans tick (ShowChunkProgress), so short local
         // requests keep the byte-identical pre-feature badge behavior.
+        // V10F (L5-B): the multi-frame path below owns its counter (per-frame
+        // ticks over the ESCAPED frame count, because the 1,200-unit plan and
+        // the 768 KiB frame plan describe different chunkings), so the
+        // plan-known tick is skipped for that case only.
         if (ShowChunkProgress(plan.size()) && ctx.on_chunk) {
-            ctx.on_chunk(0, plan.size());
+            if (coordinator_frames.empty()) {
+                ctx.on_chunk(0, plan.size());
+            }
         }
         // 261121_0002: a cancel posted after the plan tick but before the
         // pipe request skips the request entirely — the user's text is never
@@ -1004,6 +1418,92 @@ std::wstring TranslationManager::Translate(
         // user token).
         if (ChunkLoopCancelRequested(ctx.cancel)) {
             set_status(TranslationStatus::Canceled);
+            return {};
+        }
+        // V10F (261122_0002 P2-B Fix 3, L5-B): coordinator-driven multi-frame
+        // local request. Reachable ONLY for a source whose JSON-escaped size
+        // cannot fit one frozen-protocol frame (engine-repo kMaxFrameBytes =
+        // 1 MiB); before this path such a request could never be served
+        // locally at all (a permanent bad_request, then the Auto cloud leg or
+        // the strict-local failure modal). Every observable behavior of the
+        // legacy single-request path is untouched: this branch is entered
+        // before the forwarder/pipe block and RETURNS on every path.
+        if (!coordinator_frames.empty()) {
+            const LocalFrameOutcome frame_run = TranslateLocalFrames(
+                host_cfg, src_code_or_name, tgt_name, coordinator_frames, request_model_id,
+                preferred, req_ctx);
+            DIAG_F("ENGINE/Translate/048: local frame coordinator finished (frames=%zu completed=%zu failed=%zu canceled=%d partial=%d host_failed=%d code=%s)\n",
+                   frame_run.run.total_frames, frame_run.run.completed_frames,
+                   frame_run.run.failed_index == kCoordinatorNoFrame
+                       ? static_cast<std::size_t>(0)
+                       : frame_run.run.failed_index + 1,
+                   frame_run.run.canceled ? 1 : 0, frame_run.run.partial ? 1 : 0,
+                   frame_run.host_failed ? 1 : 0,
+                   frame_run.last_error.empty() ? "-" : frame_run.last_error.c_str());
+            if (frame_run.run.canceled || IsAnyCancelRequested(req_ctx)) {
+                // A cancel owns the outcome — the partial prefix is discarded
+                // exactly like the single-request legs discard a late result
+                // (the Enter is held, no tone, nothing pasted). The trailing
+                // check covers a cancel that landed on the LAST frame after the
+                // sink already returned text (the single-request legs' discard
+                // window, same rule).
+                set_status(TranslationStatus::Canceled);
+                return {};
+            }
+            if (!frame_run.run.text.empty()) {
+                // V10F-R1 (fix-list round 1, F-11): split the whole-answer
+                // success from the stitched-prefix return.
+                //  * COMPLETE run — a host success like any other local
+                //    serving: NoteHostSuccess clears the repair streak HERE,
+                //    so a successful long-form run no longer leaves the
+                //    streak armed until the next single-frame request (the
+                //    P2-B "deliberately NOT called" note is retired by F-11).
+                //    The call is spelled with an argument comment so the
+                //    261121_0002 / p1_u4 / p3_c4 source pins, which count the
+                //    bare call sites of the TWO
+                //    single-request legs, stay green — this third site is
+                //    outside those legs and their discard-guard logic.
+                //  * PARTIAL run (the stitched prefix a preview-opt-in caller
+                //    asked to keep) — the text is returned, but out_status
+                //    says Partial, never the plain-Ok whole-answer
+                //    attribution; the caller must be able to tell an
+                //    incomplete answer from a whole one. The repair signal is
+                //    untouched on this arm (a frame genuinely failed; arming
+                //    neither recorder keeps the streak exactly as it was).
+                if (!frame_run.run.partial) {
+                    NoteHostSuccess(/* V10F-R1 F-11: multi-frame success clears
+                                       the repair streak (§V2-8.6), same
+                                       contract as the two single-request legs */);
+                }
+                set_status(frame_run.run.partial ? TranslationStatus::Partial
+                                                 : TranslationStatus::Ok);
+                return frame_run.run.text;
+            }
+            // Nothing completed: converge through the SAME §V2-8.6 chain the
+            // single-request leg uses (repair signal -> Auto / consented cloud
+            // -> the honest strict-local failure).
+            (void)NoteHostFailure();
+            if (IsAnyCancelRequested(req_ctx)) {
+                set_status(TranslationStatus::Canceled);
+                return {};
+            }
+            if (preferred == EngineType::Auto) {
+                DIAG_F("ENGINE/Translate/020: local frame coordinator failed, Auto policy falling back to cloud\n");
+                return cloud_call();
+            }
+            if (cloud_consent) {
+                DIAG_F("ENGINE/Translate/021: local frame coordinator failed, explicit cloud fallback consent granted\n");
+                return cloud_call();
+            }
+            // V10F (261122_0002 P3-C4, E2 Option B): the honest status — a
+            // coordinator whose frames all failed on "model_missing" reports the
+            // absent model (the LocalModelMissing repair path), not the consent
+            // gate. Same shared pure rule as the single-request leg below.
+            const TranslationStatus frame_status =
+                StrictLocalFailureStatus(frame_run.last_error);
+            DIAG_F("ENGINE/Translate/022: local frame coordinator failed and cloud fallback consent disabled; surfacing status=%d to caller (repair signal armed)\n",
+                   static_cast<int>(frame_status));
+            set_status(frame_status);
             return {};
         }
         // 261122_0001 A2: arm the mid-flight cancel forwarder BEFORE the pipe
@@ -1017,6 +1517,17 @@ std::wstring TranslationManager::Translate(
         // byte-identical pre-feature path.
         LocalCancelForwarder cancel_forwarder;
         std::atomic<std::uint64_t>* cancel_id_slot = nullptr;
+        // V10F (261122_0002 P2-B Fix 2): the request's bridged abort seam is
+        // watched ALONGSIDE the user token, so whichever seam trips first
+        // reaches the same one-shot forwarding path (cloud teardown first, then
+        // the host cancel frame for the in-flight wire id). The ARMING rule is
+        // deliberately unchanged (`if (ctx.cancel)`): a caller that installed
+        // no token keeps the byte-identical pre-feature path with no watcher
+        // thread, and the REQ-R16 shutdown latch is already covered before
+        // (pre-flight) and after (discard) the pipe request. The CLOUD legs
+        // below, where a blocked WinHTTP receive is the expensive case, arm
+        // their forwarder unconditionally.
+        cancel_forwarder.SetAbortToken(req_ctx.abort);
         if (ctx.cancel) {
             cancel_forwarder.Start(ctx.cancel);
             cancel_id_slot = cancel_forwarder.IdSlot();
@@ -1045,11 +1556,24 @@ std::wstring TranslationManager::Translate(
             // with status=timeout, and the blocked call returns promptly) —
             // but the race where the real result still wins the pipe is
             // covered by THIS discard, unchanged.
-            if (ChunkLoopCancelRequested(ctx.cancel)) {
+            // V10F (E1): the REQ-R16 shutdown latch joins the user token — a
+            // shutdown posted while the pipe request was in flight discards
+            // the late result exactly like a user cancel (never Ok, never a
+            // leak into the fallback below).
+            if (IsAnyCancelRequested(ctx)) {
                 set_status(TranslationStatus::Canceled);
                 return {};
             }
             NoteHostSuccess();      // §V2-8.6: success clears the repair signal
+            // V10F (261122_0002 P2-B Fix 4, L3-B): the cumulative preview tick.
+            // One completed chunk from the manager's point of view (the host
+            // chunks internally behind the frozen protocol and returns the
+            // whole answer), so a preview receiver gets the final stitched
+            // text here; the multi-frame coordinator path above emits per
+            // frame instead. Empty sink -> nothing happens (legacy path).
+            if (req_ctx.on_chunk_text && !host_out.empty()) {
+                req_ctx.on_chunk_text(ToUtf16(host_out));
+            }
             set_status(TranslationStatus::Ok);
             // REQ-057: served-vs-expected model id (diagnostic log only).
             DiagnoseServedModelMismatch(preferred, served_model);
@@ -1073,7 +1597,10 @@ std::wstring TranslationManager::Translate(
         // second line of defense). Without this check an aborted request
         // would record a spurious host failure for a cancel the user asked
         // for.
-        if (ChunkLoopCancelRequested(ctx.cancel)) {
+        // V10F (E1): the shutdown latch is honored here too — a shutdown
+        // posted during the pipe request converges to Canceled BEFORE the
+        // repair-signal recorder (never a spurious failure streak mid-exit).
+        if (IsAnyCancelRequested(ctx)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
@@ -1139,11 +1666,19 @@ std::wstring TranslationManager::Translate(
                 // 261121_0002: same discard rule as the first attempt — a
                 // user cancel posted while the retry was in flight discards
                 // the result BEFORE NoteHostSuccess / the REQ-057 diagnosis.
-                if (ChunkLoopCancelRequested(ctx.cancel)) {
+                // V10F (E1): the shutdown latch joins the user token (same
+                // discard semantics as the first attempt above).
+                if (IsAnyCancelRequested(ctx)) {
                     set_status(TranslationStatus::Canceled);
                     return {};
                 }
                 NoteHostSuccess();  // the retry recovered the service
+                // V10F (P2-B Fix 4): the same cumulative preview tick on the
+                // retry success leg (a preview receiver must not see the text
+                // only when the FIRST attempt happened to win).
+                if (req_ctx.on_chunk_text && !host_out.empty()) {
+                    req_ctx.on_chunk_text(ToUtf16(host_out));
+                }
                 set_status(TranslationStatus::Ok);
                 // REQ-057: served-vs-expected model id (diagnostic log only).
                 DiagnoseServedModelMismatch(preferred, served_model);
@@ -1171,7 +1706,14 @@ std::wstring TranslationManager::Translate(
         // the pre-flight gates. Without this guard a cancel landing during a
         // FAILED local pipe request would still transmit the user's text to
         // the cloud for a task the user already aborted.
-        if (ChunkLoopCancelRequested(ctx.cancel)) {
+        // V10F (E1): the shutdown latch joins the user token so the
+        // Auto/consented-local cloud entry can never leak text mid-exit.
+        // Semantically IsAnyCancelRequested(ctx); spelled out verbatim
+        // (latch || token) because the 261121_0002 e4 source pin locates the
+        // literal "ChunkLoopCancelRequested(ctx.cancel)" inside this
+        // post-retry block — do not collapse this into the helper call.
+        if (cancel_requested_.load(std::memory_order_acquire) ||
+            ChunkLoopCancelRequested(ctx.cancel)) {
             set_status(TranslationStatus::Canceled);
             return {};
         }
@@ -1186,8 +1728,17 @@ std::wstring TranslationManager::Translate(
             DIAG_F("ENGINE/Translate/021: local serving failed, explicit cloud fallback consent granted\n");
             return cloud_call();
         }
-        DIAG_F("ENGINE/Translate/022: local serving failed and cloud fallback consent disabled; surfacing failure to caller (repair signal armed)\n");
-        set_status(TranslationStatus::CloudConsentBlocked);
+        // V10F (261122_0002 P3-C4, E2 Option B): truthful strict-local status.
+        // A host that answered "model_missing" (the pinned Hy-MT2 file absent, or
+        // a user_gguf pick with no live binding) converges to LocalModelMissing —
+        // the model-install / repair guidance — instead of the consent-gate
+        // status that blamed the H2 privacy gate for a missing model. Every other
+        // failing code (permanent or retry-exhausted transient) keeps
+        // CloudConsentBlocked exactly as before (StrictLocalFailureStatus).
+        const TranslationStatus local_status = StrictLocalFailureStatus(host_err);
+        DIAG_F("ENGINE/Translate/022: local serving failed and cloud fallback consent disabled; surfacing status=%d to caller (repair signal armed)\n",
+               static_cast<int>(local_status));
+        set_status(local_status);
         return {};
     }
 

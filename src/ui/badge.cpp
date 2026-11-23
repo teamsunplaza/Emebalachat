@@ -238,7 +238,7 @@ void FloatingBadge::SetStatus(BadgeStatus status) {
         {
             std::lock_guard<std::mutex> lock(data_mutex_);
             status_ = status;
-            current_alpha_ = 217;
+            current_alpha_ = kFullAlpha;
         }
         Render();
         ResetIdleTimer();
@@ -464,6 +464,124 @@ void FloatingBadge::SetPositionCallback(PositionCallback cb) {
     position_callback_ = std::move(cb);
 }
 
+// ---------------------------------------------------------------------------
+// V10F (261122_0002 P3-C2, UX-3 Option A): 3-zone badge interaction.
+// ---------------------------------------------------------------------------
+
+void FloatingBadge::SetZoneLanguageClickCallback(ZoneClickCallback cb) {
+    zone_click_callback_ = std::move(cb);
+}
+
+void FloatingBadge::SetSwapRequestCallback(ActionCallback cb) {
+    swap_request_callback_ = std::move(cb);
+}
+
+void FloatingBadge::SetTagClickCallback(ActionCallback cb) {
+    tag_click_callback_ = std::move(cb);
+}
+
+// Right mini-tag content. The value is stored under data_mutex_ BEFORE the
+// thread check (the SetLanguages discipline) and the cross-thread branch only
+// posts a re-render, so a reordered WM_BADGE_SET_TAG can never roll the chip
+// back to an older tag. Truncated to kMaxEngineTagChars so the chip stays a
+// tag instead of growing into a second label.
+void FloatingBadge::SetEngineTag(const wchar_t* tag) {
+    std::wstring value;
+    if (tag != nullptr) {
+        value.assign(tag);
+    }
+    if (value.size() > kMaxEngineTagChars) {
+        value.resize(kMaxEngineTagChars);
+    }
+    DIAG_LOG("UI", "badge_engine_tag len=%d", static_cast<int>(value.size()));
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        changed = (engine_tag_ != value);
+        engine_tag_ = std::move(value);
+    }
+    if (!hwnd_ || !changed) {
+        return;
+    }
+    DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
+    if (::GetCurrentThreadId() == winThreadId) {
+        Render();
+    } else {
+        ::PostMessageW(hwnd_, WM_BADGE_SET_TAG, 0, 0);
+    }
+}
+
+void FloatingBadge::SetAutoSendIndicator(bool on) {
+    DIAG_LOG("UI", "badge_autosend %d", on ? 1 : 0);
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        changed = (auto_send_indicator_ != on);
+        auto_send_indicator_ = on;
+    }
+    if (!hwnd_ || !changed) {
+        return;
+    }
+    DWORD winThreadId = ::GetWindowThreadProcessId(hwnd_, nullptr);
+    if (::GetCurrentThreadId() == winThreadId) {
+        Render();
+    } else {
+        ::PostMessageW(hwnd_, WM_BADGE_SET_AUTOSEND, on ? 1 : 0, 0);
+    }
+}
+
+BadgeZoneLayout FloatingBadge::GetZoneLayout() const {
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    return zone_layout_;
+}
+
+// Physical-pixel client x -> the DIP zone planner. WndProc uses it for the
+// press zone, the hover wash and WM_SETCURSOR; the same function is exposed so
+// a caller's zone tooltips cannot drift from the real hit boxes.
+BadgeZone FloatingBadge::HitTestZone(int client_x) const {
+    BadgeZoneLayout layout;
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        layout = zone_layout_;
+    }
+    const int x_dip = emebalachat::ui::ScalePixelsToDips(client_x, dpi_);
+    return BadgeZoneForPoint(x_dip, current_width_, layout);
+}
+
+// Exactly ONE executor per arrow click: the dedicated swap callback wins over
+// the generic zone callback, so a main.cpp that wires both cannot swap twice.
+void FloatingBadge::DispatchZoneClick(BadgeZone zone) {
+    switch (zone) {
+        case BadgeZone::Source:
+        case BadgeZone::Target:
+            if (zone_click_callback_) {
+                zone_click_callback_(BadgeZoneLanguageIndex(zone));
+            }
+            break;
+        case BadgeZone::Swap:
+            if (swap_request_callback_) {
+                swap_request_callback_();
+            } else if (zone_click_callback_) {
+                zone_click_callback_(BadgeZoneLanguageIndex(BadgeZone::Swap));
+            }
+            break;
+        case BadgeZone::Tag:
+            if (tag_click_callback_) {
+                tag_click_callback_();
+            }
+            break;
+        case BadgeZone::Medallion:
+        case BadgeZone::None:
+        default:
+            // Legacy whole-pill behaviour: the medallion (and anything the
+            // planner could not attribute) is the pause/cancel toggle.
+            if (click_callback_) {
+                click_callback_();
+            }
+            break;
+    }
+}
+
 void FloatingBadge::ResetIdleTimer() {
     if (hwnd_) {
         ::KillTimer(hwnd_, kTimerIdle);
@@ -517,6 +635,9 @@ void FloatingBadge::Render(bool reentry_allowed) {
     std::size_t progress_index;
     std::size_t progress_total;
     bool cancelling;
+    // V10F P3-C2: the right mini-tag payload rides the same data snapshot.
+    std::wstring engine_tag;
+    bool auto_send_indicator;
     {
         std::lock_guard<std::mutex> lock(data_mutex_);
         status = status_;
@@ -525,6 +646,8 @@ void FloatingBadge::Render(bool reentry_allowed) {
         progress_index = progress_index_;
         progress_total = progress_total_;
         cancelling = cancelling_;
+        engine_tag = engine_tag_;
+        auto_send_indicator = auto_send_indicator_;
     }
 
     const auto& theme = ui::GetActiveTheme();
@@ -628,7 +751,54 @@ void FloatingBadge::Render(bool reentry_allowed) {
     const float kRingPad = 0.0f;
     const float medallionVisualW = medallionSize + kRingPad * 2.0f; // 24.0f
     float textWidth = metrics.widthIncludingTrailingWhitespace;
-    float totalContentWidth = medallionVisualW + gap + textWidth;
+
+    // V10F P3-C2 (UX-3 Option A): right mini-tag = engine tag ("G"/"L"/"AI"/
+    // "U") plus the optional auto-send marker. Measured at 9.5 DIP in the same
+    // Consolas format the code runs already use, so the chip keeps the
+    // "instrument tag" look without a second text format. No tag -> zero added
+    // width, which keeps every pre-existing pill-width pin (dynamic sizing /
+    // drag-pair guard) byte-identical.
+    std::wstring tag_text;
+    if (!engine_tag.empty()) {
+        tag_text = engine_tag;
+    }
+    if (auto_send_indicator) {
+        if (!tag_text.empty()) {
+            tag_text += L' ';
+        }
+        tag_text += L"\u21B5";
+    }
+    const bool has_tag = !tag_text.empty();
+    float tagWidth = 0.0f;
+    if (has_tag && dwrite_factory_ && code_format_) {
+        IDWriteTextLayout* tagMeasureLayout = nullptr;
+        dwrite_factory_->CreateTextLayout(
+            tag_text.c_str(),
+            static_cast<UINT32>(tag_text.size()),
+            code_format_,
+            1000.0f,
+            static_cast<float>(kHeight),
+            &tagMeasureLayout);
+        if (tagMeasureLayout) {
+            tagMeasureLayout->SetFontSize(
+                kTagFontSize, DWRITE_TEXT_RANGE{0, static_cast<UINT32>(tag_text.size())});
+            DWRITE_TEXT_METRICS tagMetrics = {};
+            if (SUCCEEDED(tagMeasureLayout->GetMetrics(&tagMetrics))) {
+                tagWidth = tagMetrics.widthIncludingTrailingWhitespace + kTagPadX * 2.0f;
+            }
+            tagMeasureLayout->Release();
+        }
+        if (tagWidth <= 0.0f) {
+            // DirectWrite refused the layout: estimate from a rough advance so
+            // the chip still lands on the right edge (the label stays exact).
+            tagWidth = kTagPadX * 2.0f +
+                       static_cast<float>(tag_text.size()) * kTagFallbackAdvance;
+        }
+        tagWidth = (std::max)(kTagMinWidth, tagWidth);
+    }
+    const float tagGap = has_tag ? kTagGap : 0.0f;
+    float totalContentWidth =
+        medallionVisualW + gap + textWidth + (has_tag ? tagGap + tagWidth : 0.0f);
     float sidePadding = 18.0f; // pill curvature breathing room on each side
 
     int needed_width = static_cast<int>(std::ceil(totalContentWidth + (sidePadding * 2.0f)));
@@ -658,6 +828,60 @@ void FloatingBadge::Render(bool reentry_allowed) {
     float dotCenterY = static_cast<float>(kHeight) / 2.0f;
 
     float textX = startX + medallionVisualW + gap;
+    const float tagX = textX + textWidth + tagGap;
+
+    // V10F P3-C2 (UX-3 Option A): derive the three hit zones from the measured
+    // label runs. HitTestTextPosition returns the exact DIP offset of the arrow
+    // glyph and of the first TGT character inside the SAME layout that is
+    // drawn, so the zones follow each locale's real advances (CJK targets, the
+    // localized "Auto Detect", the mono face) instead of character counts. A
+    // proportional split is the fallback when the hit test fails; the planner
+    // only needs the boundaries to be monotonic.
+    BadgeZoneLayout zone_layout;
+    zone_layout.source_begin = static_cast<int>(std::floor(textX));
+    {
+        float swap_offset = -1.0f;
+        float target_offset = -1.0f;
+        if (textLayout) {
+            const UINT32 swap_pos = static_cast<UINT32>(display_src.size() + 1);
+            const UINT32 target_pos = static_cast<UINT32>(display_src.size() + 3);
+            DWRITE_HIT_TEST_METRICS htm = {};
+            float hit_x = 0.0f;
+            float hit_y = 0.0f;
+            if (SUCCEEDED(textLayout->HitTestTextPosition(swap_pos, FALSE, &hit_x, &hit_y, &htm))) {
+                swap_offset = hit_x;
+            }
+            if (SUCCEEDED(textLayout->HitTestTextPosition(target_pos, FALSE, &hit_x, &hit_y, &htm))) {
+                target_offset = hit_x;
+            }
+        }
+        if (swap_offset < 0.0f || target_offset <= swap_offset) {
+            const float label_len =
+                static_cast<float>(display_label.empty() ? 1u : display_label.size());
+            swap_offset =
+                textWidth * (static_cast<float>(display_src.size() + 1) / label_len);
+            target_offset =
+                textWidth * (static_cast<float>(display_src.size() + 3) / label_len);
+        }
+        zone_layout.swap_begin = static_cast<int>(std::floor(textX + swap_offset));
+        zone_layout.target_begin = static_cast<int>(std::floor(textX + target_offset));
+        // Keep the planner total under every metric quirk: a boundary can never
+        // collapse onto (or invert with) the boundary to its left.
+        if (zone_layout.swap_begin <= zone_layout.source_begin) {
+            zone_layout.swap_begin = zone_layout.source_begin + 1;
+        }
+        if (zone_layout.target_begin <= zone_layout.swap_begin) {
+            zone_layout.target_begin = zone_layout.swap_begin + 1;
+        }
+        zone_layout.tag_begin = has_tag ? static_cast<int>(std::floor(tagX)) : -1;
+        if (zone_layout.tag_begin >= 0 && zone_layout.tag_begin <= zone_layout.target_begin) {
+            zone_layout.tag_begin = zone_layout.target_begin + 1;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        zone_layout_ = zone_layout;
+    }
 
     // REQ-R15 note: everything above is authored in DIPs; the render target
     // DPI converts to physical at rasterization. The DirectWrite layout was
@@ -702,6 +926,44 @@ void FloatingBadge::Render(bool reentry_allowed) {
                 cardRect, theme.badge_radius, theme.badge_radius);
             dc_render_target_->DrawRoundedRectangle(hoverRr, hoverBorderBrush, 1.0f);
             hoverBorderBrush->Release();
+        }
+    }
+
+    // V10F P3-C2 (UX-3 Option A): the hovered language slice gets a soft
+    // surface wash drawn with the same rounded-rect vocabulary as the card (no
+    // new assets). It sits UNDER the label text, so the run stays crisp.
+    if (is_hovered_) {
+        float wash_left = 0.0f;
+        float wash_right = 0.0f;
+        switch (hovered_zone_) {
+            case BadgeZone::Source:
+                wash_left = static_cast<float>(zone_layout.source_begin);
+                wash_right = static_cast<float>(zone_layout.swap_begin);
+                break;
+            case BadgeZone::Swap:
+                wash_left = static_cast<float>(zone_layout.swap_begin);
+                wash_right = static_cast<float>(zone_layout.target_begin);
+                break;
+            case BadgeZone::Target:
+                wash_left = static_cast<float>(zone_layout.target_begin);
+                wash_right = has_tag ? tagX : (textX + textWidth);
+                break;
+            default:
+                break;
+        }
+        if (wash_right > wash_left) {
+            ID2D1SolidColorBrush* washBrush = nullptr;
+            dc_render_target_->CreateSolidColorBrush(
+                ui::ColorFromHex(theme.surface_hover, 0.55f), &washBrush);
+            if (washBrush) {
+                const float wash_h = 22.0f;
+                const float wash_top = (static_cast<float>(kHeight) - wash_h) * 0.5f;
+                const D2D1_ROUNDED_RECT washRr = D2D1::RoundedRect(
+                    D2D1::RectF(wash_left, wash_top, wash_right, wash_top + wash_h),
+                    4.0f, 4.0f);
+                dc_render_target_->FillRoundedRectangle(washRr, washBrush);
+                washBrush->Release();
+            }
         }
     }
     /*
@@ -891,6 +1153,59 @@ void FloatingBadge::Render(bool reentry_allowed) {
     if (statusTextBrush) statusTextBrush->Release();
     if (textLayout) textLayout->Release();
 
+    // V10F P3-C2 (UX-3 Option A): right mini-tag chip. Same primitives as the
+    // pill (rounded rect + 1 DIP stroke) so it reads as part of the badge and
+    // not as a second widget; hovering it warms the stroke to the theme hover
+    // token, the only affordance such a small target can afford.
+    if (has_tag && tagWidth > 0.0f) {
+        const float tag_top = (static_cast<float>(kHeight) - kTagHeight) * 0.5f;
+        const D2D1_ROUNDED_RECT tagRr = D2D1::RoundedRect(
+            D2D1::RectF(tagX, tag_top, tagX + tagWidth, tag_top + kTagHeight),
+            kTagRadius, kTagRadius);
+        const bool tag_hovered = is_hovered_ && hovered_zone_ == BadgeZone::Tag;
+        ID2D1SolidColorBrush* tagFillBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            ui::ColorFromHex(theme.surface_hover, tag_hovered ? 0.90f : 0.55f),
+            &tagFillBrush);
+        if (tagFillBrush) {
+            dc_render_target_->FillRoundedRectangle(tagRr, tagFillBrush);
+            tagFillBrush->Release();
+        }
+        ID2D1SolidColorBrush* tagEdgeBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            tag_hovered ? ui::ColorFromHex(theme.border_hover, theme.border_hover_alpha)
+                        : ui::ColorFromHex(theme.border_subtle, theme.border_subtle_alpha),
+            &tagEdgeBrush);
+        if (tagEdgeBrush) {
+            dc_render_target_->DrawRoundedRectangle(tagRr, tagEdgeBrush, 1.0f);
+            tagEdgeBrush->Release();
+        }
+        IDWriteTextLayout* tagLayout = nullptr;
+        if (dwrite_factory_ && code_format_) {
+            dwrite_factory_->CreateTextLayout(
+                tag_text.c_str(),
+                static_cast<UINT32>(tag_text.size()),
+                code_format_,
+                tagWidth,
+                static_cast<float>(kHeight),
+                &tagLayout);
+        }
+        ID2D1SolidColorBrush* tagTextBrush = nullptr;
+        dc_render_target_->CreateSolidColorBrush(
+            ui::ColorFromHex(theme.text_secondary, 1.0f), &tagTextBrush);
+        if (tagLayout) {
+            tagLayout->SetFontSize(
+                kTagFontSize, DWRITE_TEXT_RANGE{0, static_cast<UINT32>(tag_text.size())});
+            tagLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            if (tagTextBrush) {
+                dc_render_target_->DrawTextLayout(
+                    D2D1::Point2F(tagX, 0.0f), tagLayout, tagTextBrush);
+            }
+        }
+        if (tagTextBrush) tagTextBrush->Release();
+        if (tagLayout) tagLayout->Release();
+    }
+
     // R6 Phase 3 (audit item 4, plan §3.1 A3): device-lost recovery. A driver
     // reset fails EndDraw with D2DERR_RECREATE_TARGET; without recreation the
     // badge stays a permanently blank pill.
@@ -954,13 +1269,18 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case WM_LBUTTONDOWN: {
             self->is_mouse_down_ = true;
             self->is_dragging_ = false;
+            // V10F P3-C2: latch the zone under the press so the click-in-place
+            // dispatch on WM_LBUTTONUP uses press-zone semantics (a drag
+            // anywhere still cancels the click exactly as before).
+            self->press_zone_ =
+                self->HitTestZone(static_cast<int>(static_cast<short>(LOWORD(lParam))));
             ::GetCursorPos(&self->drag_start_cursor_);
             RECT rc = {};
             ::GetWindowRect(hwnd, &rc);
             self->drag_start_window_ = { rc.left, rc.top };
             ::SetCapture(hwnd);
 
-            self->UpdateAlpha(217);
+            self->UpdateAlpha(kFullAlpha);
             self->ResetIdleTimer();
             return 0;
         }
@@ -1036,9 +1356,19 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     }
                 }
             } else {
+                // V10F P3-C2: track which zone the cursor is over, so the hover
+                // wash and the WM_SETCURSOR hand cursor follow the real hit boxes.
+                // One render per zone change; is_hovered_ stays the whole-pill
+                // hover flag it always was.
+                const BadgeZone hover_zone =
+                    self->HitTestZone(static_cast<int>(static_cast<short>(LOWORD(lParam))));
+                const bool zone_changed = (hover_zone != self->hovered_zone_);
+                if (zone_changed) {
+                    self->hovered_zone_ = hover_zone;
+                }
                 if (!self->is_hovered_) {
                     self->is_hovered_ = true;
-                    self->current_alpha_ = 217;
+                    self->current_alpha_ = kFullAlpha;
                     self->Render(); // Re-render hover border & restore full opacity on hover
 
                     TRACKMOUSEEVENT tme = {};
@@ -1046,6 +1376,8 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     tme.dwFlags = TME_LEAVE;
                     tme.hwndTrack = hwnd;
                     ::TrackMouseEvent(&tme);
+                } else if (zone_changed) {
+                    self->Render(); // V10F P3-C2: redraw the zone hover wash
                 }
                 self->ResetIdleTimer();
             }
@@ -1069,9 +1401,27 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 self->is_mouse_down_ = false;
                 // Click in place: start single-click timer (sized to the OS
                 // double-click window captured at Create) to allow double-click
-                // detection
-                if (self->click_callback_) {
-                    self->click_callback_();
+                // detection.
+                // V10F BUG-01 (261104_0001 UI-BUG-3 regression): the callback
+                // used to fire here immediately, so a badge double-click
+                // (language swap) first toggled pause/cancel before
+                // WM_LBUTTONDBLCLK could run, while main.cpp's click contract
+                // documents the kTimerSingleClick deferral exactly so a
+                // double-click is never swallowed by a cancel. Re-arm the
+                // timer: WM_LBUTTONDBLCLK (and a drag start) KillTimer it,
+                // WM_TIMER dispatches the callback once the double-click
+                // window has passed without a second click.
+                // V10F P3-C2 (UX-3 Option A): a click that lands on the
+                // language slices or the engine chip is a ZONE action and runs
+                // immediately on this message (no 500 ms wait). The double-click
+                // cannot double-fire it: WM_LBUTTONDBLCLK skips the legacy swap
+                // for exactly these zones. Only the medallion keeps the BUG-01
+                // deferral - the same SetTimer call main.cpp's click contract
+                // pins stays byte-identical.
+                if (BadgeZoneIsImmediate(self->press_zone_)) {
+                    self->DispatchZoneClick(self->press_zone_);
+                } else if (self->click_callback_) {
+                    ::SetTimer(hwnd, kTimerSingleClick, self->single_click_delay_ms_, nullptr);
                 }
             }
             return 0;
@@ -1085,7 +1435,13 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             self->is_dragging_ = false;
             ::KillTimer(hwnd, kTimerSingleClick); // Cancel pending single-click toggle!
 
-            if (self->double_click_callback_) {
+            // V10F P3-C2: a double-click that STARTED on an immediate zone
+            // (SRC / arrow / TGT / engine chip) already ran that zone's action
+            // on the first WM_LBUTTONUP, so the legacy language swap is skipped
+            // there - otherwise the arrow would swap twice (net no-op). A
+            // double-click that starts on the medallion or its gap is unchanged:
+            // it still swaps languages.
+            if (!BadgeZoneIsImmediate(self->press_zone_) && self->double_click_callback_) {
                 self->double_click_callback_();
             }
             return 0;
@@ -1102,7 +1458,7 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             {
                 std::lock_guard<std::mutex> lock(self->data_mutex_);
                 self->status_ = static_cast<BadgeStatus>(wParam);
-                self->current_alpha_ = 217;
+                self->current_alpha_ = kFullAlpha;
             }
             self->Render();
             self->ResetIdleTimer();
@@ -1110,6 +1466,17 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         }
 
         case WM_BADGE_SET_LANGS: {
+            self->Render();
+            return 0;
+        }
+
+        // V10F P3-C2 (UX-3 Option A): pure re-render notifications for the
+        // right mini-tag. The setter already stored the value under
+        // data_mutex_ before posting (the SetLanguages discipline), so no
+        // wParam payload is read here and a reordered message cannot roll the
+        // chip back.
+        case WM_BADGE_SET_TAG:
+        case WM_BADGE_SET_AUTOSEND: {
             self->Render();
             return 0;
         }
@@ -1123,7 +1490,7 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 std::lock_guard<std::mutex> lock(self->data_mutex_);
                 self->progress_index_ = static_cast<std::size_t>(LOWORD(wParam));
                 self->progress_total_ = static_cast<std::size_t>(HIWORD(wParam));
-                self->current_alpha_ = 217;
+                self->current_alpha_ = kFullAlpha;
             }
             self->Render();
             self->ResetIdleTimer();
@@ -1144,7 +1511,7 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                 // always applies.
                 if (wParam == 0 || self->status_ == BadgeStatus::Translating) {
                     self->cancelling_ = (wParam != 0);
-                    self->current_alpha_ = 217;
+                    self->current_alpha_ = kFullAlpha;
                 }
             }
             self->Render();
@@ -1154,10 +1521,31 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 
         case WM_MOUSELEAVE: {
             self->is_hovered_ = false;
+            self->hovered_zone_ = BadgeZone::None;
             self->Render();
             self->is_hovered_ = false;
             self->ResetIdleTimer();
             return 0;
+        }
+
+        // V10F P3-C2 (UX-3 Option A): zone hover cursors. The medallion keeps
+        // the arrow (status toggle / cancel); every clickable zone (the
+        // language slices and the engine chip) shows the hand. The zone is
+        // resolved from the live cursor rather than the last WM_MOUSEMOVE so
+        // the cursor cannot lag a fast sweep across the pill.
+        case WM_SETCURSOR: {
+            if (LOWORD(lParam) == HTCLIENT) {
+                POINT ptCursor = {};
+                ::GetCursorPos(&ptCursor);
+                ::ScreenToClient(hwnd, &ptCursor);
+                if (BadgeZoneIsImmediate(self->HitTestZone(ptCursor.x))) {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32649))); // IDC_HAND
+                } else {
+                    ::SetCursor(::LoadCursorW(nullptr, MAKEINTRESOURCEW(32512))); // IDC_ARROW
+                }
+                return TRUE;
+            }
+            return ::DefWindowProcW(hwnd, msg, wParam, lParam);
         }
 
         case WM_TIMER: {
@@ -1167,9 +1555,12 @@ LRESULT CALLBACK FloatingBadge::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
                     self->click_callback_();
                 }
             } else if (wParam == kTimerIdle) {
-                // If idle for 5 seconds, not hovered, and not mouse-down, fade to 20% opacity
-                if (!self->is_hovered_ && !self->is_mouse_down_ && self->current_alpha_ > 51) {
-                    self->UpdateAlpha(51);
+                // If idle for 5 seconds, not hovered, and not mouse-down, fade to
+                // the 45% rest level (V10F P3-C2: 20% left the new zone
+                // affordances illegible over a dark editor).
+                if (!self->is_hovered_ && !self->is_mouse_down_ &&
+                    self->current_alpha_ > kIdleAlpha) {
+                    self->UpdateAlpha(kIdleAlpha);
                 }
             } else if (wParam == kTimerDisplayChange) {
                 // 261029_0001 U-I (R1-21): the topology burst has settled -

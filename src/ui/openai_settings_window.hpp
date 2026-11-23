@@ -129,9 +129,20 @@ struct OpenAiProfilesFold {
 // profile fold. The profile row ([저장]/[삭제]) acts on the working copy only;
 // the active `cfg` output is still the on-screen fields (REQ-051 semantics
 // unchanged).
+// V10F-R1 F-17: `http_consent_origin` (may be null) is the http-consent
+// ORIGIN channel, in/out:
+//   * In:  the persisted "host:port" scope (the caller's stored
+//          AppConfig::GetHttpConsentOrigin value) seeds the dialog's consent
+//          record at WM_INITDIALOG; when null or empty, the dialog falls back
+//          to reading the persisted config file itself.
+//   * Out: on IDOK it receives the scope the dialog recorded for the saved
+//          block (empty for an https save — https never carries http consent),
+//          which the caller persists through AppConfig::SetHttpConsentOrigin
+//          next to its single save. The [설정 삭제] path clears it and persists
+//          the clear itself; Cancel leaves it untouched.
 OpenAiSettingsOutcome ShowOpenAiSettingsDialogEx(
     HWND parent, OpenAiConfig& cfg, OpenAiDeclaredLanguagesFold& declaration,
-    OpenAiProfilesFold& profiles);
+    OpenAiProfilesFold& profiles, std::string* http_consent_origin = nullptr);
 
 // REQ-051 (Symptom C): the pick-or-insert plan for the model combo refill.
 // `items` are the freshly fetched model ids with the combo indices they were
@@ -201,5 +212,22 @@ void BuildOpenAiTemplate(TemplateBuilder& tb);
 // SHA-256 of the protect-scrubbed zero buffer, a pair WithUnprotectedKey
 // refuses forever). Side-effect free, so the unit suite can drive it directly.
 bool OpenAiKeyPairIntegrityOk(const OpenAiConfig& cfg);
+
+// V10F BUG-05 (261122_0002 P1-U3): origin-scoped cleartext-HTTP consent. The
+// dialog's ResolveHttpConsent gate (the ONE consent question the Fetch /
+// [저장] / IDOK paths share) scopes every YES to the exact origin it was
+// granted for, so consent can never be inherited by an edit that points the
+// same flag at a different endpoint.
+//   * OpenAiHttpConsentScope extracts that scope from a base URL: "host:port"
+//     in lowercase, the port default-filled (80 for http), IPv6 hosts kept in
+//     [brackets], any userinfo stripped. https / invalid / unparseable URLs
+//     scope to "": they never carry http consent, and an empty scope matches
+//     no real origin, which keeps the gate on the re-ask side. Pure.
+//   * OpenAiHttpConsentCarries decides whether the consent on record carries
+//     to `base_url` WITHOUT a prompt: only when a YES is on record AND its
+//     recorded scope equals this URL's scope. Pure.
+std::string OpenAiHttpConsentScope(std::string_view base_url);
+bool OpenAiHttpConsentCarries(std::string_view base_url, bool current_consent,
+                              std::string_view consent_origin);
 
 } // namespace emebalachat

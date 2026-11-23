@@ -432,6 +432,22 @@ inline bool SuppressPinnedAbsentGhost(const PickerInit& req,
     return LocalPairReliable(req.source_code, req.target_code);
 }
 
+// V10F FUP-02: the picker's window class, defined HERE (SECTION A, one shared
+// definition) because the pure exemption predicate below and the Win32
+// registration in the .cpp must never drift apart. main.cpp's global-input
+// callbacks (mouse-down / drag-release / ESC on the hook threads) exempt our
+// own picker window from outside-click dismissal / drag-icon summon / overlay
+// Esc through IsLanguagePaletteWindowClass + a same-pid check at the call site.
+inline constexpr wchar_t kLanguagePaletteWindowClass[] = L"Emebalachat_LanguageSearchPalette";
+
+// Pure half of the FUP-02 exemption: does this window class name belong to our
+// language picker? (The caller owns the WindowFromPoint/ancestor walk and the
+// GetWindowThreadProcessId same-pid check; the class compare itself is pure so
+// the decision is unit-testable headlessly.)
+inline bool IsLanguagePaletteWindowClass(std::wstring_view class_name) noexcept {
+    return class_name == kLanguagePaletteWindowClass;
+}
+
 } // namespace language_palette
 
 // ===========================================================================
@@ -498,9 +514,15 @@ LanguagePickerResult ShowLanguageSearchPalette(HWND owner,
                                                const POINT* anchor = nullptr);
 
 // 261116_0003 P6c fix round (PR6-42): TRUE while a language picker's modal
-// loop is running (the module's single-instance guard state). GUI thread only,
-// the same discipline as the latch state. The deferred-open arms' contract:
-// an arm that takes the deferred latch MUST consult this BEFORE taking — a
+// loop is running (the module's single-instance guard state).
+// V10F FUP-02: the flag is a std::atomic<bool> (acquire loads / release
+// stores) — it is still written only from the GUI thread (ShowLanguageSearch
+// Palette's entry + its OpenGuard), but it is now read from the keyboard/mouse
+// HOOK threads too (main.cpp's ESC/dismissal exemptions), so the read side
+// needs the atomic + acquire to stay data-race-free. The latch/take module
+// state stays GUI-thread-only, same discipline as before. The deferred-open
+// arms' contract: an arm that takes the deferred latch MUST consult this
+// BEFORE taking — a
 // wake-up delivered while a picker is already open arrives NESTED through that
 // picker's own hand-rolled pump (GetMessageW(nullptr) drains every message on
 // the GUI thread), and a take at that moment would consume a request the

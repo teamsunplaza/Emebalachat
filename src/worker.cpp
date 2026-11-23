@@ -11,6 +11,8 @@
 #include <new>        // 261108_0002 (FIX-R1): std::bad_alloc for the shape-only callback failure class
 #include <optional>
 #include <stdexcept>  // 261108_0002 (FIX-R1): std::length_error/logic_error/runtime_error classification
+#include <type_traits> // V10F (RISK-03): the error-detail carrier width adapter
+#include <utility>     // V10F (L4-C): std::move for the task-kind queue push
 
 namespace emebalachat {
 
@@ -95,6 +97,48 @@ void SendThroughWithNewlineTracking(HWND target_hwnd, bool is_shift_enter,
     ReleaseSelectionOnce();
     SendEnterKey(is_shift_enter);
     EditCaretTracker_NotifySentNewline(target_hwnd, pre_caret);
+}
+
+// 261121_0002 (T5) cancel-token scope guard, hoisted to namespace scope in
+// V10F (session 261122_0002 P2-D) so BOTH engine-bearing flows (the Enter
+// pipeline and the explicit selection-replace flow) release the published
+// token on every exit with ONE definition. Semantics unchanged: the explicit
+// Clear() runs right after the engine leg on the normal path, the destructor
+// covers an unwind out of the engine.
+struct CancelTokenGuard {
+    std::mutex& mutex;
+    std::shared_ptr<std::atomic_bool>& slot;
+    void Clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        slot.reset();
+    }
+    ~CancelTokenGuard() { Clear(); }
+};
+
+// V10F (RISK-03, session 261122_0002 P2-D): read the per-request error-detail
+// carrier off the task context. The carrier lives in translation_progress.hpp
+// (the L5-B coordinator unit's header); at this writing its landed shape is
+// `std::string* out_error_detail` (a bounded UTF-8 cause, cleared by the
+// manager at request entry). The adapter accepts a pointer-to-string OR a
+// string value, and either width, so this TU does not pin the sibling unit's
+// storage shape while still hard-depending on the field's existence (a missing
+// field is a compile error, not a silently disabled feature).
+template <typename Detail>
+std::wstring ErrorDetailAsWide(const Detail& detail) {
+    if constexpr (std::is_same_v<std::remove_cvref_t<Detail>, std::wstring>) {
+        return detail;
+    } else {
+        return ToUtf16(detail);
+    }
+}
+
+template <typename Ctx>
+std::wstring RequestErrorDetailAsWide(const Ctx& ctx) {
+    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(ctx.out_error_detail)>>) {
+        return ctx.out_error_detail ? ErrorDetailAsWide(*ctx.out_error_detail) : std::wstring();
+    } else {
+        return ErrorDetailAsWide(ctx.out_error_detail);
+    }
 }
 
 // REQ-R03 path matrix, compile-time proven against the shared header predicate
@@ -410,6 +454,34 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         }
     } busy_guard{is_busy_, busy_target_hwnd_};
 
+    // V10F (L4-C, session 261122_0002 P2-D): the explicit selection-replace
+    // task takes the SAME prologue above (per-task clipboard-write scope, the
+    // clipboard backup and its RAII restorer, the busy release guard) and then
+    // diverges here - BEFORE the Enter-specific machinery.
+    //   * The IME backstop below must NOT run for this kind: its remedy is
+    //     SendThroughWithNewlineTracking, and this flow never injects an Enter
+    //     (the user pressed a hotkey, not Enter). An open composition makes the
+    //     flow abort instead: copying mid-composition can duplicate the
+    //     composing text (the corruption the backstop comment describes), so
+    //     ExecuteSelectionReplaceTask refuses with no selection primitive and
+    //     no chord at all.
+    //   * K, the REQ-F2 ledger comparison, the REQ-041/042 clamps, the F3
+    //     block slice, the smart bypass and the Enter send gate are Enter-path
+    //     contracts; handing the task to a separate body means they cannot
+    //     observe it by construction (the Enter path below stays byte-identical
+    //     for every non-selection task).
+    if (task.selection_replace) {
+        ExecuteSelectionReplaceTask(task, backup, restorer.active);
+        return; // scope exit runs the BusyGuard and the armed RestorerGuard
+    }
+
+    // V10F-R1 F-03 (261122_0002 round 1): Enter-only. The selection-replace
+    // kind returns ABOVE this line, so the IME flush cannot destroy its
+    // capture target: FlushIme injects a synthetic VK_RIGHT (win32_input.cpp),
+    // which would collapse the user's live selection before the flow's own
+    // capture chord ever ran. That kind's composition authority is its own
+    // probe (ExecuteSelectionReplaceTask's ForegroundImeComposing check),
+    // which refuses instead of flushing.
     FlushIme();
 
     // REQ-R17 (audit §5 latent item 5): worker-side backstop for the race
@@ -490,9 +562,15 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // below distinguishes empty-capture causes.
     EnterCaptureResult capture_result = EnterCaptureResult::Ok;
     RescueProvenance provenance; // S1: {rescued=false, Origin::none} by default
+    // V10F FUP-04 (Option C, session 261122_0002 P2-D): the out-of-band
+    // raw-payload carrier for a SelectAll-rescued capture whose slice verdict
+    // collapses to empty (empty-tail / over-guard). The RETURNED capture stays
+    // empty exactly as before; only a rescue fills this, and only the branch
+    // after the bypass log below consumes it.
+    std::wstring raw_rescue_text;
     std::wstring line = NormalizeNewlinesToCRLF(
         CopySelectedText(task.target_hwnd, task.shift_enter_count, &capture_result,
-                         &provenance));
+                         &provenance, &raw_rescue_text));
     // REQ-003 (session 260909): the captured body IS the user's text - recorded
     // only when diag_log_content is on (default off). Length and duration
     // metadata stay on both branches (shape-only rule, debugging preserved).
@@ -876,6 +954,43 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
                           : (translate_decision_bypassed ? "already_target_language" : "translate"),
              untranslated_tail.empty() ? 0 : (tail_smart_bypassed ? 1 : 0));
 
+    // V10F FUP-04 (Option C, session 261122_0002 P2-D): the rescued-over-guard
+    // shape. A SelectAll-RESCUED capture (BUG-002: the keyboard-geometry chords
+    // could not confirm on a structured contenteditable target, so Ctrl+A took
+    // the whole document) whose slice verdict is empty-tail or over-guard
+    // returns EMPTY - and used to reach the R5 empty-capture machinery below,
+    // which is wrong twice over: the "no text selected" notice is FALSE (the
+    // selection held the whole document), and the REQ-034 paste-window arm can
+    // hand the intercepted Enter over while that whole-document Ctrl+A
+    // selection is still LIVE (Enter replaces it - the BUG-005 data-loss
+    // class). The capture seam reports the raw rescued payload out of band
+    // (CopySelectedText's out_raw_rescue_text) for exactly these two verdicts;
+    // consume the live selection with the SAME identity-paste mechanism the
+    // sub-guard empty-tail arm (/041) and every other send-through terminal use
+    // (byte-safe: the selection spans exactly the pasted text back), then hand
+    // the Enter over. Placement: after the bypass log so every pre-existing
+    // DIAG keeps its order, before the paste-window/promote/hold gates so no
+    // empty-capture arm can claim this shape. Non-rescue empties and non-empty
+    // captures keep out_raw_rescue_text empty and flow through the existing
+    // paths byte-identically.
+    if (RescueRawPayloadNeedsConsume(provenance.rescued, line.empty(),
+                                     !raw_rescue_text.empty())) {
+        DIAG_F("WORKER/ExecuteTask/059: SelectAll-rescued whole-document capture reported %s (raw_len=%zu); consuming the live selection with the identity paste before send-through\n",
+               EnterCaptureResultName(capture_result), raw_rescue_text.size());
+        DIAG_LOG("PIPELINE", "stage=send_through decision=rescue_raw_consume reason=%s raw_len=%zu duration_ms=%llu",
+                 EnterCaptureResultName(capture_result), raw_rescue_text.size(),
+                 ::GetTickCount64() - t_task_start);
+        if (ConsumeRescueSelectionIdentityPaste(raw_rescue_text, task.target_hwnd, backup,
+                                                restorer.active, nullptr)) {
+            DIAG_F("WORKER/ExecuteTask/044: rescue-captured whole-document selection consumed by identity paste before send-through (rescue-raw arm); the Enter cannot replace a live selected span\n");
+        }
+        SendThroughWithNewlineTracking(task.target_hwnd, task.is_shift_enter);
+        // The ledger is KEPT (same discipline as /041 and /042): nothing was
+        // pasted or edited below the slice point, so a same-window entry still
+        // describes live text and self-invalidates by byte comparison.
+        return;
+    }
+
     // R5 (Debug-Surgical): the bare-Enter path's empty capture is no longer
     // silent. Gate-11 evidence (R5 report section 2.2): CopySelectedText
     // returned empty, so the user's original text is still sitting in the
@@ -1150,16 +1265,20 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         std::lock_guard<std::mutex> lock(cancel_mutex_);
         cancel_token_ = cancel_token;
     }
-    struct CancelTokenGuard {
-        std::mutex& mutex;
-        std::shared_ptr<std::atomic_bool>& slot;
-        void Clear() {
-            std::lock_guard<std::mutex> lock(mutex);
-            slot.reset();
-        }
-        ~CancelTokenGuard() { Clear(); }
-    } cancel_guard{cancel_mutex_, cancel_token_};
+    // V10F (session 261122_0002 P2-D): the guard struct now lives in the
+    // anonymous namespace above (one definition shared with the selection-
+    // replace flow); the construction and every Clear() call are unchanged.
+    CancelTokenGuard cancel_guard{cancel_mutex_, cancel_token_};
     TranslationTaskContext ctx;
+    // V10F (RISK-03, session 261122_0002 P2-D): the per-request failure-cause
+    // carrier. TranslationTaskContext contract: a non-null out_error_detail
+    // receives THIS request's bounded, sanitized cause (the manager clears the
+    // slot at request entry, so a stale cause can never be read), which is what
+    // makes the typing-mode notice race-free - the process-global client slot
+    // read below stays only as the fallback. The string outlives the call
+    // (same scope as ctx).
+    std::string request_error_detail;
+    ctx.out_error_detail = &request_error_detail;
     ctx.cancel = cancel_token.get();
     ctx.on_chunk = [this](std::size_t index, std::size_t total) {
         badge_.SetProgress(index, total);
@@ -1561,17 +1680,35 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
         DIAG_F("WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
                 static_cast<int>(status));
         // 261111_0001 U6 (v0.10.7, R1 P1-3): an OpenAI-leg failure records its
-        // sanitized, key-masked cause in the client slot; the opt-in DIAG line
-        // stays SHAPE-ONLY (detail length only — a provider error body can
-        // echo user text, so it never goes to the log). The user-visible
-        // surface is the drag failure notice (main.cpp); the typing path
-        // keeps its established error-tone-only contract (a text notice
-        // there needs a new marshaled callback — see the unit report).
+        // sanitized, key-masked cause; the opt-in DIAG line stays SHAPE-ONLY
+        // (detail length only — a provider error body can echo user text, so it
+        // never goes to the log). The user-visible surface is the drag failure
+        // notice (main.cpp).
+        // V10F (RISK-03, session 261122_0002 P2-D): the TYPING path is no
+        // longer tone-only. The per-request carrier
+        // (TranslationTaskContext::out_error_detail, owned by the L5-B
+        // coordinator unit) is read FIRST: it belongs to THIS Translate() call,
+        // so a concurrent drag / retranslate / probe request can neither clear
+        // nor overwrite it - the process-global LastChatErrorDetail() slot race
+        // the audit documents. The global slot stays as the FALLBACK for a
+        // request that produced no carrier detail (and keeps the established
+        // v0.10.7 pin on this seam): the widened value is UTF-16 and reaches
+        // the registered SetOnTypingError callback, which main.cpp marshals to
+        // the GUI thread (the worker never touches a window). An empty detail
+        // keeps the old tone-only surface - no blank notice.
         if (status == TranslationStatus::EngineFailed &&
             engine_.GetEngineType() == EngineType::OpenAi) {
-            const std::string detail = OpenAiCompatibleClient::LastChatErrorDetail();
+            std::wstring detail = RequestErrorDetailAsWide(ctx);
+            if (detail.empty()) {
+                detail = ToUtf16(OpenAiCompatibleClient::LastChatErrorDetail());
+            }
             DIAG_F("WORKER/ExecuteTask/055: openai leg failed (detail_len=%zu)\n",
                    detail.size());
+            if (!detail.empty() && typing_error_cb_) {
+                DIAG_F("WORKER/ExecuteTask/058: typing-mode error detail dispatched to the transient notice seam (len=%zu)\n",
+                       detail.size());
+                typing_error_cb_(detail);
+            }
         }
         PlaySoundAsync(SoundType::Disable);
     }
@@ -1742,6 +1879,209 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
 
     DIAG_LOG("PIPELINE", "stage=task_end pasted=%d total_ms=%llu",
              pasted ? 1 : 0, ::GetTickCount64() - t_task_start);
+}
+
+// V10F (L4-C, session 261122_0002 P2-D): the explicit "translate my selection
+// and replace it in place" task body (see the PostSelectionReplaceTask contract
+// in worker.hpp). Runs on the pipeline worker thread, after ExecuteTask's
+// shared prologue, so the clipboard backup / RAII restorer / busy guard are the
+// Enter path's own; only the Enter-specific stages (K, ledger comparison,
+// REQ-041/042 clamps, F3 slice, smart bypass, send gate, and - V10F-R1 F-03 -
+// the FlushIme prologue, whose synthetic VK_RIGHT would collapse the live
+// selection this flow exists to capture) are absent - they describe an
+// intercepted Enter, and this flow never injects one.
+void PipelineWorker::ExecuteSelectionReplaceTask(const PipelineTask& task,
+                                                 const ClipboardBackup& backup,
+                                                 bool& restorer_active) {
+    const ULONGLONG t_task_start = ::GetTickCount64();
+    const AppConfig::Snapshot snap = config_.GetSnapshot();
+    DIAG_LOG("PIPELINE", "stage=selection_replace begin target_hwnd=%p tgt=\"%s\"",
+             reinterpret_cast<const void*>(task.target_hwnd),
+             snap.type_target_language.c_str());
+
+    // Copying while a composition is open can duplicate the composing text
+    // ("마지막 글자 중복 복사" - the REQ-R17 corruption class). The Enter path's
+    // IME backstop remedy is a send-through, which this flow must never do, so
+    // it refuses instead: no chord, no clipboard touch, the selection and the
+    // composition stay exactly as the user left them.
+    if (ForegroundImeComposing()) {
+        DIAG_F("WORKER/ExecuteTask/060: selection-translate request dropped - an IME composition is open (copying would duplicate the composing text); no capture, no paste\n");
+        DIAG_LOG("PIPELINE", "stage=selection_replace end reason=ime_composing duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        return;
+    }
+
+    EnterCaptureResult capture_result = EnterCaptureResult::Ok;
+    const std::wstring selection_raw = CopyUserSelectionText(task.target_hwnd, &capture_result);
+    DIAG_LOG("PIPELINE", "stage=selection_replace capture len=%zu result=%s",
+             selection_raw.size(), EnterCaptureResultName(capture_result));
+    const SelectionCaptureVerdict capture_verdict = PlanSelectionCapture(capture_result);
+    if (!capture_verdict.translate) {
+        // The user's own selection is left LIVE and untouched: this app did not
+        // create it, so a refused translate returns the exact state the user
+        // had (no VK_RIGHT, no consume paste - unlike the Enter path, whose
+        // synthetic selection must never survive a task).
+        if (capture_verdict.notify_copy_failed && copy_chord_failed_cb_) {
+            copy_chord_failed_cb_();
+        } else if (capture_verdict.notify_no_selection && empty_capture_cb_) {
+            empty_capture_cb_();
+        }
+        DIAG_F("WORKER/ExecuteTask/061: selection capture unusable (result=%s); no translation, selection untouched\n",
+               EnterCaptureResultName(capture_result));
+        DIAG_LOG("PIPELINE", "stage=selection_replace end reason=capture_unusable result=%s duration_ms=%llu",
+                 EnterCaptureResultName(capture_result),
+                 ::GetTickCount64() - t_task_start);
+        return;
+    }
+
+    badge_.SetStatus(BadgeStatus::Translating);
+    // Per-task cancel token + context: the same lifecycle as the Enter path
+    // (published under cancel_mutex_ for RequestCancelTranslation, cleared right
+    // after the engine leg, and defensively at every exit by the guard), so a
+    // badge click during a long selection translation cancels it and the
+    // "Cancelling..." feedback behaves identically.
+    std::shared_ptr<std::atomic_bool> cancel_token =
+        std::make_shared<std::atomic_bool>(false);
+    {
+        std::lock_guard<std::mutex> lock(cancel_mutex_);
+        cancel_token_ = cancel_token;
+    }
+    CancelTokenGuard cancel_guard{cancel_mutex_, cancel_token_};
+    TranslationTaskContext ctx;
+    ctx.cancel = cancel_token.get();
+    ctx.on_chunk = [this](std::size_t index, std::size_t total) {
+        badge_.SetProgress(index, total);
+        OnFirstMultiChunkTick(total);
+    };
+    // Same PIPE-1 / U6 source-label ladder as the Enter path: detect on the
+    // text the engine actually receives, then resolve through the shared source
+    // rule (a pinned type_source_language still wins; the gated accessor keeps
+    // Unknown -> AUTO).
+    const std::string detected_engine_src = DetectLanguageForPrompt(selection_raw);
+    const std::string resolved_engine_src = ResolveEffectiveSource(
+        snap.type_source_language, detected_engine_src);
+    DIAG_LOG("PIPELINE", "stage=selection_replace translate begin engine=%s src_len=%zu src=%s",
+             engine_.GetActiveEngineName().c_str(), selection_raw.size(),
+             resolved_engine_src.c_str());
+    const ULONGLONG t_translate_start = ::GetTickCount64();
+    TranslationStatus status = TranslationStatus::Ok;
+    std::wstring translated = NormalizeNewlinesToCRLF(
+        engine_.Translate(selection_raw, resolved_engine_src, snap.type_target_language,
+                          &status, ctx));
+    cancel_guard.Clear();
+    DIAG_LOG("PIPELINE", "stage=selection_replace translate end status=%d engine=%s duration_ms=%llu out_len=%zu",
+             static_cast<int>(status), engine_.GetActiveEngineName().c_str(),
+             ::GetTickCount64() - t_translate_start, translated.size());
+    badge_.SetProgress(0, 0);
+    badge_.SetCancellingThreadSafe(false);
+    badge_.SetStatus(BadgeStatus::Active);
+
+    if (status == TranslationStatus::Canceled) {
+        // A user cancel is not a failure: the dedicated notice is the whole
+        // surface, no tone, and the selection stays as the user left it.
+        DIAG_F("WORKER/ExecuteTask/062: selection translation cancelled by the user; no paste, no failure tone, selection untouched\n");
+        if (translation_cancelled_cb_) {
+            translation_cancelled_cb_();
+        }
+        DIAG_LOG("PIPELINE", "stage=selection_replace end reason=user_cancel duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        return;
+    }
+    // Canonical-space identity test (S2 doctrine: strict byte equality after the
+    // documented normalization, never fuzzy). Comparing the CRLF-normalized
+    // translation against the raw capture directly would report "different" for
+    // a pure newline-representation shift and paste a no-op replacement over the
+    // user's selection (extra undo entry / caret move); the canonical twin is
+    // the representation this pipeline already uses for its ledger decisions.
+    const SelectionReplaceOutcome outcome = PlanSelectionReplaceOutcome(
+        /*canceled=*/false, translated.empty(),
+        /*translated_equals_source=*/
+        !translated.empty() &&
+            CanonicalFormForLedger(translated) == CanonicalFormForLedger(selection_raw));
+    if (outcome.play_error_tone) {
+        DIAG_F("WORKER/ExecuteTask/063: selection translation produced no result (status=%d); audible failure feedback dispatched\n",
+               static_cast<int>(status));
+        PlaySoundAsync(SoundType::Disable);
+    }
+    if (!outcome.paste) {
+        DIAG_LOG("PIPELINE", "stage=selection_replace end pasted=0 reason=%s duration_ms=%llu",
+                 translated.empty() ? "translation_empty" : "translation_equals_source",
+                 ::GetTickCount64() - t_task_start);
+        return; // the selection is left live: nothing replaced it
+    }
+
+    // PasteAndRestore's Ctrl+V consumes the still-live user selection (the
+    // capture chord does not disturb it), and the Input P1-4 focus gate + the
+    // H1 foreground gate of that seam protect a multi-second translation window
+    // exactly as they do for the Enter paste.
+    bool restore_ok = false;
+    const ULONGLONG t_paste_start = ::GetTickCount64();
+    const bool replaced = PasteAndRestore(translated, backup, task.target_hwnd, &restore_ok);
+    DIAG_LOG("PIPELINE", "stage=selection_replace paste result=%d target_hwnd=%p duration_ms=%llu clipboard_restored=%d",
+             replaced ? 1 : 0, reinterpret_cast<const void*>(task.target_hwnd),
+             ::GetTickCount64() - t_paste_start, restore_ok ? 1 : 0);
+    if (!replaced) {
+        // H1 abort (foreground/focus drifted) or a failed clipboard write:
+        // nothing was injected, so the selection is still the user's and stays
+        // live. The scope-exit RAII restorer puts the pre-capture clipboard
+        // back (arm unchanged).
+        DIAG_F("WORKER/ExecuteTask/064: selection paste suppressed (H1/focus guard or clipboard write failure); selection untouched, clipboard restored at scope exit\n");
+        DIAG_LOG("PIPELINE", "stage=selection_replace end pasted=0 reason=paste_suppressed duration_ms=%llu",
+                 ::GetTickCount64() - t_task_start);
+        return;
+    }
+    restorer_active = ClipboardRestorerStaysArmed(replaced, restore_ok);
+    if (!restore_ok) {
+        DIAG_F("WORKER/ExecuteTask/065: selection paste succeeded but clipboard restore not confirmed; scope-exit RAII restorer retained as fallback\n");
+    }
+    // Same ledger refresh as the Enter paste-success block: the next Enter in
+    // this window compares its capture against what is now LIVE text. The pair
+    // (text, canonical twin) is written adjacently - the S2 §7.1.1 lifecycle
+    // rule - and the paste-end offset plus the paste-time stamp feed the
+    // REQ-034 / REQ-F5 gates on that next Enter.
+    last_paste_ms_.store(::GetTickCount64(), std::memory_order_relaxed);
+    last_paste_target_ = task.target_hwnd;
+    last_paste_text_ = translated;
+    last_paste_canonical_ = CanonicalFormForLedger(translated);
+    last_paste_end_offset_ = EditCaretTracker_SampleCaret(task.target_hwnd);
+    if (snap.back_translation_enabled && back_translate_cb_) {
+        // Same request shape as the Enter paste branch (original = the captured
+        // text the forward translation came from; compare_text = the same
+        // segment). The callback must stay non-blocking - main.cpp marshals.
+        const BackTranslateRequest request{selection_raw, translated,
+                                           snap.type_target_language, resolved_engine_src,
+                                           snap.type_source_language, task.target_hwnd,
+                                           selection_raw};
+        try {
+            back_translate_cb_(request);
+        } catch (...) {
+            // Shape-only, class-free: the Enter path's classification lives in
+            // its own arm (worker.cpp /055-/056) and is not duplicated here.
+            DIAG_F("WORKER/ExecuteTask/066: selection back-translate callback threw; ignored\n");
+        }
+    }
+    DIAG_LOG("PIPELINE", "stage=selection_replace end pasted=1 duration_ms=%llu",
+             ::GetTickCount64() - t_task_start);
+}
+
+bool PipelineWorker::PostSelectionReplaceTask(HWND target_hwnd) {
+    // Same single-slot acceptance + publication discipline as PostTask (see its
+    // R1-17 comments): acq_rel exchange so the hook thread's acquire load of
+    // is_busy_ sees the task, a release store of the target before the queue
+    // push, and the task kind carried IN the task (no second queue).
+    if (is_busy_.exchange(true, std::memory_order_acq_rel)) {
+        return false; // Busy with an existing task (Enter or selection)
+    }
+    busy_target_hwnd_.store(target_hwnd, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        PipelineTask selection_task;
+        selection_task.target_hwnd = target_hwnd;
+        selection_task.selection_replace = true;
+        queue_.push(std::move(selection_task));
+    }
+    cv_.notify_one();
+    return true;
 }
 
 } // namespace emebalachat
