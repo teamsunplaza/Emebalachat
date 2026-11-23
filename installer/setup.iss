@@ -532,6 +532,67 @@ french.SharedEngineDeletePromptBody=Aucun autre produit Emebala n'est installé 
 german.SharedEngineDeletePromptBody=Es ist kein anderes Emebala-Produkt installiert und kein Emebala-Prozess aktiv.%n%nMöchten Sie die gemeinsame Emebala-Engine und das KI-Modell aus %LOCALAPPDATA%\Emebala\Common entfernen? Sie werden erneut heruntergeladen, wenn Sie ein Emebala-Produkt erneut installieren.%n%nEmpfehlung: Behalten Sie sie (wählen Sie Nein).
 italian.SharedEngineDeletePromptBody=Non è installato alcun altro prodotto Emebala e nessun processo Emebala è in esecuzione.%n%nVuoi rimuovere il motore Emebala condiviso e il modello IA da %LOCALAPPDATA%\Emebala\Common? Verranno scaricati di nuovo se reinstalli un prodotto Emebala.%n%nRaccomandazione: conservali (scegli No).
 
+; 261123_0001 engine-choice: shared-engine replace/keep choice page (radio
+; page created right after the F1 SharedEngine info page). Shown only when the
+; ORIGINAL user's store already holds a shared engine and this bundle would
+; change it; index 0 = replace (default, recommended), index 1 = keep.
+; English + korean authored, the nine other F1-policy languages translated;
+; every remaining registered installer language falls back to english (same
+; policy as the F2/F3 keys above). These are PLAIN strings for a
+; TInputOptionWizardPage description and radio labels - never a memo page, so
+; no %n / MessageLines() / ToRtf() pass is involved. %1 = the version recorded
+; in the store, %2 = the version bundled with this installer; both are filled
+; by FmtMessage() at page creation (never expanded by Inno itself).
+english.SharedEngineChoiceTitle=Shared Emebala Engine Update
+korean.SharedEngineChoiceTitle=공유 엔진 업데이트
+japanese.SharedEngineChoiceTitle=共有 Emebala Engine の更新
+chinesesimplified.SharedEngineChoiceTitle=共享 Emebala Engine 更新
+chinesetraditional.SharedEngineChoiceTitle=共用 Emebala Engine 更新
+
+spanish.SharedEngineChoiceTitle=Actualización del motor Emebala compartido
+portuguese.SharedEngineChoiceTitle=Atualização do motor Emebala partilhado
+brazilianportuguese.SharedEngineChoiceTitle=Atualização do motor Emebala compartilhado
+french.SharedEngineChoiceTitle=Mise à jour du moteur Emebala partagé
+german.SharedEngineChoiceTitle=Aktualisierung der gemeinsamen Emebala-Engine
+italian.SharedEngineChoiceTitle=Aggiornamento del motore Emebala condiviso
+
+english.SharedEngineChoiceDesc=Another Emebala product already installed the shared translation engine, version %1. This installer carries version %2. Replacing it is recommended so every Emebala app uses the newest engine. Keeping the current engine is safe for your other Emebala apps.
+korean.SharedEngineChoiceDesc=다른 Emebala 제품이 공유 번역 엔진 %1 버전을 이미 설치해 두었습니다. 이 설치본에는 %2 버전이 들어 있습니다. 모든 Emebala 앱이 최신 엔진을 사용하도록 교체를 권장합니다. 현재 엔진을 유지해도 다른 Emebala 앱에는 문제가 없습니다.
+japanese.SharedEngineChoiceDesc=別の Emebala 製品が共有翻訳エンジンのバージョン %1 を既にインストールしています。このセットアップにはバージョン %2 が含まれています。すべての Emebala アプリが最新のエンジンを使用するため、置き換えをお勧めします。現在のエンジンを保持しても、他の Emebala アプリに問題はありません。
+chinesesimplified.SharedEngineChoiceDesc=其他埃梅巴拉产品已安装共享翻译引擎 %1 版本。本安装程序包含 %2 版本。建议替换，让所有埃梅巴拉应用都使用最新的引擎。保留当前引擎对其他埃梅巴拉应用也没有影响。
+chinesetraditional.SharedEngineChoiceDesc=其他埃梅巴拉產品已安裝共用翻譯引擎 %1 版本。本安裝程式包含 %2 版本。建議取代，讓所有埃梅巴拉應用程式都使用最新的引擎。保留目前引擎對其他埃梅巴拉應用程式也沒有影響。
+
+spanish.SharedEngineChoiceDesc=Otro producto Emebala ya instaló el motor de traducción compartido, versión %1. Esta instalación incluye la versión %2. Se recomienda reemplazarlo para que todas las aplicaciones Emebala usen el motor más reciente. Conservar el motor actual es seguro para sus otras aplicaciones Emebala.
+portuguese.SharedEngineChoiceDesc=Outro produto Emebala já instalou o motor de tradução partilhado, versão %1. Esta instalação inclui a versão %2. Recomenda-se a substituição para que todas as aplicações Emebala usem o motor mais recente. Manter o motor atual é seguro para as suas outras aplicações Emebala.
+brazilianportuguese.SharedEngineChoiceDesc=Outro produto Emebala já instalou o motor de tradução compartilhado, versão %1. Esta instalação inclui a versão %2. Recomenda-se substituí-lo para que todos os aplicativos Emebala usem o motor mais recente. Manter o motor atual é seguro para os seus outros aplicativos Emebala.
+french.SharedEngineChoiceDesc=Un autre produit Emebala a déjà installé le moteur de traduction partagé, version %1. Ce programme d'installation contient la version %2. Le remplacement est recommandé pour que toutes les applications Emebala utilisent le moteur le plus récent. Conserver le moteur actuel ne pose aucun problème à vos autres applications Emebala.
+german.SharedEngineChoiceDesc=Ein anderes Emebala-Produkt hat die gemeinsame Übersetzungs-Engine bereits in Version %1 installiert. Dieses Setup enthält Version %2. Das Ersetzen wird empfohlen, damit alle Emebala-Apps die neueste Engine verwenden. Die aktuelle Engine zu behalten ist für Ihre anderen Emebala-Apps unbedenklich.
+italian.SharedEngineChoiceDesc=Un altro prodotto Emebala ha già installato il motore di traduzione condiviso, versione %1. Questa installazione contiene la versione %2. Si consiglia di sostituirlo affinché tutte le app Emebala usino il motore più recente. Mantenere il motore attuale è sicuro per le altre app Emebala.
+
+english.SharedEngineChoiceReplace=Replace the shared engine with the newer version (recommended)
+korean.SharedEngineChoiceReplace=공유 엔진을 최신 버전으로 교체 (권장)
+japanese.SharedEngineChoiceReplace=共有エンジンを新しいバージョンに置き換える（推奨）
+chinesesimplified.SharedEngineChoiceReplace=将共享引擎替换为较新版本（推荐）
+chinesetraditional.SharedEngineChoiceReplace=將共用引擎取代為較新版本（建議）
+spanish.SharedEngineChoiceReplace=Reemplazar el motor compartido por la versión más reciente (recomendado)
+portuguese.SharedEngineChoiceReplace=Substituir o motor partilhado pela versão mais recente (recomendado)
+brazilianportuguese.SharedEngineChoiceReplace=Substituir o motor compartilhado pela versão mais recente (recomendado)
+french.SharedEngineChoiceReplace=Remplacer le moteur partagé par la version plus récente (recommandé)
+german.SharedEngineChoiceReplace=Die gemeinsame Engine durch die neuere Version ersetzen (empfohlen)
+italian.SharedEngineChoiceReplace=Sostituisci il motore condiviso con la versione più recente (consigliato)
+
+english.SharedEngineChoiceKeep=Keep the current shared engine
+korean.SharedEngineChoiceKeep=현재 공유 엔진 유지
+japanese.SharedEngineChoiceKeep=現在の共有エンジンを保持する
+chinesesimplified.SharedEngineChoiceKeep=保留当前的共享引擎
+chinesetraditional.SharedEngineChoiceKeep=保留目前的共用引擎
+spanish.SharedEngineChoiceKeep=Conservar el motor compartido actual
+portuguese.SharedEngineChoiceKeep=Manter o motor partilhado atual
+brazilianportuguese.SharedEngineChoiceKeep=Manter o motor compartilhado atual
+french.SharedEngineChoiceKeep=Conserver le moteur partagé actuel
+german.SharedEngineChoiceKeep=Die aktuelle gemeinsame Engine behalten
+italian.SharedEngineChoiceKeep=Mantieni il motore condiviso attuale
+
 ; M7 A-7 (session 260922_0001, DEC-003): family-shared installer gate messages.
 ; Shown by InitializeSetup/InitializeUninstall when another Emebala-family
 ; installer/uninstaller currently holds the Local\EmebalaSetup mutex. Same
@@ -578,8 +639,17 @@ Source: "..\build\Emebala_chat.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; §7.1, 2026-09-17 v1.0): bundle the background host Emebala.Engine.exe into
 ; the per-user COMMON store (%LOCALAPPDATA%\Emebala\Common\engine) shared by
 ; all Emebala apps, so any number of them keep a single GPU-resident model.
-; Install/replace is gated by the ShouldInstallEngineHost() Check (engine.version
-; compare: missing/older => install, equal/newer => skip). uninsneveruninstall
+; Install/replace is gated by the ShouldInstallEngineHost() Check. The rule as
+; of 261123_0001 (it is NOT a plain version-order compare anymore): a missing
+; store file always reinstalls (repair hole); an owned slot whose
+; components.json record differs from ENGINE_BUNDLED_VERSION is replaced
+; (replace-if-different, 261108_0002 WS4); a record that names the bundle is
+; still replaced when the store bytes differ from the staged bytes (R1-11 byte
+; check). On top of that verdict the user gate added by 261123_0001 decides
+; FIRST: the shared-engine choice page offers replace (default) vs keep, and a
+; keep suppresses the whole owned host+worker+manifest unit; a store engine
+; NEWER than the bundle (downgrade) is always kept and the page is not shown.
+; uninsneveruninstall
 ; is REQUIRED: the file is shared, so Inno's own uninstall must NOT remove it -
 ; the plan §7.3 last-app check in [Code] (CurUninstallStepChanged) cleans the
 ; common engine/models (registry-aware, bundled-only per M7 A-3) only when no
@@ -824,7 +894,13 @@ const
 // required so the record advances for users upgrading from r13.
 // 261122_0001 (v0.10.10): the engine binaries changed again (dead paragraph
 // family removal + client-side cancel seam), so the revision bumps to .r17.
-#define ENGINE_REVISION ".r17"
+// 261123_0001 engine-choice: the b3b8e56 context engine ships since rebuild-3,
+// so the revision bumps to .r18. The .r17 stamp was ambiguous across the
+// rebuild-2/3/4 republishes (rebuild-2 carried the PRE-context engine bytes
+// under the very same .r17 stamp), so the stamp alone could not tell a stale
+// store from a current one and only the R1-11 byte check could. The new
+// shared-engine choice page makes that distinction visible to the user.
+#define ENGINE_REVISION ".r18"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
@@ -864,6 +940,27 @@ const
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
   ENGINE_WORKER_ENGINE_VERSION = 'b6099';
+
+  // 261123_0001 engine-choice: results of SharedEngineChoiceVerdict(), the ONE
+  // verdict behind the shared-engine replace/keep radio page (page visibility)
+  // and the keep latch default (silent installs, no-page cases).
+  //   NONE      - no store engine at all (first install / repair): the [Files]
+  //               repair hole owns the copy, nothing to keep, page hidden,
+  //               latch False (replace default).
+  //   CHANGE    - a DIFFERENT engine is pending (record older than the bundle,
+  //               or an equal record whose staged bytes differ): the page is
+  //               shown with index 0 (replace) preselected.
+  //   SAME      - store record names the bundle AND the bytes are identical:
+  //               nothing to replace, page hidden, latch False (the normal
+  //               owned-slot verdict keeps the store untouched anyway).
+  //   DOWNGRADE - the store engine is NEWER than this bundle (another Emebala
+  //               product shipped it): page hidden and the latch is KEEP, so
+  //               this installer can never silently downgrade the shared engine
+  //               (downgrade-keep (261123_0001)).
+  ENGINE_CHOICE_NONE = 0;
+  ENGINE_CHOICE_CHANGE = 1;
+  ENGINE_CHOICE_SAME = 2;
+  ENGINE_CHOICE_DOWNGRADE = 3;
 
   // 261108_0002 (WS4, v0.10.6 installer upgrade safety): upgrade-replacement
   // hardening constants.
@@ -1072,6 +1169,33 @@ var
   // and consumed by DownloadModel() in ssPostInstall.
   ConsentPage: TInputOptionWizardPage;
   ModelDeclined: Boolean;
+  // 261123_0001 engine-choice: shared-engine replace/keep choice page state.
+  //   SharedEngineChoicePage / SharedEngineChoicePageID - the radio page created
+  //     right after the F1 SharedEnginePage and its ID (ShouldSkipPage compares
+  //     against it). Visible ONLY when SharedEngineChoiceVerdict() says a
+  //     replace is pending (see the ENGINE_CHOICE_* constants): the ORIGINAL
+  //     user's store engine must exist AND its recorded stamp must be older
+  //     than the bundle, or equal with staged bytes that differ.
+  //   EngineChoiceVerdict / EngineChoiceSettled - the memoized verdict (the
+  //     probe resolves the original-user profile and may extract staged bytes,
+  //     so it runs at most once per run).
+  //   EngineChoiceKeep - THE keep latch. False = replace (default). Written at
+  //     ssInstall by ReadSharedEngineChoice() BEFORE any [Files] copy, from the
+  //     page when it was shown; the verdict default decides when it was not
+  //     (/SILENT and /VERYSILENT: replace unless the verdict is a
+  //     downgrade-keep). Consumed AFTER
+  //     the normal verdict in ShouldInstallEngineHost / EngineWorkerStoreDecision
+  //     where it suppresses the WHOLE owned unit (host + worker + manifest) so
+  //     the store can never end up with mixed versions.
+  //   EngineChoiceRecorded / EngineChoiceStoreDir - probe evidence for the log
+  //     and the page description (installed vs bundled version).
+  SharedEngineChoicePage: TInputOptionWizardPage;
+  SharedEngineChoicePageID: Integer;
+  EngineChoiceVerdict: Integer;
+  EngineChoiceSettled: Boolean;
+  EngineChoiceKeep: Boolean;
+  EngineChoiceRecorded: String;
+  EngineChoiceStoreDir: String;
 
 // ------------------------------------------------------------------------
 // CompareVersionText - REQ-043: numeric compare of dotted version stamps
@@ -3350,6 +3474,224 @@ begin
   Result := True;
 end;
 
+// ========================================================================
+// 261123_0001 engine-choice: shared-engine replace/keep choice
+// ========================================================================
+// The owned-slot decision above answers "may this installer replace the store
+// engine". This block answers the question BEFORE it: does the ORIGINAL user's
+// store already hold a shared engine, and which version is it? The answer
+// drives (a) the visibility of the shared-engine radio page and (b) the keep
+// latch ReadSharedEngineChoice() lands at ssInstall.
+//
+// STORE CHOICE: the probe reads the store the RUNNING APP reads - the original
+// user's %LOCALAPPDATA%\Emebala\Common\engine - not the elevated token's
+// {localappdata} (PrivilegesRequired=admin; see the COMMON_MODELS_DIR note at
+// the top of this script). It reuses the same helper family as
+// DeployOwnedEngineStoreForOriginalUser: ResolveUserLocalAppData +
+// IsValidUserLocalAppData + COMMON_STORE_SUFFIX. When the profile cannot be
+// resolved the probe falls back to the COMMON_ENGINE_DIR constant (the store
+// every [Files] entry writes), never to a raw '{localappdata}' expansion.
+//
+// ENGINE_SLOT_UNIT: the host, the ggml-translate worker and the worker
+// manifest are ONE replace unit. The keep latch is consulted by every owned
+// [Files] Check, so a keep never leaves the store with a new host beside an old
+// worker (or the other way round).
+// ------------------------------------------------------------------------
+
+// ------------------------------------------------------------------------
+// EngineChoiceStoreStamp - the store's own engine record for the orchestrator.
+// components.json is authoritative (v2+ installs); engine.version is the frozen
+// v1 stamp written in parallel since REQ-043 and covers a v1-generation store.
+// '' = nothing readable, which the caller treats as "unknown, replace" (the
+// same direction as rule A-1).
+// ------------------------------------------------------------------------
+function EngineChoiceStoreStamp(const StoreDir: String): String;
+var
+  ComponentsPath: String;
+  VersionPath: String;
+  Raw: AnsiString;
+begin
+  Result := '';
+  ComponentsPath := StoreDir + '\' + COMPONENTS_FILENAME;
+  if FileExists(ComponentsPath) then
+  begin
+    if LoadStringFromFile(ComponentsPath, Raw) then
+      Result := EngineComponentRecordedVersion(Trim(Raw), 'orchestrator')
+    else
+      Log('261123_0001 engine-choice: components.json unreadable: ' + ComponentsPath);
+  end;
+  if Result <> '' then
+    Exit;
+  VersionPath := StoreDir + '\' + ENGINE_VERSION_FILENAME;
+  if FileExists(VersionPath) then
+  begin
+    if LoadStringFromFile(VersionPath, Raw) then
+      Result := Trim(Raw)
+    else
+      Log('261123_0001 engine-choice: engine.version unreadable: ' + VersionPath);
+  end;
+  if Result <> '' then
+    Log('261123_0001 engine-choice: store engine record taken from ' + ENGINE_VERSION_FILENAME + ': ' + Result);
+end;
+
+// ------------------------------------------------------------------------
+// EngineChoiceStagedBytesDiffer - the R1-11 staged-byte comparison, pointed at
+// the PROBE store instead of the elevated constant (EngineOwnedStoreBytesStatus
+// is hard-wired to COMMON_ENGINE_DIR). Same contract as its sibling: 0
+// (bundled bytes unavailable) is NOT evidence of a difference, the record
+// verdict stands; a hashing failure IS (fail-closed, the store copy cannot be
+// trusted).
+// ------------------------------------------------------------------------
+function EngineChoiceStagedBytesDiffer(const StoreDir: String): Boolean;
+var
+  StorePath: String;
+  BundledHash: String;
+  StoreHash: String;
+begin
+  Result := False;
+  StorePath := StoreDir + '\' + ENGINE_HOST_FILENAME;
+  if not FileExists(StorePath) then
+    Exit;
+  BundledHash := EngineBundledHashProbe(ENGINE_HOST_FILENAME);
+  if BundledHash = '' then
+  begin
+    Log('261123_0001 engine-choice: staged ' + ENGINE_HOST_FILENAME + ' bytes unavailable; the record verdict stands.');
+    Exit;
+  end;
+  try
+    StoreHash := GetSHA256OfFile(StorePath);
+  except
+    Log('261123_0001 engine-choice: could not hash the store copy ' + StorePath +
+        '; treating it as different (fail-closed choice offer).');
+    Result := True;
+    Exit;
+  end;
+  Result := not SameText(StoreHash, BundledHash);
+  if Result then
+    Log('261123_0001 engine-choice: store ' + ENGINE_HOST_FILENAME + ' SHA-256 ' + StoreHash +
+        ' <> staged ' + BundledHash + ' (same record, different bytes) => replace pending.')
+  else
+    Log('261123_0001 engine-choice: store ' + ENGINE_HOST_FILENAME + ' is byte-identical to the staged copy.');
+end;
+
+// ------------------------------------------------------------------------
+// ResolveEngineChoiceStoreDir - the store directory the choice probe reads.
+// Resolution is the DeployOwnedEngineStoreForOriginalUser path (see the block
+// header). The wizard-time resolution is NOT published into
+// UserLocalAppDataPath: SetupModelTargetDir() remains the single resolution
+// point at ssPostInstall (it owns the warn-not-silent fallback and the [Files]
+// policy-seed guard reads that global), so the probe only borrows the value.
+// ------------------------------------------------------------------------
+function ResolveEngineChoiceStoreDir(): String;
+var
+  SavedPath: String;
+begin
+  SavedPath := UserLocalAppDataPath;
+  if (SavedPath = '') or (not IsValidUserLocalAppData(SavedPath)) then
+    ResolveUserLocalAppData();
+  if (UserLocalAppDataPath <> '') and IsValidUserLocalAppData(UserLocalAppDataPath) then
+  begin
+    EngineChoiceStoreDir := UserLocalAppDataPath + COMMON_STORE_SUFFIX + '\engine';
+    Log('261123_0001 engine-choice: probing the ORIGINAL-user engine store: ' + EngineChoiceStoreDir);
+  end
+  else
+  begin
+    EngineChoiceStoreDir := ExpandConstant(COMMON_ENGINE_DIR);
+    Log('261123_0001 engine-choice: original-user profile not resolvable; probing the elevated-context engine store: ' + EngineChoiceStoreDir);
+  end;
+  UserLocalAppDataPath := SavedPath;
+  Result := EngineChoiceStoreDir;
+end;
+
+// ------------------------------------------------------------------------
+// ComputeSharedEngineChoiceVerdict - the page-visibility truth table
+// (261123_0001 engine-choice):
+//   store host exe ABSENT                     -> NONE      (page hidden, replace)
+//   record unreadable or absent              -> CHANGE    (page shown, replace)
+//   record OLDER than the bundle             -> CHANGE    (page shown, replace)
+//   record EQUAL, staged bytes differ        -> CHANGE    (page shown, replace)
+//   record EQUAL, bytes identical or unknown -> SAME      (page hidden, replace)
+//   record NEWER than the bundle             -> DOWNGRADE (page hidden, KEEP)
+// Version order is CompareVersionText's digit-sum compare, which reads the
+// '.rNN' revision as a number ('0.10.10.r17' < '0.10.10.r18'), so a revision
+// bump is an ORDER verdict and the byte check is paid only on a same-stamp
+// rebuild (the .r17 ambiguity this session closes).
+// ------------------------------------------------------------------------
+function ComputeSharedEngineChoiceVerdict(): Integer;
+var
+  StoreDir: String;
+  HostPath: String;
+  Recorded: String;
+  Order: Integer;
+begin
+  Result := ENGINE_CHOICE_NONE;
+  EngineChoiceRecorded := '';
+  StoreDir := ResolveEngineChoiceStoreDir();
+  HostPath := StoreDir + '\' + ENGINE_HOST_FILENAME;
+  if not FileExists(HostPath) then
+  begin
+    EngineChoiceRecorded := '?';
+    Log('261123_0001 engine-choice: no shared engine in the store (' + StoreDir +
+        ') - the [Files] repair hole owns the copy; no choice.');
+    Exit;
+  end;
+  Recorded := EngineChoiceStoreStamp(StoreDir);
+  if Recorded = '' then
+  begin
+    EngineChoiceRecorded := '?';
+    Log('261123_0001 engine-choice: store engine exists but records no readable version - replace (rule A-1 direction).');
+    Result := ENGINE_CHOICE_CHANGE;
+    Exit;
+  end;
+  EngineChoiceRecorded := Recorded;
+  Order := CompareVersionText(Recorded, ENGINE_BUNDLED_VERSION);
+  if Order > 0 then
+  begin
+    // downgrade-keep (261123_0001): replacing a NEWER store engine would
+    // downgrade the shared engine for every Emebala family app, so the page is
+    // not shown and the keep latch is set. This replaces the pre-session
+    // silent replace-if-different downgrade (audit gap G1 behaviour).
+    Log('261123_0001 engine-choice: downgrade-keep (261123_0001) - store records ' +
+        Recorded + ', newer than the bundled ' + ENGINE_BUNDLED_VERSION +
+        '; the owned host+worker+manifest unit stays as installed.');
+    Result := ENGINE_CHOICE_DOWNGRADE;
+    Exit;
+  end;
+  if Order < 0 then
+  begin
+    Log('261123_0001 engine-choice: store records ' + Recorded + ', older than the bundled ' +
+        ENGINE_BUNDLED_VERSION + ' - the user decides (page default: replace).');
+    Result := ENGINE_CHOICE_CHANGE;
+    Exit;
+  end;
+  if EngineChoiceStagedBytesDiffer(StoreDir) then
+  begin
+    Log('261123_0001 engine-choice: store records the bundled ' + ENGINE_BUNDLED_VERSION +
+        ' but its bytes differ - the user decides (page default: replace).');
+    Result := ENGINE_CHOICE_CHANGE;
+    Exit;
+  end;
+  Log('261123_0001 engine-choice: store already holds the bundled engine (record + bytes) - nothing to ask.');
+  Result := ENGINE_CHOICE_SAME;
+end;
+
+// ------------------------------------------------------------------------
+// SharedEngineChoiceVerdict - memoized entry point for the verdict above. The
+// probe may resolve the original-user profile (two PowerShell round trips) and
+// may extract the staged host exe for the byte check, so it must run at most
+// once per setup run: ShouldSkipPage, InitializeWizard and
+// ReadSharedEngineChoice all ask the same question.
+// ------------------------------------------------------------------------
+function SharedEngineChoiceVerdict(): Integer;
+begin
+  if not EngineChoiceSettled then
+  begin
+    EngineChoiceSettled := True;
+    EngineChoiceVerdict := ComputeSharedEngineChoiceVerdict();
+  end;
+  Result := EngineChoiceVerdict;
+end;
+
 // ------------------------------------------------------------------------
 // ShouldInstallEngineHost - REQ-006/M6 (plan §V2-8.1 rule A, design §6.1):
 // Check function for the bundled [Files] entry of the shared host
@@ -3400,6 +3742,16 @@ begin
   if not EngineHostUpdated then
     EngineHostUpdated := SharedSlotReplaceDecision('listener', 'ggml-translate',
         WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+  // 261123_0001 engine-choice: the keep latch is applied AFTER the normal
+  // verdict, so the repair hole, rule A and the R1-11 byte check still decide;
+  // the latch can only turn a replace into a keep. Both worker entries ask
+  // EngineWorkerStoreDecision, which carries the same clamp, so the owned unit
+  // (host + worker + manifest) is always replaced or kept TOGETHER.
+  if EngineHostUpdated and EngineChoiceKeep then
+  begin
+    Log('261123_0001 engine-choice: keep latch active - the orchestrator replace is suppressed (the store engine stays as the user chose).');
+    EngineHostUpdated := False;
+  end;
   Result := EngineHostUpdated;
   if Result then
     Log('REQ-006: shared engine host will be (re)installed.');
@@ -3466,7 +3818,11 @@ end;
 //      force the pair to install even when the exe record is current
 //      (pre-WS4 the manifest rode ShouldInstallEngineWorker, whose repair
 //      hole only looked at the exe - a lost manifest was never repaired);
-//   2. otherwise the owned-slot repair hole + replace-if-different rule.
+//   2. otherwise the owned-slot repair hole + replace-if-different rule;
+//   3. 261123_0001 engine-choice: the keep latch clamps the combined verdict,
+//      so a keep suppresses the exe AND the manifest together (the manifest
+//      carries no independent repair leg on a keep: half a pair is worse than
+//      a stale pair, and the page is only offered when a replace is pending).
 // ------------------------------------------------------------------------
 function EngineWorkerStoreDecision(): Boolean;
 var
@@ -3477,10 +3833,17 @@ begin
   begin
     Log('261108_0002 (WS4) G4: worker manifest missing or stale - (re)installing the worker + manifest pair (independent repair target).');
     Result := True;
-    Exit;
+  end
+  else
+    Result := SharedSlotReplaceDecision('listener', 'ggml-translate',
+        WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
+  // 261123_0001 engine-choice: same post-verdict clamp as ShouldInstallEngineHost
+  // (see the note there). Keep means the store keeps BOTH files as installed.
+  if Result and EngineChoiceKeep then
+  begin
+    Log('261123_0001 engine-choice: keep latch active - the ggml-translate exe + manifest replace is suppressed (the store unit stays as the user chose).');
+    Result := False;
   end;
-  Result := SharedSlotReplaceDecision('listener', 'ggml-translate',
-      WORKER_FILENAME, ENGINE_WORKER_ABI_VERSION, True);
 end;
 
 // ------------------------------------------------------------------------
@@ -3894,6 +4257,24 @@ var
   EngineDir: String;
   Status: Integer;
 begin
+  // 261123_0001 engine-choice: on KEEP no owned copy ran, so the store still
+  // holds the engine the user chose to keep. Re-latching from the bytes here
+  // would be wrong in BOTH directions: status 2 (bundle mismatch) is the
+  // EXPECTED state for a deliberate keep, and the pre-existing defect latch
+  // would then raise the ssDone "could not be verified / re-run the installer"
+  // box for a choice the user just made. The copies never ran, so neither
+  // update latch may advance, WriteEngineVersionFile / WriteComponentsFile stay
+  // on their previous records (stamp-safe by construction), and the bundled
+  // hashes stay unset for the ssDone twin (VerifyEngineStoreDeployment skips
+  // itself when they are empty, and carries the same guard for the wizard-time
+  // probe that may already have filled them).
+  if EngineChoiceKeep then
+  begin
+    EngineHostUpdated := False;
+    EngineWorkerUpdated := False;
+    Log('261123_0001 engine-choice: keep latch active - post-copy verification skipped for the owned unit (no copy ran, no defect claim, no record advance).');
+    Exit;
+  end;
   EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
   // Capture the bundled hashes ONCE. ssDone reuses them (a second
   // ExtractTemporaryFile at ssDone is not guaranteed to succeed), and the
@@ -3945,6 +4326,10 @@ procedure WriteEngineVersionFile();
 var
   VersionPath: String;
 begin
+  // 261123_0001 engine-choice: a KEEP leaves EngineHostUpdated False (the keep
+  // latch clamps ShouldInstallEngineHost and VerifyEngineOwnedStoreCopy), so the
+  // stamp is untouched and a later installer still sees the version the other
+  // Emebala product recorded. No keep-specific code is needed here.
   if not EngineHostUpdated then
     Exit;
   // 261029_0001 R2-1: write-time reparse re-check of the FINAL engine-store
@@ -4565,6 +4950,17 @@ var
   EngineDir: String;
   Status: Integer;
 begin
+  // 261123_0001 engine-choice: the ssDone twin of the keep guard in
+  // VerifyEngineOwnedStoreCopy. A deliberate keep leaves the PREVIOUS engine in
+  // the store, so a mismatch against the bundled bytes is expected and must
+  // never be reported as a defect. The guard is needed even though the bundled
+  // hashes usually stay empty on a keep: the wizard-time byte probe
+  // (EngineChoiceStagedBytesDiffer) may already have cached the host hash.
+  if EngineChoiceKeep then
+  begin
+    Log('261123_0001 engine-choice: keep latch active - ssDone store verification skipped (the previous engine is kept on purpose).');
+    Exit;
+  end;
   EngineDir := ExpandConstant(COMMON_ENGINE_DIR);
   if EngineBundledHashHost = '' then
     Log('261108_0002 (WS4): ssDone store verification skipped for the orchestrator (bundled hash unavailable).')
@@ -4935,6 +5331,31 @@ begin
   SharedEnginePage := CreateOutputMsgMemoPage(AboutPage.ID,
     CustomMessage('SharedEngineTitle'), '', '', MessageLines('SharedEngineBody'));
 
+  // 261123_0001 engine-choice: shared-engine replace/keep radio page, created
+  // right after the F1 info page (same skeleton as the B-2 ConsentPage below:
+  // CreateInputOptionPage(AfterID, ACaption, ADescription, ASubCaption,
+  // Exclusive=True, ListBox=False)). The page object always exists - the wizard
+  // needs it - and ShouldSkipPage() hides it unless a replace is pending, so a
+  // first install, a store already equal to the bundle and a downgrade-keep run
+  // never ask. The description is built at CREATION time, hence the verdict is
+  // resolved here (memoized): it carries the installed version (%1, the store
+  // record) and the bundled one (%2). Default index 0 = replace (recommended);
+  // /SILENT and /VERYSILENT never show the page and ReadSharedEngineChoice()
+  // applies the same defaults at ssInstall.
+  SharedEngineChoiceVerdict();
+  SharedEngineChoicePage := CreateInputOptionPage(SharedEnginePage.ID,
+    CustomMessage('SharedEngineChoiceTitle'), '',
+    FmtMessage(CustomMessage('SharedEngineChoiceDesc'),
+               [EngineChoiceRecorded, ENGINE_BUNDLED_VERSION]),
+    True, False);
+  SharedEngineChoicePage.Add(CustomMessage('SharedEngineChoiceReplace'));  // index 0
+  SharedEngineChoicePage.Add(CustomMessage('SharedEngineChoiceKeep'));     // index 1
+  SharedEngineChoicePage.SelectedValueIndex := 0;
+  SharedEngineChoicePageID := SharedEngineChoicePage.ID;
+  // Defensive pre-latch for anything that reads the flag before ssInstall: only
+  // a downgrade-keep run keeps the store engine without asking.
+  EngineChoiceKeep := (EngineChoiceVerdict = ENGINE_CHOICE_DOWNGRADE);
+
   DownloadPage := CreateDownloadPage(
     CustomMessage('DownloadingModel'),
     CustomMessage('DownloadingModelDesc'),
@@ -4957,11 +5378,69 @@ begin
   ModelDeclined := False;
 
   // B-3: Usage guide (단축키/사용 안내) — created AFTER ConsentPage so the
-  // creation order stays About -> SharedEngine -> Consent -> Guide. Placed after
+  // creation order stays About -> SharedEngine -> SharedEngineChoice ->
+  // Consent -> Guide. Placed after
   // wpInstalling: the wizard reaches it once the install (including the
   // ssPostInstall model download) has finished, right before Finish.
   GuidePage := CreateOutputMsgMemoPage(wpInstalling,
     CustomMessage('GuideTitle'), '', '', MessageLines('GuideBody'));
+end;
+
+// ------------------------------------------------------------------------
+// ShouldSkipPage - 261123_0001 engine-choice: hide the shared-engine
+// replace/keep page unless a replace is actually pending. Page IDs of custom
+// pages start well above the wp* constants, so the SharedEngineChoicePageID
+// comparison can never collide with a built-in page. A skipped page leaves the
+// keep latch at the verdict default, which ReadSharedEngineChoice() re-derives
+// at ssInstall (this function is only the visibility half).
+// ------------------------------------------------------------------------
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if PageID = SharedEngineChoicePageID then
+    Result := (SharedEngineChoiceVerdict() <> ENGINE_CHOICE_CHANGE);
+end;
+
+// ------------------------------------------------------------------------
+// ReadSharedEngineChoice - 261123_0001 engine-choice: latch the shared-engine
+// replace/keep choice into EngineChoiceKeep. Called from CurStepChanged at
+// ssInstall, in the same pre-copy window as ReadConsentChoice() (the [Files]
+// Check functions run after this block). Defaults when the page could not be
+// shown:
+//   verdict NONE / SAME      -> replace (False); the normal owned-slot verdict
+//                               decides and nothing is kept back
+//   verdict DOWNGRADE        -> KEEP (True): downgrade-keep (261123_0001)
+//   /SILENT, /VERYSILENT     -> replace (False) when the verdict is CHANGE,
+//                               i.e. exactly the page's default index 0
+// ------------------------------------------------------------------------
+procedure ReadSharedEngineChoice();
+var
+  Verdict: Integer;
+begin
+  Verdict := SharedEngineChoiceVerdict();
+  if Verdict = ENGINE_CHOICE_DOWNGRADE then
+  begin
+    EngineChoiceKeep := True;
+    Log('261123_0001 engine-choice: keep latch = True (downgrade-keep (261123_0001); the page was not shown).');
+    Exit;
+  end;
+  if Verdict <> ENGINE_CHOICE_CHANGE then
+  begin
+    EngineChoiceKeep := False;
+    Log('261123_0001 engine-choice: keep latch = False (no replace pending; the normal owned-slot verdict stands).');
+    Exit;
+  end;
+  if WizardSilent() then
+  begin
+    EngineChoiceKeep := False;
+    Log('261123_0001 engine-choice: silent install - the choice page was never shown; keep latch = False (documented replace default).');
+    Exit;
+  end;
+  EngineChoiceKeep := (SharedEngineChoicePage.SelectedValueIndex = 1);
+  if EngineChoiceKeep then
+    Log('261123_0001 engine-choice: the user chose KEEP - the owned host+worker+manifest unit stays as installed (no copy, no stop, no stamp).')
+  else
+    Log('261123_0001 engine-choice: the user chose REPLACE - the owned unit follows the normal replace decision.');
 end;
 
 // ------------------------------------------------------------------------
@@ -5602,6 +6081,14 @@ begin
   if CurStep = ssInstall then
   begin
     ReadConsentChoice();
+    // 261123_0001 engine-choice: read the shared-engine replace/keep choice in
+    // the SAME pre-copy window, BEFORE AbsorbLegacyWorkerFileName and before any
+    // [Files] Check evaluates the owned-slot decision - the latch must be final
+    // when ShouldInstallEngineHost / EngineWorkerStoreDecision run. Custom
+    // wizard pages are never shown under /SILENT or /VERYSILENT, so
+    // ReadSharedEngineChoice() applies the documented verdict defaults there
+    // (replace when a change is pending, keep on a downgrade).
+    ReadSharedEngineChoice();
     // 260930_0003 (decisions.md D2): fold any pre-unification worker copy
     // (Emebalachat.Engine.ggml-translate.exe) into the unified family name
     // BEFORE the host/worker Check functions evaluate the pin/stage decision,
@@ -5616,6 +6103,10 @@ begin
     // now runs when EITHER owned slot is scheduled for replacement. Both
     // Checks are pure reads (they only latch the same flags the [Files] Checks
     // latch anyway).
+    // 261123_0001 engine-choice: both verdicts already carry the keep latch, so
+    // a keep run never stops a running engine - nothing is about to be copied
+    // over it, and killing the user's engine for a no-copy install would be a
+    // visible regression for every other Emebala app.
     if ShouldInstallEngineHost() or ShouldInstallEngineWorker() then
       StopRunningEngineHost();
   end;

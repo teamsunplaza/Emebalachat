@@ -39,6 +39,14 @@ from the script source on every run:
            store (cublas64_13 / cublasLt64_13 / cudart64_13) are enumerated
            in CleanupSharedEngineStore's owned-file list, so the last-app
            uninstall no longer orphans them (session 260930_0003, defect B).
+  CHECK 12 261123_0001 engine-choice: the shared-engine replace/keep choice
+           is wired end to end: ENGINE_REVISION is '.r18', the radio page is
+           created right after SharedEnginePage, the keep latch global exists
+           and is consumed in BOTH owned-slot decision functions (host +
+           worker/manifest unit), the downgrade-keep rule marker is present,
+           ShouldSkipPage gates the page on the verdict, the latch is read at
+           ssInstall before any copy, and the four choice CustomMessage keys
+           cover the same 11 languages as the F1/F3 families.
 
 Exit code 0 = PASS, non-zero = violation (usable as a pre-build gate).
 
@@ -74,6 +82,16 @@ F3_LANGS = (
     "french",
     "german",
     "italian",
+)
+
+# 261123_0001 engine-choice: the shared-engine replace/keep choice page keys.
+# CHECK 5 pins the F3 family; this family gets its own list so a later F3 edit
+# and a later choice-page edit can never silently share (or drop) a key.
+ENGINE_CHOICE_KEYS = (
+    "SharedEngineChoiceTitle",
+    "SharedEngineChoiceDesc",
+    "SharedEngineChoiceReplace",
+    "SharedEngineChoiceKeep",
 )
 
 # Frozen contracts that must survive any F3-area edit (REQ-043/REQ-045/
@@ -338,6 +356,123 @@ def check_contract(text: str) -> list[str]:
                 failures.append(
                     f"CHECK 11: CleanupSharedEngineStore does not delete "
                     f"{const} ({literal}; 260930_0003 defect B orphan close)")
+
+    # -- CHECK 12: 261123_0001 engine-choice: shared-engine replace/keep -------
+    # The user gate must be wired end to end, not just declared: the revision
+    # stamp that disambiguates the rebuilds, the radio page created right after
+    # the F1 page (so the CHECK 6 anchor above still describes creation order),
+    # the keep latch global, its consumption in BOTH owned-slot decision
+    # functions, the downgrade-keep rule, the visibility gate, and the
+    # pre-copy read window.
+    if '#define ENGINE_REVISION ".r18"' not in text:
+        failures.append(
+            "CHECK 12: ENGINE_REVISION is not '.r18' "
+            "(261123_0001: the b3b8e56 context engine must not reuse the "
+            "ambiguous .r17 stamp)")
+    for literal, label in (
+        ("SharedEngineChoicePage := CreateInputOptionPage(SharedEnginePage.ID,",
+         "the choice page creation site right after SharedEnginePage"),
+        ("EngineChoiceKeep: Boolean;",
+         "the keep latch global"),
+        ("if EngineHostUpdated and EngineChoiceKeep then",
+         "the keep latch consumption in ShouldInstallEngineHost"),
+        ("if Result and EngineChoiceKeep then",
+         "the keep latch consumption in EngineWorkerStoreDecision"),
+        ("downgrade-keep (261123_0001)",
+         "the downgrade-keep rule marker"),
+    ):
+        if literal not in text:
+            failures.append(f"CHECK 12: {label} is missing ({literal!r})")
+    # Polarity literals (reviewer round 261123_0001): presence alone cannot
+    # catch behavior-inverting edits (inverted skip gate, flipped default or
+    # keep index, swapped downgrade compare, gutted verify guards), so pin the
+    # exact polarity-bearing lines too.
+    for literal, label in (
+        ("SharedEngineChoicePage.SelectedValueIndex := 0;",
+         "the page default must be index 0 (replace)"),
+        ("EngineChoiceKeep := (SharedEngineChoicePage.SelectedValueIndex = 1);",
+         "keep must be index 1 (replace/keep polarity)"),
+        ("Result := (SharedEngineChoiceVerdict() <> ENGINE_CHOICE_CHANGE);",
+         "the page must show ONLY on the CHANGE verdict (polarity)"),
+        ("if Order > 0 then",
+         "the downgrade classification must be 'recorded NEWER than bundled'"),
+    ):
+        if literal not in text:
+            failures.append(f"CHECK 12: {label} — polarity literal missing "
+                            f"({literal!r})")
+    # Both post-copy verify twins must early-exit on keep (a deliberate keep
+    # must never raise the defect box). Checked PER PROCEDURE: the latch read
+    # (ReadSharedEngineChoice) also carries a bare log-branch 'if
+    # EngineChoiceKeep then', so a raw file count cannot distinguish the
+    # verify guards from it.
+    for proc in ("VerifyEngineOwnedStoreCopy", "VerifyEngineStoreDeployment"):
+        body = extract_procedure(text, proc)
+        if not body:
+            failures.append(
+                f"CHECK 12: {proc} is missing (a keep must skip {proc})")
+        elif "if EngineChoiceKeep then" not in body:
+            failures.append(
+                f"CHECK 12: {proc} lacks its 'if EngineChoiceKeep then' "
+                "early-exit (a deliberate keep would raise the defect box)")
+    host_decision = extract_procedure(text, "ShouldInstallEngineHost")
+    if not host_decision:
+        failures.append("CHECK 12: ShouldInstallEngineHost is missing")
+    elif "EngineChoiceKeep" not in host_decision:
+        failures.append(
+            "CHECK 12: ShouldInstallEngineHost no longer consults the keep "
+            "latch (a keep must suppress the orchestrator replace)")
+    else:
+        clamp_at = host_decision.find("EngineChoiceKeep")
+        verdict_at = host_decision.find("SharedSlotReplaceDecision")
+        if verdict_at < 0 or clamp_at < verdict_at:
+            failures.append(
+                "CHECK 12: the keep clamp in ShouldInstallEngineHost must run "
+                "AFTER the SharedSlotReplaceDecision verdict (a pre-verdict "
+                "clamp would veto the verdict entirely)")
+    worker_decision = extract_procedure(text, "EngineWorkerStoreDecision")
+    if not worker_decision:
+        failures.append("CHECK 12: EngineWorkerStoreDecision is missing")
+    elif "EngineChoiceKeep" not in worker_decision:
+        failures.append(
+            "CHECK 12: EngineWorkerStoreDecision no longer consults the keep "
+            "latch (a keep must suppress the worker exe AND its manifest)")
+    else:
+        clamp_at = worker_decision.find("EngineChoiceKeep")
+        verdict_at = worker_decision.find("EngineWorkerManifestNamesBundle")
+        if verdict_at < 0 or clamp_at < verdict_at:
+            failures.append(
+                "CHECK 12: the keep clamp in EngineWorkerStoreDecision must "
+                "run AFTER the manifest repair / rule A verdict")
+    skip_gate = extract_procedure(text, "ShouldSkipPage")
+    if not skip_gate:
+        failures.append(
+            "CHECK 12: ShouldSkipPage() is missing (the choice page would be "
+            "shown on every install, including first installs)")
+    elif "SharedEngineChoiceVerdict()" not in skip_gate or \
+            "ENGINE_CHOICE_CHANGE" not in skip_gate:
+        failures.append(
+            "CHECK 12: ShouldSkipPage does not gate the choice page on the "
+            "verdict (expected SharedEngineChoiceVerdict() <> "
+            "ENGINE_CHOICE_CHANGE)")
+    step = extract_procedure(text, "CurStepChanged")
+    if not step:
+        failures.append("CHECK 12: CurStepChanged is missing")
+    else:
+        read_at = step.find("ReadSharedEngineChoice();")
+        post_at = step.find("if CurStep = ssPostInstall")
+        if read_at < 0:
+            failures.append(
+                "CHECK 12: CurStepChanged never calls ReadSharedEngineChoice() "
+                "(the keep latch would stay at its default for the whole run)")
+        elif post_at >= 0 and read_at > post_at:
+            failures.append(
+                "CHECK 12: ReadSharedEngineChoice() runs AFTER the ssPostInstall "
+                "block instead of in the ssInstall pre-copy window")
+    for key in ENGINE_CHOICE_KEYS:
+        for lang in F3_LANGS:
+            if not re.search(rf"^{lang}\.{key}=.+$", text, re.MULTILINE):
+                failures.append(
+                    f"CHECK 12: missing CustomMessage {lang}.{key}")
 
     return failures
 

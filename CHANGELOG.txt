@@ -1,3 +1,20 @@
+v0.10.10 - 2026-11-24 (rebuild 5)
+====================
+
+Shared-engine installer choice. Same version, rebuilt: when the shared
+engine is already installed and this installer carries a different one,
+the setup wizard now asks whether to replace it with the bundled engine
+(recommended, preselected) or keep the existing one. A deliberately kept
+engine is left completely untouched (no copy, no version-stamp rewrite,
+no service stop, no verification complaint). The decision also stops
+silently downgrading: when the installed engine's recorded version is
+newer than the bundled one, the installer now keeps it instead of
+overwriting. The engine revision stamp moves .r17 -> .r18 (the .r17 stamp
+was ambiguous across rebuilds). Silent installs follow the same defaults
+without showing the page.
+
+Unit tests: 15,293 checks, 0 failures (REQ-055 revision pin tracks .r18).
+
 v0.10.10 - 2026-11-23 (rebuild 4)
 ====================
 
