@@ -40,7 +40,7 @@ from the script source on every run:
            in CleanupSharedEngineStore's owned-file list, so the last-app
            uninstall no longer orphans them (session 260930_0003, defect B).
   CHECK 12 261123_0001 engine-choice: the shared-engine replace/keep choice
-           is wired end to end: ENGINE_REVISION is '.r19', the radio page is
+           is wired end to end: ENGINE_REVISION is '.r20', the radio page is
            created right after SharedEnginePage, the keep latch global exists
            and is consumed in BOTH owned-slot decision functions (host +
            worker/manifest unit), the downgrade-keep rule marker is present,
@@ -364,9 +364,9 @@ def check_contract(text: str) -> list[str]:
     # the keep latch global, its consumption in BOTH owned-slot decision
     # functions, the downgrade-keep rule, the visibility gate, and the
     # pre-copy read window.
-    if '#define ENGINE_REVISION ".r19"' not in text:
+    if '#define ENGINE_REVISION ".r20"' not in text:
         failures.append(
-            "CHECK 12: ENGINE_REVISION is not '.r19' "
+            "CHECK 12: ENGINE_REVISION is not '.r20' "
             "(261123_0001: the b3b8e56 context engine must not reuse the "
             "ambiguous .r17 stamp)")
     for literal, label in (
