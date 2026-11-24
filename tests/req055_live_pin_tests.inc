@@ -223,12 +223,12 @@ void TestReq055LiveUserModelPin() {
         std::ifstream in(setup_iss, std::ios::binary);
         const std::string src((std::istreambuf_iterator<char>(in)),
                               std::istreambuf_iterator<char>());
-        TEST_CHECK(src.find("#define ENGINE_REVISION \".r18\"") != std::string::npos,
-                   "REQ-059: ENGINE_REVISION pinned to .r18 (v0.10.10 rebuild-4 engine "
-                   "binaries carry the b3b8e56 context_v1 host; the .r17 stamp was "
-                   "ambiguous across rebuilds — session 261123_0001) — the pin must "
-                   "track the CURRENT revision or a same-version rebuild keeps a "
-                   "stale store copy");
+        TEST_CHECK(src.find("#define ENGINE_REVISION \".r19\"") != std::string::npos,
+                   "REQ-059: ENGINE_REVISION pinned to .r19 (v0.10.10 rebuild-6 engine "
+                   "binaries carry the llama.cpp v1.0.0 / b12359 upgrade, model pin "
+                   "unchanged; the .r17 stamp was ambiguous across rebuilds — session "
+                   "261123_0001) — the pin must track the CURRENT revision or a "
+                   "same-version rebuild keeps a stale store copy");
     }
 
     if (g_failed_count == failures_before) {

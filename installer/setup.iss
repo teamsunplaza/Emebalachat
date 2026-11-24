@@ -900,7 +900,7 @@ const
 // under the very same .r17 stamp), so the stamp alone could not tell a stale
 // store from a current one and only the R1-11 byte check could. The new
 // shared-engine choice page makes that distinction visible to the user.
-#define ENGINE_REVISION ".r18"
+#define ENGINE_REVISION ".r19"
   ENGINE_BUNDLED_VERSION = '{#SetupSetting("AppVersion")}{#ENGINE_REVISION}';
 
   // REQ-006/M6 (engine-host v2, plan §V2-8.1/§V2-8.2, design 235200 §3.3/§6):
