@@ -22,7 +22,8 @@ endif()
 # 261111_0001 U7 (v0.10.7): the shared engine (the Emebala.Engine orchestrator,
 # the ggml-translate worker, the llama-coupled engine_core library, and the
 # engine_host_* client/parsers) lives in its own repository and is consumed via
-# add_subdirectory below. The llama.cpp FetchContent (pinned tag b6099), the
+# add_subdirectory below. The llama.cpp FetchContent (pinned tag v1.0.0 / build
+# b12359, the engine repo's pin), the
 # CUDA/Vulkan backend selection, and the R18 third-party warning isolation all
 # moved into the engine repo's CMakeLists so there is exactly one llama build,
 # owned by the engine. These two options stay declared here as cache globals

@@ -228,7 +228,7 @@ void TestEngineHostComponents() {
             "  \"components\": {\n"
             "    \"orchestrator\": {\"version\": \"0.10.1\", \"abi_version\": 2},\n"
             "    \"ggml-translate\": {\"version\": \"0.10.1\", \"abi_version\": 1,\n"
-            "                         \"engine\": \"llama.cpp\", \"engine_version\": \"b6099\"}\n"
+            "                         \"engine\": \"llama.cpp\", \"engine_version\": \"b12359\"}\n"
             "  }\n"
             "}";
         const auto r = ehc::ParseComponentsJson(golden);
@@ -374,7 +374,7 @@ void TestEngineHostComponents() {
         std::map<std::string, std::string> updates;
         updates["orchestrator"] = "{\"version\":\"0.10.1\",\"abi_version\":2}";
         updates["ggml-translate"] =
-            "{\"version\":\"0.10.1\",\"abi_version\":1,\"engine\":\"llama.cpp\",\"engine_version\":\"b6099\"}";
+            "{\"version\":\"0.10.1\",\"abi_version\":1,\"engine\":\"llama.cpp\",\"engine_version\":\"b12359\"}";
         std::string out;
         TEST_CHECK(ehc::SerializeWithComponents(cur.file, updates, out), "merge: serialize ok");
         // The merged document must re-parse...

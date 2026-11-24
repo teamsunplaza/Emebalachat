@@ -939,7 +939,7 @@ const
   ENGINE_ORCHESTRATOR_ABI_VERSION = 2;
   ENGINE_WORKER_ABI_VERSION = 1;
   ENGINE_WORKER_ENGINE = 'llama.cpp';
-  ENGINE_WORKER_ENGINE_VERSION = 'b6099';
+  ENGINE_WORKER_ENGINE_VERSION = 'b12359';
 
   // 261123_0001 engine-choice: results of SharedEngineChoiceVerdict(), the ONE
   // verdict behind the shared-engine replace/keep radio page (page visibility)
@@ -4390,7 +4390,9 @@ end;
 //   top-level : schema_version, components
 //   entry     : version, abi_version, (worker adds engine, engine_version)
 // The worker entry also records the pinned backend identity per design §3.3:
-//   {"version":"0.10.1","abi_version":1,"engine":"llama.cpp","engine_version":"b6099"}
+//   {"version":"0.10.1","abi_version":1,"engine":"llama.cpp","engine_version":"b12359"}
+// (engine_version tracks ENGINE_WORKER_ENGINE_VERSION below, the same value the
+// worker announces from worker_protocol.hpp kWorkerEngineVersion.)
 //
 // The upgrade-gate record field ("gates": {} — plan §V2-10) is intentionally
 // omitted: the T2 C++ parser ignores unknown fields, but keeping the emitted

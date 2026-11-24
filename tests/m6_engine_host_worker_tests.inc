@@ -14,14 +14,14 @@ void TestWorkerProtocol() {
     {
         const char* golden =
             "{\"schema_version\":1,\"family\":\"ggml-translate\","
-            "\"engine\":\"llama.cpp\",\"engine_version\":\"b6099\","
+            "\"engine\":\"llama.cpp\",\"engine_version\":\"b12359\","
             "\"ops\":[\"translate\"],\"abi_version\":1,"
             "\"protocol_min\":1,\"protocol_max\":2}";
         wp::WorkerManifest m;
         TEST_CHECK(wp::ParseManifestJson(golden, m) == wp::ManifestStatus::Ok,
                    "manifest golden: Ok");
         TEST_CHECK(m.schema_version == 1 && m.family == "ggml-translate" &&
-                       m.engine == "llama.cpp" && m.engine_version == "b6099" &&
+                       m.engine == "llama.cpp" && m.engine_version == "b12359" &&
                        m.ops.size() == 1 && m.ops[0] == "translate" &&
                        m.abi_version == 1 && m.protocol_min == 1 &&
                        m.protocol_max == 2,
@@ -34,7 +34,7 @@ void TestWorkerProtocol() {
         TEST_CHECK(wp::ParseManifestJson(
                        "{\"schema_version\":1,\"future_field\":42,\"family\":"
                        "\"ggml-translate\",\"engine\":\"llama.cpp\","
-                       "\"engine_version\":\"b6099\",\"ops\":[\"translate\"],"
+                       "\"engine_version\":\"b12359\",\"ops\":[\"translate\"],"
                        "\"abi_version\":1,\"protocol_min\":1,\"protocol_max\":2}",
                        mx) == wp::ManifestStatus::Ok,
                    "manifest: unknown fields ignored");
@@ -45,7 +45,7 @@ void TestWorkerProtocol() {
         wp::WorkerManifest m;
         TEST_CHECK(wp::ParseManifestJson(
                        "{\"family\":\"ggml-translate\",\"engine\":\"llama.cpp\","
-                       "\"engine_version\":\"b6099\",\"ops\":[],\"abi_version\":1,"
+                       "\"engine_version\":\"b12359\",\"ops\":[],\"abi_version\":1,"
                        "\"protocol_min\":1,\"protocol_max\":2}", m) ==
                        wp::ManifestStatus::SchemaVersion,
                    "manifest: missing schema_version -> reject");
@@ -63,14 +63,14 @@ void TestWorkerProtocol() {
                    "manifest: missing fields -> Malformed");
         TEST_CHECK(wp::ParseManifestJson(
                        "{\"schema_version\":1,\"family\":\"ggml-translate\","
-                       "\"engine\":\"llama.cpp\",\"engine_version\":\"b6099\","
+                       "\"engine\":\"llama.cpp\",\"engine_version\":\"b12359\","
                        "\"ops\":\"translate\",\"abi_version\":1,"
                        "\"protocol_min\":1,\"protocol_max\":2}", m) ==
                        wp::ManifestStatus::Malformed,
                    "manifest: non-array ops -> Malformed");
         TEST_CHECK(wp::ParseManifestJson(
                        "{\"schema_version\":1,\"family\":\"ggml-translate\","
-                       "\"engine\":\"llama.cpp\",\"engine_version\":\"b6099\","
+                       "\"engine\":\"llama.cpp\",\"engine_version\":\"b12359\","
                        "\"ops\":[],\"abi_version\":1,\"protocol_min\":3,"
                        "\"protocol_max\":2}", m) == wp::ManifestStatus::Malformed,
                    "manifest: inverted protocol range -> Malformed");
@@ -80,7 +80,7 @@ void TestWorkerProtocol() {
     {
         wp::WorkerManifest emb = wp::EmbeddedWorkerManifest();
         TEST_CHECK(emb.family == "ggml-translate" && emb.engine == "llama.cpp" &&
-                       emb.engine_version == "b6099" && emb.abi_version == 1 &&
+                       emb.engine_version == "b12359" && emb.abi_version == 1 &&
                        emb.protocol_min == 1 && emb.protocol_max == 2 &&
                        emb.ops.size() == 1 && emb.ops[0] == "translate",
                    "manifest: embedded constants match design §3.4");

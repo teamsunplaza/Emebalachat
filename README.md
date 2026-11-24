@@ -53,7 +53,7 @@ Traditional desktop translation utilities suffer from clunky Electron wrappers, 
 
 - **Instantaneous Native Performance** — Built in pure C++20 with MSVC static runtime (`/MT`), linking directly against Win32, Direct2D, DirectWrite, and WinHTTP.
 - **Dual-Engine Flexibility**:
-  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `b6099` loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent. Local translations are served by a shared background engine system installed per-user under `%LOCALAPPDATA%\Emebala\Common\engine\`: an orchestrator process, `Emebala.Engine.exe`, keeps a single GPU-resident copy of the model that every installed Emebala app reuses and delegates each translation job to a dedicated translation worker process.
+  - **Local AI Engine**: Powered by [llama.cpp](https://github.com/ggerganov/llama.cpp) tag `v1.0.0` (build `b12359`) loading Tencent's **Hy-MT2-1.8B** (Q8_0 quantized model, ~1.9 GB). GPU offload (`n_gpu_layers = 99`, CUDA sm_75+), with automatic CPU-only fallback when CUDA hardware or drivers are absent. Local translations are served by a shared background engine system installed per-user under `%LOCALAPPDATA%\Emebala\Common\engine\`: an orchestrator process, `Emebala.Engine.exe`, keeps a single GPU-resident copy of the model that every installed Emebala app reuses and delegates each translation job to a dedicated translation worker process.
   - **Cloud Engine**: Built-in, high-speed asynchronous WinHTTP Google Translate client that requires **zero API keys and zero external runtime DLLs**. Cloud use is consent-gated and structurally disclosed before first serve (see [Privacy & Data Handling](#privacy--data-handling-technical)).
 - **Invisible In-Place Translation** — Type naturally in your native language, press <kbd>Enter</kbd>, and watch the text instantly transform—working in any chat, form, or document field. By default the translated text only **replaces** what you typed; toggling Auto-Send (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd>) makes the app also **send** it for you.
 - **Hardware-Accelerated Minimalist UI** — Non-intrusive floating pill badge rendered via hardware Direct2D displaying real-time translation state and language pairs.
@@ -88,7 +88,7 @@ If it enhances your daily workflow: [**Sponsor on Gumroad**](https://teamsunplaz
 ### 2. Dual Translation Engines
 
 - **Local AI Engine**:
-  - Direct C++ integration with `llama.cpp` (b6099).
+  - Direct C++ integration with `llama.cpp` (tag `v1.0.0`, build `b12359`).
   - Employs **Tencent Hy-MT2-1.8B** (Q8_0 quantization, ~1.9 GB) across the 38 target languages listed below (its official set; the cloud engines offer more).
   - GPU offload via CUDA (`n_gpu_layers = 99`, Compute Capability 7.5+ / Turing and newer), automatically falling back to a CPU-only model load when CUDA hardware or drivers are absent.
   - Model file integrity is verified with a SHA-256 hash (cached in a `<model>.sha256ok` marker keyed on size, mtime and a content sample of three fixed 1 MiB windows, so a same-size model swap triggers a full re-hash) before the model is handed to llama.cpp.
@@ -670,7 +670,7 @@ flowchart TB
 
     subgraph Translation_Engines ["Dual Translation Architecture"]
         ROUTER{"Engine Router\n(auto / local / google)"}
-        LLM["Local AI: llama.cpp (b6099)\nHy-MT2-1.8B Q8_0\nCUDA Layer Offload / CPU"]
+        LLM["Local AI: llama.cpp (b12359)\nHy-MT2-1.8B Q8_0\nCUDA Layer Offload / CPU"]
         GTRANS["Cloud Engine: WinHTTP Client\nGoogle Translate API\nZero External DLLs"]
     end
 
