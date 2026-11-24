@@ -17938,6 +17938,17 @@ void TestR107PeerIdentityGate() {
 // source pins.
 #include "req059_user_model_prompt_tests.inc"
 
+// 261124_0002 (session plamo-jinja): user GGUF models whose embedded chat
+// template the LEGACY catalog probe cannot render (plamo3 PFML3) now run
+// rung 1 through llama.cpp's OWN vendored jinja engine
+// (src/engine_core/jinja_chat_render.*, Emebala_llama_jinja target). Staged
+// as an .inc next to this runner; registered right after
+// TestReq059UserModelPrompt() (same translation-core cluster). Renderer
+// behavioral pins (EMEBALA_HAVE_LLAMA_JINJA-guarded) + normalizer pins +
+// ResolveRepoFile source pins.
+#include "engine_core/jinja_chat_render.hpp"
+#include "req059_jinja_chat_template_tests.inc"
+
 // 260930_0003 (가+다, CEO decision): the over-budget translation path -
 // n_ctx 8192 / prompt budget 6128, chunking + stitching via the shared 4-tier
 // splitter, single-huge-paragraph head+tail fallback (PromptNeedsChunking in
@@ -20562,28 +20573,36 @@ void TestS261029UaOutputGate() {
         // (5) a chat-template model never degrades to the untemplated rung 2, and
         //     an aborted (PARTIAL) source echo is never shipped either - the
         //     adjudicated 261108_0002 follow-up. FULL echo keeps the RC-5 accept.
-        TEST_CHECK(src.find("if (rung1_echo && !rung1_bare_special && has_nontrivial_chat_template)") !=
-                           std::string::npos &&
-                       src.find("(rung1_echo || rung1_aborted_echo)") == std::string::npos,
+        // 261124_0002 COD-07 (fix round 1): the three gates key the shared
+        // rung1_chat_templated predicate — a rung 1 actually rendered by the
+        // model's OWN embedded jinja template is a chat-templated request and
+        // gets the identical non-degradation policy.
+        // R2-COD-05 (fix round 2): each gate is pinned by its EXACT conjunction
+        // string (predicate + full condition), not by a bare shared substring:
+        // the RC-5 full-echo conjunction and the 052/054 `!rung1_bare_special`
+        // guards are now individually unremovable.
+        const size_t templated_pred = src.find(
+            "const bool rung1_chat_templated = has_nontrivial_chat_template || served_by_jinja;");
+        const size_t rc5_gate = src.find(
+            "if (rung1_echo && !rung1_bare_special && rung1_chat_templated) {");
+        const size_t aborted_gate = src.find(
+            "if (rung1_aborted_echo && rung1_chat_templated && !rung1_bare_special) {");
+        const size_t rejected_gate = src.find(
+            "if (rung1_chat_templated && !rung1_empty && !rung1_bare_special) {");
+        TEST_CHECK(templated_pred != std::string::npos && rc5_gate != std::string::npos &&
+                       aborted_gate != std::string::npos && rejected_gate != std::string::npos,
+                   "WS1: the three non-degradation gates pin their FULL conjunctions (R2-COD-05)");
+        TEST_CHECK(src.find("(rung1_echo || rung1_aborted_echo)") == std::string::npos,
                    "WS1: the RC-5 accept covers the FULL echo only (the aborted-echo disjunct is "
                    "gone)");
-        {
-            const size_t aborted_pos = src.find(
-                "if (rung1_aborted_echo && has_nontrivial_chat_template && !rung1_bare_special)");
-            const size_t generic_pos = src.find(
-                "if (has_nontrivial_chat_template && !rung1_empty && !rung1_bare_special)");
-            TEST_CHECK(aborted_pos != std::string::npos && generic_pos != std::string::npos &&
-                           aborted_pos < generic_pos,
-                       "WS1: the aborted-echo arm runs BEFORE the generic rejected-output arm");
-            TEST_CHECK(src.find("ENGINE/Translate/054") != std::string::npos &&
-                           src.find("ENGINE/Translate/048: rung-1 echo on a chat-template model "
-                                    "accepted as-is") != std::string::npos,
-                       "WS1: the aborted echo answers engine_failed with its own shape-only "
-                       "diagnostic (054) while the full echo keeps 048");
-        }
-        TEST_CHECK(src.find("has_nontrivial_chat_template && !rung1_empty && !rung1_bare_special") !=
-                           std::string::npos &&
-                       src.find("ENGINE/Translate/052") != std::string::npos,
+        TEST_CHECK(aborted_gate < rejected_gate,
+                   "WS1: the aborted-echo arm runs BEFORE the generic rejected-output arm");
+        TEST_CHECK(src.find("ENGINE/Translate/054") != std::string::npos &&
+                       src.find("ENGINE/Translate/048: rung-1 echo on a chat-template model "
+                                "accepted as-is") != std::string::npos,
+                   "WS1: the aborted echo answers engine_failed with its own shape-only "
+                   "diagnostic (054) while the full echo keeps 048");
+        TEST_CHECK(src.find("ENGINE/Translate/052") != std::string::npos,
                    "WS1: a rejected non-empty rung-1 output on a chat-template model answers "
                    "engine_failed instead of running the completion form");
         // (6) the echo probe compares trimmed text and spares a mixed-script
@@ -25522,6 +25541,10 @@ int main() {
     // completion-form retry + colon cleanup). Registered right after the
     // REQ-055 suite, per the end-of-file pattern.
     TestReq059UserModelPrompt();
+    // 261124_0002 (session plamo-jinja): the vendored-jinja chat-template
+    // path for catalog-rejected embedded templates. Registered right after
+    // the REQ-059 ladder suite it extends (same translation-core cluster).
+    TestReq059JinjaChatTemplate();
     // 260930_0003 (가+다): the over-budget translation path pins (budget
     // boundary 6128, paragraph chunking + stitching, head+tail fallback
     // wiring). Registered right after the REQ-059 suite (same
