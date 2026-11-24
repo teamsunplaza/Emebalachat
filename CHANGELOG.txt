@@ -1,3 +1,30 @@
+v0.10.10 - 2026-11-24 (rebuild 7)
+====================
+
+Any translation model, its own prompt format. Same version, rebuilt: a
+user-added GGUF model whose embedded chat template is not one of the
+engine's built-in formats (for example PLaMo 3 Translate's PFML3 template)
+previously fell back to a generic prompt the model was never trained on,
+which surfaced as an "engine failed" repetition abort. The engine now
+renders such a model through its OWN embedded chat template (the same
+jinja engine llama.cpp ships for its server mode), so translation-specialized
+models downloaded from Hugging Face work as released. Models whose template
+the engine already knew, including the bundled Hy-MT2 and Gemma-style
+models, take the exact same code path as before.
+
+Because a downloaded model file is user-controlled input, the new render
+path is contained: templates larger than 64 KiB are declined, a render
+that stalls is cut off by a watchdog that fails the request and recycles
+the worker through the existing crash-isolation path, and a model whose
+template fails to render always degrades back to the previous behavior.
+Nothing about the wire protocol, the bundled model, or translations by the
+built-in engine changes.
+
+The engine revision stamp moves .r19 -> .r20, so a reinstall or an update
+to this build offers to replace the older bundled engine binaries.
+
+Unit tests: 15,515 checks, 0 failures (REQ-055 revision pin tracks .r20).
+
 v0.10.10 - 2026-11-24 (rebuild 6)
 ====================
 
