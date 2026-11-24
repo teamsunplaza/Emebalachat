@@ -591,22 +591,61 @@ void TestP3C4StrictLocalFailureStatus() {
                    StrictLocalFailureStatus("busy"),
                "P3-C4 E2: the two strict-local statuses are distinguishable");
 
+    // 261124_0001: the OPTIONAL defaulted error_code refinement — a
+    // model_missing answer carrying "model_load_failed" names a model file
+    // that EXISTS but the engine refused to load (its own status and wording);
+    // every other detail, and the one-argument form (an old host's frame),
+    // keeps the pre-261124 behavior exactly.
+    TEST_CHECK(StrictLocalFailureStatus("model_missing", "model_load_failed") ==
+                   TranslationStatus::LocalModelLoadFailed,
+               "P3-C4 E2 261124: model_missing + model_load_failed reports "
+               "LocalModelLoadFailed (present but unloadable)");
+    TEST_CHECK(StrictLocalFailureStatus("model_missing", "") ==
+                   TranslationStatus::LocalModelMissing,
+               "P3-C4 E2 261124: an empty detail keeps LocalModelMissing "
+               "(the old-host frame / the one-argument form)");
+    TEST_CHECK(StrictLocalFailureStatus("model_missing", "engine_failed") ==
+                   TranslationStatus::LocalModelMissing,
+               "P3-C4 E2 261124: an unrelated detail never promotes");
+    TEST_CHECK(StrictLocalFailureStatus("busy", "model_load_failed") ==
+                   TranslationStatus::CloudConsentBlocked,
+               "P3-C4 E2 261124: the detail refines a model_missing answer only");
+
     // ---- source: both local-seam convergence sites use the shared rule ----
     std::string eng, eng_hpp;
     P3C4ReadSrc(L"src\\engine.cpp", eng);
     P3C4ReadSrc(L"src\\engine.hpp", eng_hpp);
-    TEST_CHECK(eng_hpp.find("constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err) {") !=
+    // 261124_0001: the 2-argument defaulted form (the OPTIONAL error_code
+    // refinement); the one-argument call sites keep compiling through the
+    // defaulted tail argument.
+    TEST_CHECK(eng_hpp.find("constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err,\n") !=
+                   std::string::npos ||
+                   eng_hpp.find("constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err,") !=
                    std::string::npos,
-               "P3-C4 E2: the mapping is the header-inline pure rule");
+               "P3-C4 E2 261124: the mapping is the header-inline pure rule with the "
+               "defaulted 2nd argument");
+    TEST_CHECK(eng_hpp.find("std::string_view host_error_detail = {}") !=
+                   std::string::npos,
+               "P3-C4 E2 261124: the 2nd argument defaults to {} (old call sites and "
+               "old-host frames keep the pre-261124 behavior)");
     if (eng.empty()) {
         std::cout << "[SKIP] src/engine.cpp not resolvable; P3-C4 E2 wiring pins "
                      "skipped." << std::endl;
     } else {
-        TEST_CHECK(P3C4Count(eng, "StrictLocalFailureStatus(host_err)") == 1,
+        // 261124_0001: the prefix count covers both the 1-arg spelling and the
+        // refined (host_err, host_error_detail) call.
+        TEST_CHECK(P3C4Count(eng, "StrictLocalFailureStatus(host_err") == 1,
                    "P3-C4 E2: the single-request convergence maps through the rule");
-        TEST_CHECK(P3C4Count(eng, "StrictLocalFailureStatus(frame_run.last_error)") == 1,
+        // 261124_0001 fix-round-1 R1-F01: the coordinator convergence is the
+        // REFINED form too (the frame's error_code rides along), so the
+        // giant-text path cannot rank an unloadable model as a missing file.
+        TEST_CHECK(P3C4Count(eng, "StrictLocalFailureStatus(frame_run.last_error, "
+                                  "frame_run.last_error_detail)") == 1,
                    "P3-C4 E2: the multi-frame coordinator convergence maps through the "
-                   "same rule");
+                   "same rule WITH the frame's error_code refinement");
+        TEST_CHECK(P3C4Count(eng, "StrictLocalFailureStatus(frame_run.last_error)") == 0,
+                   "P3-C4 E2 261124 R1-F01: the one-argument frame call is gone (it "
+                   "codified the excluded refinement)");
         TEST_CHECK(eng.find("set_status(TranslationStatus::CloudConsentBlocked);") !=
                        std::string::npos,
                    "P3-C4 E2: the pure-cloud strict status site is unchanged");

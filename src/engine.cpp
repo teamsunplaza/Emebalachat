@@ -838,6 +838,13 @@ constexpr const char* kCoordinatorDegenerateCode = "degenerate_output";
 struct LocalFrameOutcome {
     CoordinatorResult run;
     std::string last_error;         // "" when every frame produced text
+    // 261124_0001 fix-round-1 R1-F01: the failing frame's OPTIONAL error_code
+    // refinement ("" when the host omitted it — a pre-261124 engine, or the
+    // degenerate-output arm, which carries no host cause). Without it the
+    // giant-text coordinator path ranked a present-but-unloadable model as
+    // "file absent" (the one-argument mapping), so the version-mismatch
+    // wording the single-request path shows was never delivered here.
+    std::string last_error_detail;
     bool host_failed = false;       // at least one frame failed (repair signal)
     // V10F (P2-B Fix 3): a frame unwound because a cancel/abort seam was set.
     // The coordinator cannot see that (a sink returning nullopt is just a
@@ -905,10 +912,15 @@ LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
             std::string frame_out;
             std::string frame_err;
             std::string frame_served;
+            // 261124_0001 fix-round-1 R1-F01: the frame carries the SAME
+            // OPTIONAL cause the two single-request attempts capture, so the
+            // coordinator convergence can distinguish "file absent" from
+            // "present but unloadable" exactly like the single-request leg.
+            std::string frame_err_detail;
             const bool frame_ok = engine_host::TryTranslate(
                 engine_host::kChatEngineHostIdentity, host_cfg, std::string(src_code), tgt_name,
                 ToUtf8(source_chunk), request_model_id, frame_out, frame_err, frame_served,
-                frame_id_slot, context_fragment);
+                frame_id_slot, context_fragment, &frame_err_detail);
             if (frame_id_slot) {
                 // The attempt has fully returned: retire its published id so a
                 // cancel can never fire a stale frame during the backoff.
@@ -925,6 +937,9 @@ LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
                 if (CoordinatorChunkLooksDegenerate(source_chunk, part)) {
                     out.host_failed = true;
                     out.last_error = kCoordinatorDegenerateCode;
+                    // The degenerate arm synthesizes its own code: a previous
+                    // attempt's host cause must not refine it.
+                    out.last_error_detail.clear();
                     return std::nullopt;
                 }
                 // REQ-057: same served-vs-expected diagnosis as the two
@@ -936,6 +951,9 @@ LocalFrameOutcome TranslateLocalFrames(const EngineHostConfig& host_cfg,
             }
             out.host_failed = true;
             out.last_error = frame_err;
+            // 261124_0001 fix-round-1 R1-F01: the refinement rides the same
+            // per-attempt answer as the code (a retry overwrites both).
+            out.last_error_detail = frame_err_detail;
             const uint64_t frame_attempt_ms =
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                           std::chrono::steady_clock::now() - frame_attempt_start)
@@ -1365,6 +1383,11 @@ std::wstring TranslationManager::Translate(
         }
         std::string host_out;
         std::string host_err;
+        // 261124_0001: the result frame's OPTIONAL error_code refinement
+        // ("model_load_failed" = the file exists but the load was refused;
+        // "" from a host that predates the member — the honest file-missing
+        // reading then keeps LocalModelMissing).
+        std::string host_error_detail;
         std::string served_model; // REQ-057: the actually-served model id echo
         // REQ-060: pin the request to the expected served model — the live
         // C1-gated user pin on the user_gguf route, else the bundled
@@ -1566,8 +1589,14 @@ std::wstring TranslationManager::Translate(
             // coordinator whose frames all failed on "model_missing" reports the
             // absent model (the LocalModelMissing repair path), not the consent
             // gate. Same shared pure rule as the single-request leg below.
+            // 261124_0001 fix-round-1 R1-F01: the failing frame's error_code
+            // refinement rides along, so a present-but-unloadable model on the
+            // giant-text path converges to LocalModelLoadFailed (the "engine
+            // version may not support this model" surface) exactly like the
+            // single-request leg — the one-argument form here read the same
+            // answer as a missing file.
             const TranslationStatus frame_status =
-                StrictLocalFailureStatus(frame_run.last_error);
+                StrictLocalFailureStatus(frame_run.last_error, frame_run.last_error_detail);
             DIAG_F("ENGINE/Translate/022: local frame coordinator failed and cloud fallback consent disabled; surfacing status=%d to caller (repair signal armed)\n",
                    static_cast<int>(frame_status));
             set_status(frame_status);
@@ -1611,7 +1640,8 @@ std::wstring TranslationManager::Translate(
                                       std::string(src_code_or_name), tgt_name,
                                       ToUtf8(text), request_model_id,
                                       host_out, host_err, served_model,
-                                      cancel_id_slot, context_fragment)) {
+                                      cancel_id_slot, context_fragment,
+                                      &host_error_detail)) {
             // 261121_0002: the user token outranks a completed pipe response
             // — a cancel posted while the request was in flight DISCARDS
             // host_out and reports Canceled BEFORE NoteHostSuccess / the
@@ -1729,7 +1759,8 @@ std::wstring TranslationManager::Translate(
                                           std::string(src_code_or_name), tgt_name,
                                           ToUtf8(text), request_model_id,
                                           host_out, host_err, served_model,
-                                          cancel_id_slot, context_fragment)) {
+                                          cancel_id_slot, context_fragment,
+                                          &host_error_detail)) {
                 // 261121_0002: same discard rule as the first attempt — a
                 // user cancel posted while the retry was in flight discards
                 // the result BEFORE NoteHostSuccess / the REQ-057 diagnosis.
@@ -1802,7 +1833,14 @@ std::wstring TranslationManager::Translate(
         // status that blamed the H2 privacy gate for a missing model. Every other
         // failing code (permanent or retry-exhausted transient) keeps
         // CloudConsentBlocked exactly as before (StrictLocalFailureStatus).
-        const TranslationStatus local_status = StrictLocalFailureStatus(host_err);
+        // 261124_0001: host_error_detail refines a model_missing answer — the
+        // worker's "model_load_failed" cause (file present, load refused:
+        // unknown arch / unsupported quant / corrupt file) promotes to
+        // LocalModelLoadFailed; every other code, and a host that omitted the
+        // member, keeps the pre-261124 mapping exactly (the defaulted 2nd
+        // argument).
+        const TranslationStatus local_status =
+            StrictLocalFailureStatus(host_err, host_error_detail);
         DIAG_F("ENGINE/Translate/022: local serving failed and cloud fallback consent disabled; surfacing status=%d to caller (repair signal armed)\n",
                static_cast<int>(local_status));
         set_status(local_status);

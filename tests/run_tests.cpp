@@ -18310,7 +18310,11 @@ struct Req044LstrMirror {
     // (settings_local_context) takes the struct slot right AFTER
     // user_model_load_failed_hint and right BEFORE language_search_auto_chip
     // (248 -> 249), same Get() switch mapping rule.
-    const wchar_t* f[249];
+    // 261124_0001: the 2 model-load-failed strings (model_load_failed_title /
+    // model_load_failed_body) take the struct slots right AFTER
+    // settings_local_context and right BEFORE language_search_auto_chip
+    // (249 -> 251), same Get() switch mapping rule.
+    const wchar_t* f[251];
 };
 
 } // namespace
@@ -18323,9 +18327,9 @@ void TestReq044I18nFieldOrder() {
     static_assert(sizeof(Req044LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-044: Req044LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kExpectedFieldCount =
-        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 249
-    static_assert(kExpectedFieldCount == 249,
-                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: LocalizedStrings field count changed - "
+        sizeof(Req044LstrMirror) / sizeof(const wchar_t*);   // == 251
+    static_assert(kExpectedFieldCount == 251,
+                   "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261116_0003-P5/P6a/P7/P9b-1/P9b3U5/P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx/261124_0001: LocalizedStrings field count changed - "
                    "update the i18n.cpp X-macro list, the 37 language tables, AND this mirror");
     // Read through a volatile so the runtime TEST_CHECK is a genuine runtime
     // comparison (avoids C4127 "conditional expression is constant" under /W4).
@@ -18333,11 +18337,11 @@ void TestReq044I18nFieldOrder() {
     // runtime record that the count held.
     volatile std::size_t observed_field_count = kExpectedFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 249,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: LocalizedStrings field count is 249 "
+    TEST_CHECK(observed_field_count == 251,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx/261124_0001: LocalizedStrings field count is 251 "
                 "(the real sizeof-vs-EnumCount assert lives in i18n.cpp; this is the mirror record)");
-    TEST_CHECK(observed_enum_count == 249,
-                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: StringId::EnumCount is 249 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint id + the 1 261123_0001 Unit-C local-context checkbox id)");
+    TEST_CHECK(observed_enum_count == 251,
+                "REQ-044/045/047/048/050/051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx/261124_0001: StringId::EnumCount is 251 (struct fields == switch cases; 156 X-macro + 4 theme + 5 WS3 back-translation ids + 3 user-model ids + 2 language-picker ids + 1 P6a flat-menu search-row id + 1 P7 picker engine-chip count id + 23 P9b-1 user-language surface ids + 2 P9c-1b OpenAI declaration checklist ids + 1 P9b-3 U5 picker AUTO chip id + the 4 261121_0001 U-C ids - the 1 dead 261121_0002 SEC-M1 translate_truncated_notice id + the 5 261121_0002 progress/cancel ids + the 6 261122_0001 B-U2 OpenAI profile ids + the 8 261122_0002 Phase-2 translation-card editor ids + the 7 261122_0002 Phase-3 settings-window redesign ids + the 19 261122_0002 Phase-3 micro-pass strings + the 1 261123_0001 user-model load-failure hint id + the 1 261123_0001 Unit-C local-context checkbox id + the 2 261124_0001 model-load-failed ids)");
 
     // ---- (b) Korean designated-initializer smoke check ----
     // The Korean table was converted to C++20 designated initializers; a wrong
@@ -20419,7 +20423,13 @@ void TestS261029UaOutputGate() {
         // (pass 0 = configured, the single bounded retry = 1.10).
         TEST_CHECK(src.find("switch (DecideSamplerShape(temperature, effective_rep_pen))") != std::string::npos,
                    "R1-2/U4: the sampler branch is driven by DecideSamplerShape on the effective rep_pen");
-        TEST_CHECK(src.find("llama_sampler_chain_add(smpl.smpl, llama_sampler_init_penalties(kPenaltyLastN, effective_rep_pen, 0.0f, 0.0f));\n"
+        // 261124_0001 (llama.cpp v1.0.0): llama_sampler_init_penalties gained a
+        // leading n_vocab arg (upstream 935cad649); the pin tracks the exact
+        // 5-arg call text now in the engine source.
+        TEST_CHECK(src.find("llama_sampler_chain_add(\n"
+                            "                smpl.smpl,\n"
+                            "                llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), kPenaltyLastN,\n"
+                            "                                             effective_rep_pen, 0.0f, 0.0f));\n"
                             "            llama_sampler_chain_add(smpl.smpl, llama_sampler_init_greedy());") != std::string::npos,
                    "R1-2/U4: the penalized greedy chain adds penalties FIRST and greedy LAST (effective rep_pen)");
         TEST_CHECK(src.find("smpl = llama_sampler_init_greedy();") != std::string::npos,
@@ -22488,6 +22498,9 @@ void TestP7LanguageSearchCountStrings() {
     // 261123_0001 Unit-C appended the 1 local-context checkbox id
     // (SettingsLocalContext) right after UserModelLoadFailedHint, so the pin
     // reads sentinel-37 now and the Unit-C id closes the tail.
+    // 261124_0001 appended the 2 model-load-failed ids (ModelLoadFailedTitle /
+    // ModelLoadFailedBody) right after SettingsLocalContext, so the pin reads
+    // sentinel-39 now and the 261124 ids close the tail.
     volatile int menu_search = static_cast<int>(StringId::MenuSearchLangs);
     volatile int count_id = static_cast<int>(StringId::LanguageSearchCount);
     volatile int cue = static_cast<int>(StringId::LanguageSearchCue);
@@ -22506,16 +22519,21 @@ void TestP7LanguageSearchCountStrings() {
     // 261123_0001 witness: the user-model load-failure hint id closes the tail
     // immediately before EnumCount.
     volatile int u_hint = static_cast<int>(StringId::UserModelLoadFailedHint);
-    // 261123_0001 Unit-C witness: the local-context checkbox id closes the
-    // tail immediately before EnumCount.
+    // 261123_0001 Unit-C witness: the local-context checkbox id closes the tail
+    // immediately before EnumCount.
     volatile int ctx_id = static_cast<int>(StringId::SettingsLocalContext);
+    // 261124_0001 witness: the model-load-failed title + body ids close the
+    // tail immediately before EnumCount.
+    volatile int ml_title = static_cast<int>(StringId::ModelLoadFailedTitle);
+    volatile int ml_body = static_cast<int>(StringId::ModelLoadFailedBody);
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(count_id == menu_search + 1 && count_id + 1 == cue &&
                    count_id + 2 == no_match && no_match + 1 == phase2_first &&
                    phase2_last + 1 == phase3_first && phase3_last + 1 == mp_first &&
                    mp_last + 1 == u_hint && u_hint + 1 == ctx_id &&
-                   ctx_id + 1 == sentinel &&
-                   sentinel - 37 == no_match,
+                   ctx_id + 1 == ml_title && ml_title + 1 == ml_body &&
+                   ml_body + 1 == sentinel &&
+                   sentinel - 39 == no_match,
                "P7: the count id sits between MenuSearchLangs and the P5 pair, the "
                "261122_0002 Phase-2 block closes into the Phase-3 block "
                "(KeepTranslatedPart + 1 == SettingsTabGeneral), the Phase-3 block "
@@ -22523,10 +22541,11 @@ void TestP7LanguageSearchCountStrings() {
                "MenuSettings), the micro-pass block closes into the 261123 id "
                "(CheatSheetEscCancel + 1 == UserModelLoadFailedHint), the 261123 id "
                "closes into the Unit-C id (UserModelLoadFailedHint + 1 == "
-               "SettingsLocalContext), the Unit-C id closes the enum tail "
-               "(SettingsLocalContext + 1 == EnumCount), "
+               "SettingsLocalContext), the Unit-C id closes into the 261124 ids "
+               "(SettingsLocalContext + 1 == ModelLoadFailedTitle), the 261124 ids "
+               "close the enum tail (ModelLoadFailedBody + 1 == EnumCount), "
                "and the P5 tail-order pin "
-               "(EnumCount - 37 == LanguageSearchNoMatch) holds");
+               "(EnumCount - 39 == LanguageSearchNoMatch) holds");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P7 LanguageSearchCount per-locale pins completed."
                   << std::endl;
@@ -22784,6 +22803,8 @@ void TestP9b1UserLanguageStrings() {
     // block, so the P5 sentinel pin reads EnumCount - 37 now
     // (the Phase-3 micro-pass block of 19 ids + the 261123 hint id + the
     // 261123 Unit-C local-context checkbox id close the tail).
+    // 261124_0001 appended the 2 model-load-failed ids after the Unit-C id,
+    // so the pin reads EnumCount - 39 now.
     volatile int prev_tail = static_cast<int>(StringId::GgufManagerActivated);
     volatile int first_new = static_cast<int>(StringId::UserLangsGroup);
     volatile int last_new = static_cast<int>(StringId::OpenAiDeclaredHint);
@@ -22794,14 +22815,14 @@ void TestP9b1UserLanguageStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(first_new == prev_tail + 1 && last_new - first_new == 25 &&
                    last_new + 1 == menu_search && count_id == menu_search + 1 &&
-                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 37 == no_match,
+                   cue == count_id + 1 && no_match == cue + 1 && sentinel - 39 == no_match,
                "P9b-1/P9b-3 U5/P9c-1b: the 26 ids are contiguous between the pre-P6a enum tail "
                "(GgufManagerActivated) and MenuSearchLangs, keeping the P6a/P7 adjacency "
-               "and the P5 tail pin (EnumCount - 37 == LanguageSearchNoMatch, the 8 "
+               "and the P5 tail pin (EnumCount - 39 == LanguageSearchNoMatch, the 8 "
                "261122_0002 Phase-2 ids + the 7 Phase-3 ids + the 19 Phase-3 micro-pass "
                "ids + the 1 261123_0001 user-model load-failure hint id + the 1 "
-               "261123_0001 Unit-C local-context checkbox id now close the "
-               "enum tail)");
+               "261123_0001 Unit-C local-context checkbox id + the 2 261124_0001 "
+               "model-load-failed ids now close the enum tail)");
     if (g_failed_count == failures_before) {
         std::cout << "[PASS] 261116_0003 P9b-1 user-language string pins completed." << std::endl;
     } else {
@@ -22919,10 +22940,10 @@ void TestP9b3AutoChipStrings() {
     volatile int sentinel = static_cast<int>(StringId::EnumCount);
     TEST_CHECK(auto_chip == script_none + 1 && auto_chip + 1 == decl_title &&
                    decl_title + 1 == decl_hint && decl_hint + 1 == menu_search &&
-                   sentinel - 37 == no_match,
+                   sentinel - 39 == no_match,
                "P9b-3 U5/P9c-1b: the AUTO chip still follows UserLangScriptNone and the "
                "P9c-1b ids close the pre-MenuSearchLangs block; the P5 tail "
-               "pin (EnumCount - 37 == LanguageSearchNoMatch) still holds");
+               "pin (EnumCount - 39 == LanguageSearchNoMatch) still holds");
 
     // ---- palette wiring (source scan; the window is Win32-only) -------------
     std::string palette_src;
@@ -24817,6 +24838,223 @@ void TestEngineHelloIdentityParity() {
     }
 }
 
+// ---- 261124_0001: the model_load_failed / LocalModelLoadFailed feature pins --
+//
+// design-model-unsupported-error.md §4/§5: the worker splits the collapsed
+// !model_ok || !loaded arm, the host keeps the FROZEN model_missing status and
+// splices the OPTIONAL error_code member (the REQ-057/C16 discipline), the
+// client parser extracts it into the new TryTranslate out-param, and the app
+// maps it to TranslationStatus::LocalModelLoadFailed with its own wording.
+void Test261124ModelLoadFailed() {
+    std::cout << "[RUN] Testing 261124_0001 model_load_failed / LocalModelLoadFailed..."
+              << std::endl;
+    namespace eh = emebalachat::enginehost; // the run_tests.cpp:16249 idiom
+    const int failures_before = g_failed_count;
+    auto count_of = [](const std::string& hay, const std::string& needle) {
+        int n = 0;
+        for (std::size_t p = hay.find(needle); p != std::string::npos;
+             p = hay.find(needle, p + needle.size())) {
+            ++n;
+        }
+        return n;
+    };
+
+    // ---- (a) wire contract + backward-compat, runtime (the header parser) --
+    // E4 (design §2.2): the header's ParseResult gained PARSE-ONLY awareness
+    // of the OPTIONAL member (BuildResult stays byte-frozen; the host
+    // splices). A frame carrying the member parses with the STATUS UNCHANGED
+    // and the cause extracted; a legacy frame parses with an empty cause —
+    // old clients ignore unknown fields (§V2-12-2), so a pre-261124 app
+    // behaves exactly as today (design §2.4 row 1, re-verified here against
+    // the real parser, the strictest one in the product).
+    eh::ResultMsg refined;
+    TEST_CHECK(eh::ParseResult(
+                   "{\"op\":\"result\",\"id\":7,\"status\":\"model_missing\","
+                   "\"error_code\":\"model_load_failed\"}",
+                   refined) &&
+                   refined.id == 7 && refined.status == eh::HostStatus::ModelMissing &&
+                   refined.error_code == "model_load_failed",
+               "261124: the reference parser extracts the spliced error_code member and "
+               "the result STATUS stays model_missing");
+    eh::ResultMsg legacy;
+    TEST_CHECK(eh::ParseResult("{\"op\":\"result\",\"id\":7,\"status\":\"model_missing\"}",
+                               legacy) &&
+                   legacy.id == 7 && legacy.status == eh::HostStatus::ModelMissing &&
+                   legacy.error_code.empty(),
+               "261124: a legacy frame without the member parses unchanged (the old-app "
+               "interop: the status is the same model_missing as before)");
+    eh::ResultMsg mistyped;
+    TEST_CHECK(!eh::ParseResult(
+                   "{\"op\":\"result\",\"id\":7,\"status\":\"model_missing\","
+                   "\"error_code\":42}",
+                   mistyped),
+               "261124: a mistyped optional member is malformed (the same discipline as "
+               "the echo members)");
+
+    // ---- (b) the strict-local mapping (the header-inline pure rule) --------
+    TEST_CHECK(StrictLocalFailureStatus("model_missing", "model_load_failed") ==
+                   TranslationStatus::LocalModelLoadFailed,
+               "261124: model_missing + model_load_failed promotes to LocalModelLoadFailed");
+    TEST_CHECK(StrictLocalFailureStatus("model_missing") == TranslationStatus::LocalModelMissing,
+               "261124: the one-argument form keeps the pre-261124 mapping");
+
+    // ---- (c) the i18n wiring: non-empty everywhere, authored KO, EN draft --
+    const UiLocale before = I18n::GetCurrentLocale();
+    for (const auto& e : GetSupportedUiLocales()) {
+        I18n::SetLocale(e.locale);
+        TEST_CHECK(!I18n::Get(StringId::ModelLoadFailedTitle).empty() &&
+                       !I18n::Get(StringId::ModelLoadFailedBody).empty(),
+                   "261124: ModelLoadFailedTitle/Body non-empty in every selectable locale");
+    }
+    I18n::SetLocale(UiLocale::Korean);
+    TEST_CHECK(I18n::Get(StringId::ModelLoadFailedTitle) == L"모델을 불러올 수 없습니다",
+               "261124: the Korean table carries the authored KO title");
+    TEST_CHECK(I18n::Get(StringId::ModelLoadFailedBody) ==
+                   L"설치된 모델 파일을 현재 엔진 버전에서 읽을 수 없습니다. "
+                   L"Emebala Chat을 최신 버전으로 업데이트한 뒤 다시 시도하거나, 다른 모델을 "
+                   L"선택하세요.",
+               "261124: the Korean table carries the authored KO body");
+    I18n::SetLocale(UiLocale::English);
+    TEST_CHECK(I18n::Get(StringId::ModelLoadFailedTitle) == L"This model could not be loaded",
+               "261124: the English positional table carries the EN draft title");
+    I18n::SetLocale(before); // restore the shared locale state for later suites
+
+    // ---- (d) engine source pins -------------------------------------------
+    std::string worker_src, host_src, client_src;
+    if (!ReadRepoSrc(L"src\\ggml_translate_worker.cpp", worker_src)) {
+        TEST_CHECK(false, "261124: src/ggml_translate_worker.cpp must be resolvable");
+    } else {
+        // E1: the collapsed arm is split — file-missing keeps model_missing,
+        // present-but-unloadable emits the new free-string code, and the
+        // model_missing arm stays FIRST (the req051 slice pin's order).
+        TEST_CHECK(worker_src.find("} else if (!model_ok) {") != std::string::npos &&
+                       worker_src.find("ev.code = \"model_load_failed\";") !=
+                           std::string::npos,
+                   "261124: the worker splits the !model_ok / !loaded arms and emits "
+                   "model_load_failed");
+        const std::size_t missing_arm = worker_src.find("} else if (!model_ok) {");
+        const std::size_t load_failed_arm = worker_src.find("} else if (!loaded) {");
+        const std::size_t timeout_arm =
+            worker_src.find("aborted || decode_wall_clock_exhausted");
+        TEST_CHECK(timeout_arm != std::string::npos && missing_arm != std::string::npos &&
+                       load_failed_arm != std::string::npos &&
+                       timeout_arm < missing_arm && missing_arm < load_failed_arm,
+                   "261124: the arm order is timeout -> model_missing (!model_ok) -> "
+                   "model_load_failed (!loaded) — the req051/req057 slice pins stay valid");
+    }
+    if (!ReadRepoSrc(L"src\\host_main.cpp", host_src)) {
+        TEST_CHECK(false, "261124: src/host_main.cpp must be resolvable");
+    } else {
+        // E2/E3: both dispatcher loops map the new code to the FROZEN status
+        // and capture the cause; SendResult splices the OPTIONAL member; both
+        // call sites forward it.
+        TEST_CHECK(count_of(host_src, "error_detail = \"model_load_failed\";") == 2,
+                   "261124: both dispatcher loops (v1 + v2) map model_load_failed to the "
+                   "frozen ModelMissing status and capture the cause");
+        TEST_CHECK(host_src.find("std::string error_code = {})") != std::string::npos &&
+                       host_src.find("JsonEscape(error_code)") != std::string::npos,
+                   "261124: SendResult carries the 6th defaulted error_code parameter and "
+                   "splices the OPTIONAL member host-side");
+        TEST_CHECK(count_of(host_src, "std::move(error_detail)") == 2,
+                   "261124: both SendResult call sites forward the cause");
+    }
+    if (!ReadRepoSrc(L"src\\engine_host_client.cpp", client_src)) {
+        TEST_CHECK(false, "261124: src/engine_host_client.cpp must be resolvable");
+    } else {
+        // E5/E6: the reduced result parser gains the member with the same
+        // strictly-typed optional discipline as `model`, and TryTranslate
+        // exposes it through the defaulted trailing out-param (default lives
+        // in the consumer declaration, the ctx-pilot precedent).
+        TEST_CHECK(client_src.find("std::string& model, std::string& error_code)") !=
+                       std::string::npos,
+                   "261124: ParseResultWire extracts the OPTIONAL member (the REQ-044 "
+                   "strict-subset invariant)");
+        TEST_CHECK(client_src.find("FindField(p, \"error_code\")") != std::string::npos,
+                   "261124: the client parser reads the error_code member");
+        TEST_CHECK(client_src.find("std::string* out_error_detail) {") !=
+                       std::string::npos &&
+                       client_src.find("if (out_error_detail) out_error_detail->clear();") !=
+                           std::string::npos &&
+                       client_src.find("*out_error_detail = std::move(rerror_detail);") !=
+                           std::string::npos,
+                   "261124: TryTranslate reports the cause through the trailing "
+                   "out-param (cleared on entry, filled on the failure path only)");
+        // 261124_0001 fix-round-1 R1-F07: exactly ONE owner of the default —
+        // the consumer declaration (engine.hpp), the ctx-pilot precedent. The
+        // engine definition spells no default, so the two can never both
+        // declare it in one translation unit (C2572).
+        TEST_CHECK(count_of(client_src, "std::string* out_error_detail = nullptr") == 0 &&
+                       client_src.find("nullptr /*out_error_detail: legacy output "
+                                       "contract*/") != std::string::npos,
+                   "261124 R1-F07: the engine definition owns no default (the consumer "
+                   "declaration does) and the internal forwarder passes nullptr explicitly");
+    }
+
+    // ---- (e) consumer wiring pins -----------------------------------------
+    std::string hpp_src, eng_src, wrk_src, main_src;
+    if (!ReadRepoSrc(L"src\\engine.hpp", hpp_src)) {
+        TEST_CHECK(false, "261124: src/engine.hpp must be resolvable");
+    } else {
+        TEST_CHECK(hpp_src.find("LocalModelLoadFailed,") != std::string::npos &&
+                       hpp_src.find("std::string_view host_error_detail = {}") !=
+                           std::string::npos,
+                   "261124: TranslationStatus grows the tail value and the mapping gains "
+                   "the defaulted 2nd argument");
+        TEST_CHECK(hpp_src.find("std::string* out_error_detail = nullptr);") !=
+                       std::string::npos,
+                   "261124: the consumer-side TryTranslate declaration carries the 12th "
+                   "defaulted argument (the signature agreement with the engine "
+                   "definition)");
+    }
+    if (!ReadRepoSrc(L"src\\engine.cpp", eng_src)) {
+        TEST_CHECK(false, "261124: src/engine.cpp must be resolvable");
+    } else {
+        TEST_CHECK(eng_src.find("std::string host_error_detail;") != std::string::npos &&
+                       count_of(eng_src, "&host_error_detail") == 2 &&
+                       eng_src.find("StrictLocalFailureStatus(host_err, host_error_detail)") !=
+                           std::string::npos,
+                   "261124: the single-request convergence threads the detail from both "
+                   "TryTranslate attempts through the shared mapping");
+        // 261124_0001 fix-round-1 R1-F01: the multi-frame coordinator path
+        // threads the SAME cause (12th TryTranslate argument -> LocalFrameOutcome
+        // -> the refined mapping), so the giant-text path reports
+        // LocalModelLoadFailed instead of LocalModelMissing.
+        TEST_CHECK(count_of(eng_src, "&frame_err_detail") == 1 &&
+                       eng_src.find("frame_run.last_error, frame_run.last_error_detail") !=
+                           std::string::npos &&
+                       count_of(eng_src, "StrictLocalFailureStatus(frame_run.last_error)") == 0,
+                   "261124 R1-F01: the frame coordinator threads the frame's error_code "
+                   "refinement into the shared mapping (no one-argument frame call left)");
+    }
+    if (!ReadRepoSrc(L"src\\worker.cpp", wrk_src)) {
+        TEST_CHECK(false, "261124: src/worker.cpp must be resolvable");
+    } else {
+        TEST_CHECK(count_of(wrk_src, "TranslationStatus::LocalModelLoadFailed") >= 2,
+                   "261124: the strict modal set AND the audible failure set both include "
+                   "the new status (no silent no-response)");
+    }
+    if (!ReadRepoSrc(L"src\\main.cpp", main_src)) {
+        TEST_CHECK(false, "261124: src/main.cpp must be resolvable");
+    } else {
+        TEST_CHECK(count_of(main_src, "StringId::ModelLoadFailedTitle") == 4 &&
+                       count_of(main_src, "StringId::ModelLoadFailedBody") == 4,
+                   "261124: all four strict-failure surfaces (Enter / drag / retranslate / "
+                   "double Ctrl+C) route the new status to the dedicated wording");
+        TEST_CHECK(count_of(main_src, "load_failed_snap.engine_type == \"user_gguf\"") == 4,
+                   "261124: every surface keeps the user_gguf file-presence route "
+                   "(manager + compatibility hint) instead of the new modal");
+    }
+
+    if (g_failed_count == failures_before) {
+        std::cout << "[PASS] 261124_0001 model_load_failed / LocalModelLoadFailed pins "
+                     "completed."
+                  << std::endl;
+    } else {
+        std::cout << "[FAIL] 261124_0001 model_load_failed / LocalModelLoadFailed pins: "
+                  << (g_failed_count - failures_before) << " check(s) failed." << std::endl;
+    }
+}
+
 int main() {
     // REQ-R15: mirror wWinMain's first step - declare Per-Monitor-V2 DPI
     // awareness BEFORE any window or DC is created in this process. The
@@ -25622,6 +25860,12 @@ int main() {
     Test261123LocalContextConfigRoundtrip();
     Test261123LocalContextI18nWiring();
     Test261123HubLocalContextRowPins();
+
+    // 261124_0001 (model-load-failed error message): the wire interop runtime
+    // pins, the strict-local mapping pins, the i18n wiring, and the engine/
+    // consumer source pins. Self-contained (locale save/restore, read-only
+    // source scans), so it rides after the ctx-pilot block.
+    Test261124ModelLoadFailed();
 
     std::cout << "========================================" << std::endl;
     std::cout << "Total Checks: " << g_test_count << std::endl;

@@ -248,19 +248,21 @@ void TestReq057ServedModelEcho() {
         // single answer call in both dispatchers.
         // Backend P0-2 + review F-02 (v0.10.5): BOTH final answers are
         // epoch-guarded (the served-model echo rides each call, with the
-        // connection/item epoch as the trailing argument). Offset windows pin
-        // each epoch argument to its own call without embedding the source
-        // file's CRLF newline in the needle.
+        // connection/item epoch as the argument right after the echo).
+        // Offset windows pin each epoch argument to its own call without
+        // embedding the source file's CRLF newline in the needle.
+        // 261124_0001: the epoch argument is no longer the LAST one (the
+        // error_code tail follows), so the needles stop at the comma.
         const size_t v1_answer_at = src.find(
             "SendResult(job.id, status, out_text, std::move(served_model),");
         const size_t v1_epoch_at = v1_answer_at == std::string::npos
                                        ? std::string::npos
-                                       : src.find("job.conn_epoch)", v1_answer_at);
+                                       : src.find("job.conn_epoch,", v1_answer_at);
         const size_t v2_answer_at = src.find(
             "SendResult(item.request_id, status, out_text, std::move(served_model),");
         const size_t v2_epoch_at = v2_answer_at == std::string::npos
                                        ? std::string::npos
-                                       : src.find("item.conn_epoch);", v2_answer_at);
+                                       : src.find("item.conn_epoch,", v2_answer_at);
         TEST_CHECK(v1_answer_at != std::string::npos && v1_epoch_at != std::string::npos &&
                        v1_epoch_at - v1_answer_at < 200 &&
                        v2_answer_at != std::string::npos && v2_epoch_at != std::string::npos &&

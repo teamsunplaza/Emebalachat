@@ -726,8 +726,10 @@ public:
 
     // REQ-047 D1 (design §A-1, Tech Gate §D1 #2/#3): called on the worker
     // thread exactly when ExecuteTask's Translate() surfaces a strict local
-    // failure (TranslationStatus::CloudConsentBlocked or
-    // TranslationStatus::LocalModelMissing) OR a successful translation
+    // failure (TranslationStatus::CloudConsentBlocked,
+    // TranslationStatus::LocalModelMissing or
+    // TranslationStatus::LocalModelLoadFailed — the 261124_0001
+    // "model cannot be loaded" status) OR a successful translation
     // (TranslationStatus::Ok with a non-empty result). Same contract as the
     // other SetXxxCallback seams: registered once at startup BEFORE Start(),
     // read-only afterwards, so the worker thread reads it without a lock.

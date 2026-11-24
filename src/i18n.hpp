@@ -747,7 +747,7 @@ enum class StringId {
     // context (local engine conversational mode). Inserted at the ENUM TAIL,
     // immediately before EnumCount, so every pre-existing id keeps its numeric
     // value and EnumCount absorbs +1 (248 -> 249); the P5 "EnumCount - 36 ==
-    // LanguageSearchNoMatch" sentinel therefore becomes EnumCount - 37 (the
+    // LanguageSearchNoMatch" sentinel therefore became EnumCount - 37 (the
     // pin-site list for the test update lives in
     // docs/261123_0001_session_gguf-missing-defaults-followup/). The STRUCT
     // slot takes the position right AFTER user_model_load_failed_hint and
@@ -758,6 +758,22 @@ enum class StringId {
     // table carries the English draft verbatim (the deliberate machine-draft
     // baseline of the 261119 policy).
     SettingsLocalContext,      // "이전 문장 문맥과 함께 번역" / "Translate with previous-sentence context"
+
+    // 261124_0001 (model-load-failed error message, design §2.3 C6/C7): the
+    // strict-failure modal for a model file that EXISTS but this engine
+    // version refused to load (the CEO "지원하지 않는 너무 최신 모델" case).
+    // Inserted at the ENUM TAIL, immediately before EnumCount, so every
+    // pre-existing id keeps its numeric value and EnumCount absorbs +2
+    // (249 -> 251); the P5 sentinel therefore became EnumCount - 39 (the same
+    // pin-update pass as every tail append). The STRUCT slots take the
+    // position right AFTER settings_local_context and right BEFORE
+    // language_search_auto_chip (the AUTO chip stays the struct-tail closer
+    // per the P9b-3 U5 pin), so the enum order and the struct order differ on
+    // purpose; the Get() switch is the mapping. Per-locale fill: Korean is
+    // authored; every other designated table and the English positional table
+    // carry the English draft verbatim (the 261119 policy).
+    ModelLoadFailedTitle,      // "모델을 불러올 수 없습니다" / "This model could not be loaded"
+    ModelLoadFailedBody,       // "설치된 모델 파일을 현재 엔진 버전에서 읽을 수 없습니다..." / "Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model."
     // R6 Phase 5: sentinel for the table-completeness unit test
     // (every StringId below it must return a non-empty value in all locales
     // exposed by GetSupportedUiLocales() - 89 since UI-language-89 phase 3,

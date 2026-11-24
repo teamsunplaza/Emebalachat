@@ -184,8 +184,10 @@ struct Req048R2LstrMirror {
     // 261123_0001: 247 -> 248 (the 1 user-model load-failure hint string,
     // inserted ahead of the AUTO chip);
     // 261123_0001 Unit-C: 248 -> 249 (the 1 local-context checkbox string,
-    // inserted ahead of the AUTO chip).
-    const wchar_t* f[249];
+    // inserted ahead of the AUTO chip);
+    // 261124_0001: 249 -> 251 (the 2 model-load-failed strings, inserted
+    // ahead of the AUTO chip).
+    const wchar_t* f[251];
 };
 
 } // namespace req048_r2d_detail
@@ -199,19 +201,19 @@ void TestReq048R2GgufManager() {
     static_assert(sizeof(req048_r2d_detail::Req048R2LstrMirror) % sizeof(const wchar_t*) == 0,
                   "REQ-048 R2-D: Req048R2LstrMirror must be an array of uniform pointers");
     constexpr std::size_t kR2dFieldCount =
-        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 249
-    static_assert(kR2dFieldCount == 249,
-                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx: LocalizedStrings field count is 249 "
-                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings - 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + 5 261121_0002 progress/cancel strings + 6 261122_0001-BU2 OpenAI profile strings + 8 261122_0002 Phase-2 translation-card editor strings + 7 261122_0002 Phase-3 settings-window redesign strings + 19 261122_0002 Phase-3 micro-pass strings + 1 261123_0001 user-model load-failure hint string + 1 261123_0001 Unit-C local-context checkbox string) - update the i18n.cpp X-macro, "
+        sizeof(req048_r2d_detail::Req048R2LstrMirror) / sizeof(const wchar_t*); // == 251
+    static_assert(kR2dFieldCount == 251,
+                  "REQ-048 R2-D/REQ-050/REQ-051/UC/MD/REQ-060/v0.10.5-theme/261108_0002-WS3/261111_0001-U6/261116_0003-P5/261116_0003-P6a/261116_0003-P7/261116_0003-P9b-1/261116_0003-P9b3U5/261116_0003-P9c1b/261121_0001-U-C/261121_0002/261122_0001-BU2/261122_0002-P2/261122_0002-P3/261122_0002-P3MP/261123_0001/261123_0001-Ctx/261124_0001: LocalizedStrings field count is 251 "
+                  "(78 + 17 + 2 + 2 + 8 + 2 + 1 + 25 + 9 + 13 + 4 theme + 5 back-translation + 4 v0.10.9 U-C reasoning/back-trans section strings + 3 user-model + 2 language-picker + 1 P6a menu-search row + 1 P7 count phrase + 23 P9b-1 user-language strings + 1 P9b-3 U5 picker AUTO chip string + 2 P9c-1b OpenAI declaration checklist strings - 1 dead 261121_0002 SEC-M1 translate_truncated_notice string + 5 261121_0002 progress/cancel strings + 6 261122_0001-BU2 OpenAI profile strings + 8 261122_0002 Phase-2 translation-card editor strings + 7 261122_0002 Phase-3 settings-window redesign strings + 19 261122_0002 Phase-3 micro-pass strings + 1 261123_0001 user-model load-failure hint string + 1 261123_0001 Unit-C local-context checkbox string + 2 261124_0001 model-load-failed strings) - update the i18n.cpp X-macro, "
                   "all 89 locale tables, AND this mirror");
     // Runtime record through a volatile (avoids C4127 under /W4), matching
     // the TestReq044I18nFieldOrder discipline.
     volatile std::size_t observed_field_count = kR2dFieldCount;
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_field_count == 249,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 249");
-    TEST_CHECK(observed_enum_count == 249,
-               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 249 (struct fields == "
+    TEST_CHECK(observed_field_count == 251,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): LocalizedStrings field count is 251");
+    TEST_CHECK(observed_enum_count == 251,
+               "REQ-048 R2-D/REQ-050/REQ-051 (a): StringId::EnumCount is 251 (struct fields == "
                "switch cases, through the REQ-060 load-mode/policy block, the v0.10.5 theme "
                "strings, the 261108_0002 WS3 back-translation ids, the 4 261121_0001 v0.10.9 "
                "U-C reasoning/back-trans section ids, the 261111_0001 U6 user-model ids, "

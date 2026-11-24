@@ -1381,8 +1381,12 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // surfaces here (its modal wording would be wrong); its established
     // error-tone-only surface is unchanged.
     if (engine_unavailable_cb_) {
+        // 261124_0001: LocalModelLoadFailed joins the strict set — without it
+        // the new status would reach the callback seam with NO modal arm at
+        // all (a silent failure, worse than the pre-fix wording).
         if (status == TranslationStatus::CloudConsentBlocked ||
-            status == TranslationStatus::LocalModelMissing) {
+            status == TranslationStatus::LocalModelMissing ||
+            status == TranslationStatus::LocalModelLoadFailed) {
             ++consecutive_engine_failures_;
             DIAG_F("WORKER/ExecuteTask/030: strict local failure status=%d; "
                    "signaling engine-unavailable modal\n",
@@ -1680,6 +1684,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     // a missing local model must not be a silent no-response (B-7a precondition:
     // the enum value exists; the engine now returns it instead of the cloud
     // CloudConsentBlocked masquerade).
+    // 261124_0001: LocalModelLoadFailed joins the audible set on the same rule
+    // (a present-but-unloadable model must not be a silent no-response either).
     // 261121_0002 (T5): TranslationStatus::Canceled is deliberately NOT in this
     // set. A user cancel is not a failure - the dedicated cancelled notice
     // (the branch above) is the whole surface, and an error tone would blame
@@ -1687,7 +1693,8 @@ void PipelineWorker::ExecuteTask(const PipelineTask& task) {
     if (!pasted && translated.empty() &&
         (status == TranslationStatus::EngineFailed ||
          status == TranslationStatus::CloudConsentBlocked ||
-         status == TranslationStatus::LocalModelMissing)) {
+         status == TranslationStatus::LocalModelMissing ||
+         status == TranslationStatus::LocalModelLoadFailed)) {
         DIAG_F("WORKER/ExecuteTask/031: translation produced no result (status=%d); audible failure feedback dispatched\n",
                 static_cast<int>(status));
         // 261111_0001 U6 (v0.10.7, R1 P1-3): an OpenAI-leg failure records its

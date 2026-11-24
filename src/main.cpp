@@ -3128,6 +3128,26 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         // dead-end wording; CloudConsentBlocked is unchanged. The engine_type
         // read is the locked snapshot (this callback runs on the worker
         // thread; the snapshot accessor is its I4 contract).
+        // 261124_0001 (design §2.3 C5): LocalModelLoadFailed = the model file
+        // EXISTS but the engine refused the load (too-new arch/quant, corrupt
+        // file). The user_gguf pick keeps the established file-presence route
+        // (its manager + compatibility hint already word this case); every
+        // other engine type gets the dedicated wording — re-downloading the
+        // same file is meaningless, so NO download offer and no reinstall
+        // guidance (the offer flag stays defaulted off).
+        if (status == emebalachat::TranslationStatus::LocalModelLoadFailed) {
+            const auto load_failed_snap = config.GetSnapshot();
+            if (load_failed_snap.engine_type == "user_gguf") {
+                emebalachat::RequestModelMissingOfferOrModal(load_failed_snap.engine_type,
+                                                             load_failed_snap.user_model_id);
+                return;
+            }
+            emebalachat::RequestEngineUnavailableModal(
+                emebalachat::g_hControllerWnd,
+                emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedTitle),
+                emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedBody));
+            return;
+        }
         if (status == emebalachat::TranslationStatus::LocalModelMissing) {
             // 261123_0001: the user_model_id rides the SAME locked snapshot as
             // engine_type (Bug A's file-presence classification is an I4 read).
@@ -5351,6 +5371,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
                      static_cast<unsigned long long>(gen));
             return;
         }
+        // 261124_0001: same LocalModelLoadFailed routing as the Enter seam
+        // (user_gguf keeps the file-presence route; the others get the
+        // dedicated load-failed wording, no download offer).
+        if (drag_status == emebalachat::TranslationStatus::LocalModelLoadFailed) {
+            // V10F: retire the live preview BEFORE the modal (End(false) hides
+            // the window - it must not swallow what follows).
+            drag_preview.End(false);
+            const auto load_failed_snap = config.GetSnapshot();
+            if (load_failed_snap.engine_type == "user_gguf") {
+                emebalachat::RequestModelMissingOfferOrModal(load_failed_snap.engine_type,
+                                                             load_failed_snap.user_model_id);
+            } else {
+                emebalachat::RequestEngineUnavailableModal(
+                    emebalachat::g_hControllerWnd,
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedBody));
+            }
+            // 261111_0001 U1 (ISSUE-009): these statuses always carry an EMPTY
+            // translation; the modal above IS the user feedback, so stop here
+            // (falling through renders a permanent empty ghost card).
+            return;
+        }
         if (drag_status == emebalachat::TranslationStatus::LocalModelMissing) {
             // V10F E2 (261122_0002 P3-C4 wave B): same one-click offer routing
             // as the Enter-pipeline seam (built-in download consent / user-gguf
@@ -5627,6 +5669,24 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
         if (!rt_error_detail.empty()) {
             DIAG_LOG("UI", "retranslate_error_detail_len=%zu gen=%llu",
                      rt_error_detail.size(), static_cast<unsigned long long>(job.gen));
+        }
+        // 261124_0001: same LocalModelLoadFailed routing as the Enter/drag
+        // seams (user_gguf keeps the file-presence route; the others get the
+        // dedicated load-failed wording, no download offer).
+        if (rt_status == emebalachat::TranslationStatus::LocalModelLoadFailed) {
+            rt_preview.End(false); // retire the live preview BEFORE the modal
+            const auto load_failed_snap = config.GetSnapshot();
+            if (load_failed_snap.engine_type == "user_gguf") {
+                emebalachat::RequestModelMissingOfferOrModal(load_failed_snap.engine_type,
+                                                             load_failed_snap.user_model_id);
+            } else {
+                emebalachat::RequestEngineUnavailableModal(
+                    emebalachat::g_hControllerWnd,
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedBody));
+            }
+            if (job.on_done) job.on_done(std::wstring());
+            return; // existing content kept (ADR-A1-5); the modal carries the notice
         }
         if (rt_status == emebalachat::TranslationStatus::LocalModelMissing) {
             // V10F E2 (261122_0002 P3-C4 wave B): one-click offer routing (the
@@ -5987,6 +6047,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
             // retires the live card.
             DIAG_LOG("UI", "dbl_ctrl_c_canceled gen=%llu",
                      static_cast<unsigned long long>(gen));
+            return;
+        }
+        // 261124_0001: same LocalModelLoadFailed routing as the Enter/drag/
+        // retranslate seams (user_gguf keeps the file-presence route; the
+        // others get the dedicated load-failed wording, no download offer).
+        if (dbl_status == emebalachat::TranslationStatus::LocalModelLoadFailed) {
+            // V10F: retire the live preview BEFORE the modal (End(false) hides
+            // the window - it must not swallow what follows).
+            dbl_preview.End(false);
+            const auto load_failed_snap = config.GetSnapshot();
+            if (load_failed_snap.engine_type == "user_gguf") {
+                emebalachat::RequestModelMissingOfferOrModal(load_failed_snap.engine_type,
+                                                             load_failed_snap.user_model_id);
+            } else {
+                emebalachat::RequestEngineUnavailableModal(
+                    emebalachat::g_hControllerWnd,
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedTitle),
+                    emebalachat::I18n::Get(emebalachat::StringId::ModelLoadFailedBody));
+            }
+            // R1-A (v0.10.7, 261111_0001): the modal IS the feedback and these
+            // statuses always carry an empty translation, so STOP here.
             return;
         }
         if (dbl_status == emebalachat::TranslationStatus::LocalModelMissing) {

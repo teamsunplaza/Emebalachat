@@ -474,6 +474,21 @@ struct LocalizedStrings {
     // fill: Korean authored, the other 87 designated tables carry the English
     // draft (261119 policy).
     const wchar_t* settings_local_context = L"Translate with previous-sentence context";
+    // 261124_0001 (model-load-failed modal): the strict-failure wording for a
+    // model file that EXISTS but this engine version refused to load.
+    // Trailing defaults like the blocks above (NOT part of EMEBALA_LSTR_FIELDS,
+    // so kLocalizedStringsFieldCount stays 156): the 88 designated locale
+    // tables carry their own designators in the same slots (right after
+    // settings_local_context), and the English POSITIONAL table carries the
+    // literals in the same slots (right after the Unit-C literal, ahead of the
+    // AUTO chip line, which stays this table's LAST initializer per the
+    // P9b-3 U5 tail pin). The enum ids sit at the enum tail right before
+    // EnumCount, so the enum order and the struct order differ on purpose;
+    // the Get() switch is the mapping. Per-locale fill: Korean authored, the
+    // other 87 designated tables carry the English draft (261119 policy).
+    const wchar_t* model_load_failed_title = L"This model could not be loaded";
+    const wchar_t* model_load_failed_body =
+        L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.";
     // 261116_0003 P9b-3 U5 (language-menu redesign, CEO decision 1.b,
     // decisions.md:540): the picker AUTO-view chip's dedicated label. The Auto
     // view's old chip reused MenuEngineLocal ("내장 로컬 엔진"), hiding that
@@ -876,6 +891,9 @@ const LocalizedStrings kStringsKorean = {
     .user_model_load_failed_hint = L"사용자 모델을 불러오지 못했습니다. 모델 관리에서 파일과 호환성을 확인하세요.",
     // 261123_0001 Unit-C: the local-context checkbox label (KO authored).
     .settings_local_context = L"이전 문장 문맥과 함께 번역",
+    // 261124_0001: the model-load-failed modal (KO authored).
+    .model_load_failed_title = L"모델을 불러올 수 없습니다",
+    .model_load_failed_body = L"설치된 모델 파일을 현재 엔진 버전에서 읽을 수 없습니다. Emebala Chat을 최신 버전으로 업데이트한 뒤 다시 시도하거나, 다른 모델을 선택하세요.",
     .language_search_auto_chip = L"자동 - 지원 언어는 로컬, 나머지는 클라우드",
 };
 // 2. Japanese (ja)
@@ -1189,6 +1207,9 @@ const LocalizedStrings kStringsJapanese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"自動 - 対応言語はローカル、それ以外はクラウド",
 };
 // 3. Chinese Simplified (zh-CN)
@@ -1502,6 +1523,9 @@ const LocalizedStrings kStringsChineseSimp = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"自动 - 支持的语言使用本地引擎，其余使用云端",
 };
 // 4. Chinese Traditional (zh-TW)
@@ -1815,6 +1839,9 @@ const LocalizedStrings kStringsChineseTrad = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"自動 - 支援的語言使用本機引擎，其餘使用雲端",
 };
 // 5. Vietnamese (vi)
@@ -2128,6 +2155,9 @@ const LocalizedStrings kStringsVietnamese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Tự động - ngôn ngữ được hỗ trợ dùng cục bộ, còn lại dùng đám mây",
 };
 // 6. Spanish (es)
@@ -2438,6 +2468,9 @@ const LocalizedStrings kStringsSpanish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local para los idiomas compatibles, la nube para el resto",
 };
 // 7. English (en) - Default Fallback
@@ -2861,6 +2894,12 @@ const LocalizedStrings kStringsEnglish = {
     // settings-hub local-context checkbox label (positional, same MSVC C7556
     // rule as every other tail block).
     L"Translate with previous-sentence context",
+    // 261124_0001 (model-load-failed modal): slots 249-250 - the strict-
+    // failure wording for a present-but-unloadable model file (positional,
+    // same MSVC C7556 rule as every other tail block; the AUTO chip stays
+    // this table's LAST initializer per the P9b-3 U5 tail pin).
+    L"This model could not be loaded",
+    L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     L"Auto - local for supported languages, cloud for the rest",
 };
 // ---- REQ-037 (P4 Batch B-3, design §2.1.2): 30 new locale tables below.
@@ -3186,6 +3225,9 @@ const LocalizedStrings kStringsFrench = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local pour les langues prises en charge, le cloud pour les autres",
 };
 // 9. German (de)
@@ -3499,6 +3541,9 @@ const LocalizedStrings kStringsGerman = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokal für unterstützte Sprachen, die Cloud für den Rest",
 };
 // 10. Russian (ru)
@@ -3812,6 +3857,9 @@ const LocalizedStrings kStringsRussian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто - локально для поддерживаемых языков, облако для остальных",
 };
 // 11. Portuguese (pt)
@@ -4125,6 +4173,9 @@ const LocalizedStrings kStringsPortuguese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local para os idiomas compatíveis, a nuvem para os restantes",
 };
 // 12. Italian (it)
@@ -4438,6 +4489,9 @@ const LocalizedStrings kStringsItalian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - locale per le lingue supportate, il cloud per le altre",
 };
 // 13. Dutch (nl)
@@ -4751,6 +4805,9 @@ const LocalizedStrings kStringsDutch = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokaal voor ondersteunde talen, de cloud voor de rest",
 };
 // 14. Polish (pl)
@@ -5064,6 +5121,9 @@ const LocalizedStrings kStringsPolish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokalnie dla obsługiwanych języków, chmura dla pozostałych",
 };
 // 15. Czech (cs)
@@ -5377,6 +5437,9 @@ const LocalizedStrings kStringsCzech = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokálně pro podporované jazyky, cloud pro ostatní",
 };
 // 16. Hungarian (hu)
@@ -5690,6 +5753,9 @@ const LocalizedStrings kStringsHungarian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - helyi a támogatott nyelvekhez, felhő a többihez",
 };
 // 17. Romanian (ro)
@@ -6003,6 +6069,9 @@ const LocalizedStrings kStringsRomanian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local pentru limbile acceptate, cloud pentru restul",
 };
 // 18. Swedish (sv)
@@ -6316,6 +6385,9 @@ const LocalizedStrings kStringsSwedish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokalt för språk som stöds, molnet för resten",
 };
 // 19. Danish (da)
@@ -6629,6 +6701,9 @@ const LocalizedStrings kStringsDanish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokalt for understøttede sprog, skyen for resten",
 };
 // 20. Finnish (fi)
@@ -6942,6 +7017,9 @@ const LocalizedStrings kStringsFinnish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - paikallinen tuetuille kielille, pilvi muille",
 };
 // 21. Norwegian (no / nb)
@@ -7255,6 +7333,9 @@ const LocalizedStrings kStringsNorwegian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokal for støttede språk, skyen for resten",
 };
 // 22. Greek (el)
@@ -7568,6 +7649,9 @@ const LocalizedStrings kStringsGreek = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Αυτόματο - τοπικά για τις υποστηριζόμενες γλώσσες, σύννεφο για τις υπόλοιπες",
 };
 // 23. Turkish (tr)
@@ -7881,6 +7965,9 @@ const LocalizedStrings kStringsTurkish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Otomatik - desteklenen diller yerel, geri kalanı bulut",
 };
 // 24. Ukrainian (uk)
@@ -8194,6 +8281,9 @@ const LocalizedStrings kStringsUkrainian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто - локально для підтримуваних мов, хмара для решти",
 };
 // 25. Thai (th)
@@ -8507,6 +8597,9 @@ const LocalizedStrings kStringsThai = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"อัตโนมัติ - ภาษาที่รองรับใช้โลคัล ที่เหลือใช้คลาวด์",
 };
 // 26. Indonesian (id)
@@ -8820,6 +8913,9 @@ const LocalizedStrings kStringsIndonesian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokal untuk bahasa yang didukung, cloud untuk sisanya",
 };
 // 27. Malay (ms)
@@ -9133,6 +9229,9 @@ const LocalizedStrings kStringsMalay = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - setempat untuk bahasa yang disokong, cloud untuk selebihnya",
 };
 // 28. Filipino (fil)
@@ -9448,6 +9547,9 @@ const LocalizedStrings kStringsFilipino = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Awtomatik - lokal para sa mga sinusuportahang wika, cloud para sa iba",
 };
 // 29. Hindi (hi)
@@ -9761,6 +9863,9 @@ const LocalizedStrings kStringsHindi = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 30. Bengali (bn)
@@ -10074,6 +10179,9 @@ const LocalizedStrings kStringsBengali = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 31. Arabic (ar) — RTL language; string CONTENT is logical-order UTF-16, the
@@ -10388,6 +10496,9 @@ const LocalizedStrings kStringsArabic = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 32. Persian (fa) — RTL
@@ -10701,6 +10812,9 @@ const LocalizedStrings kStringsPersian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 33. Urdu (ur) — RTL
@@ -11014,6 +11128,9 @@ const LocalizedStrings kStringsUrdu = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 34. Hebrew (he) — RTL
@@ -11327,6 +11444,9 @@ const LocalizedStrings kStringsHebrew = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 35. Khmer (km)
@@ -11640,6 +11760,9 @@ const LocalizedStrings kStringsKhmer = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 36. Lao (lo)
@@ -11953,6 +12076,9 @@ const LocalizedStrings kStringsLao = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 37. Burmese (my)
@@ -12266,6 +12392,9 @@ const LocalizedStrings kStringsBurmese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - local for supported languages, cloud for the rest",
 };
 // 38. Gujarati (gu)
@@ -12551,6 +12680,9 @@ const LocalizedStrings kStringsGujarati = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ઓટો - સપોર્ટેડ ભાષાઓ માટે લોકલ, બાકીના માટે ક્લાઉડ",
 };
 // 39. Telugu (te)
@@ -12836,6 +12968,9 @@ const LocalizedStrings kStringsTelugu = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ఆటో - మద్దతు ఉన్న భాషలకు లోకల్, మిగిలినవాటికి క్లౌడ్",
 };
 // 40. Marathi (mr)
@@ -13121,6 +13256,9 @@ const LocalizedStrings kStringsMarathi = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ऑटो - सपोर्टेड भाषांसाठी लोकल, बाकीसाठी क्लाउड",
 };
 // 41. Tamil (ta)
@@ -13406,6 +13544,9 @@ const LocalizedStrings kStringsTamil = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ஆட்டோ - ஆதரிக்கப்படும் மொழிகளுக்கு லோக்கல், மீதமுள்ளவற்றுக்கு கிளவுட்",
 };
 // 42. Tibetan (bo)
@@ -13691,6 +13832,9 @@ const LocalizedStrings kStringsTibetan = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"རང་ཤེས - རྒྱབ་སྐྱོར་སྐད་ནང་ཐོག ལྷག་མ་སྦག",
 };
 // 43. Kazakh (kk)
@@ -13975,6 +14119,9 @@ const LocalizedStrings kStringsKazakh = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто - қолдау бар тілдерге жергілікті, қалғандарына бұлт",
 };
 // 44. Mongolian (mn)
@@ -14260,6 +14407,9 @@ const LocalizedStrings kStringsMongolian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто - дэмжигддэг хэлд локал, үлдсэнд үүл",
 };
 // 45. Uyghur (ug)
@@ -14545,6 +14695,9 @@ const LocalizedStrings kStringsUyghur = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ئاپتوماتىك - قوللانىدىغان تىللاردا يەرلىك، قالغىنىدا بۇلۇت",
 };
 // 46. Cantonese (yue)
@@ -14830,6 +14983,9 @@ const LocalizedStrings kStringsCantonese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"自動 - 支援嘅語言用本機，其餘用雲端",
 };
 // 47. Bosnian (bs)
@@ -15115,6 +15271,9 @@ const LocalizedStrings kStringsBosnian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokalno za podržane jezike, oblak za ostale",
 };
 // 48. Serbian (sr)
@@ -15400,6 +15559,9 @@ const LocalizedStrings kStringsSerbian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Ауто - локално за подржане језике, облак за остале",
 };
 // 49. Croatian (hr)
@@ -15685,6 +15847,9 @@ const LocalizedStrings kStringsCroatian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto - lokalno za podržane jezike, oblak za ostale",
 };
 // 50. Slovenian (sl)
@@ -15970,6 +16135,9 @@ const LocalizedStrings kStringsSlovenian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Samodejno - lokalno za podprte jezike, oblak za ostale",
 };
 // 51. Slovak (sk)
@@ -16255,6 +16423,9 @@ const LocalizedStrings kStringsSlovak = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automaticky: lokálne pre podporované jazyky, cloud pre ostatné",
 };
 // 52. Bulgarian (bg)
@@ -16540,6 +16711,9 @@ const LocalizedStrings kStringsBulgarian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Автоматично: локално за поддържаните езици, облак за останалите",
 };
 // 53. Lithuanian (lt)
@@ -16825,6 +16999,9 @@ const LocalizedStrings kStringsLithuanian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automatiškai: vietinis palaikomoms kalboms, debesis kitoms",
 };
 // 54. Latvian (lv)
@@ -17110,6 +17287,9 @@ const LocalizedStrings kStringsLatvian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automātiski: vietēji atbalstītajām valodām, mākonis pārējām",
 };
 // 55. Estonian (et)
@@ -17395,6 +17575,9 @@ const LocalizedStrings kStringsEstonian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automaatne: toetatud keeltele kohalik, ülejäänutele pilv",
 };
 // 56. Afrikaans (af)
@@ -17680,6 +17863,9 @@ const LocalizedStrings kStringsAfrikaans = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Outomaties: plaaslik vir ondersteunde tale, wolk vir die res",
 };
 // 57. Catalan (ca)
@@ -17965,6 +18151,9 @@ const LocalizedStrings kStringsCatalan = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automàtic: local per a les llengües compatibles, núvol per a la resta",
 };
 // 58. Icelandic (is)
@@ -18250,6 +18439,9 @@ const LocalizedStrings kStringsIcelandic = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Sjálfvirkt: staðbundið fyrir studd tungumál, ský fyrir hin",
 };
 // 59. Albanian (sq)
@@ -18535,6 +18727,9 @@ const LocalizedStrings kStringsAlbanian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automatike: lokale për gjuhët e mbështetura, re për të tjerat",
 };
 // 60. Macedonian (mk)
@@ -18820,6 +19015,9 @@ const LocalizedStrings kStringsMacedonian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Автоматски: локално за поддржаните јазици, облак за останатите",
 };
 // 61. Welsh (cy)
@@ -19105,6 +19303,9 @@ const LocalizedStrings kStringsWelsh = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Awtomatig: lleol ar gyfer ieithoedd â chefnogaeth, cwmwl ar gyfer y gweddill",
 };
 // 62. Irish (ga)
@@ -19390,6 +19591,9 @@ const LocalizedStrings kStringsIrish = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Uathoibríoch: áitiúil do na teangacha tacaithe, néal don chuid eile",
 };
 // 63. Basque (eu)
@@ -19675,6 +19879,9 @@ const LocalizedStrings kStringsBasque = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Automatikoa: onartutako hizkuntzetarako tokikoa, gainerakoetarako hodeia",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -19960,6 +20167,9 @@ const LocalizedStrings kStringsGalician = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Auto: local para as linguas admitidas, nube para as demais",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20245,6 +20455,9 @@ const LocalizedStrings kStringsSwahili = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Otomatiki: ndani kwa lugha zinazotumika, wingu kwa zilizobaki",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20530,6 +20743,9 @@ const LocalizedStrings kStringsHaitianCreole = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Otomatik: lokal pou lang ki sipòte yo, nwaj pou rès yo",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -20815,6 +21031,9 @@ const LocalizedStrings kStringsUzbek = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Avto: qoʻllab-quvvatlanadigan tillarda mahalliy, qolganlarida bulut",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21100,6 +21319,9 @@ const LocalizedStrings kStringsAzerbaijani = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Avto: dəstəklənən dillərdə yerli, qalanlarda bulud",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21385,6 +21607,9 @@ const LocalizedStrings kStringsBelarusian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Аўта: лакальны для падтрымліваных моў, воблака для астатніх",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21670,6 +21895,9 @@ const LocalizedStrings kStringsKyrgyz = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто: колдоого алынган тилдерде жергиликтүү, калгандарында булут",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -21955,6 +22183,9 @@ const LocalizedStrings kStringsTajik = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Авто: маҳаллӣ барои забонҳои дастгиршуда, абр барои боқимонда",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22240,6 +22471,9 @@ const LocalizedStrings kStringsEsperanto = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Aŭto: loka por subtenataj lingvoj, nubo por la ceteraj",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22525,6 +22759,9 @@ const LocalizedStrings kStringsArmenian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"Ինքնավար՝ տեղային աջակցվող լեզուների համար, ամպ՝ մնացածի համար",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -22810,6 +23047,9 @@ const LocalizedStrings kStringsGeorgian = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ავტო: მხარდაჭერილი ენებისთვის ლოკალური, დანარჩენისთვის ღრუბელი",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -23095,6 +23335,9 @@ const LocalizedStrings kStringsSinhala = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ස්වයං: සහාය වන භාෂාවලදී දේශීය, අනෙකුත්වලදී වලාකුළු",
 };
 // 261119_0001 phase-3 batch 3: UI-language-89 locale table (MT draft + human review pending). Fully designated, 199 fields in struct order.
@@ -23380,6 +23623,9 @@ const LocalizedStrings kStringsMalayalam = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ഓട്ടോ: പിന്തുണയ്ക്കുന്ന ഭാഷകൾക്ക് ലോക്കൽ, ബാക്കി ക്ലൗഡ്",
 };
 // 261119_0001 phase-3 batch 4 (FINAL): UI-language-89 Kannada (kn) locale table
@@ -23675,6 +23921,9 @@ const LocalizedStrings kStringsKannada = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ಸ್ವಯಂ: ಬೆಂಬಲಿತ ಭಾಷೆಗಳಿಗೆ ಸ್ಥಳೀಯ, ಉಳಿದವಕ್ಕೆ ಕ್ಲೌಡ್",
 };
 
@@ -23971,6 +24220,9 @@ const LocalizedStrings kStringsPunjabi = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ਆਟੋ: ਸਮਰਥਿਤ ਭਾਸ਼ਾਵਾਂ ਲਈ ਸਥਾਨਕ, ਬਾਕੀ ਲਈ ਕਲਾਊਡ",
 };
 
@@ -24267,6 +24519,9 @@ const LocalizedStrings kStringsOdia = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ସ୍ୱଚାଳିତ: ସମର୍ଥିତ ଭାଷା ପାଇଁ ସ୍ଥାନୀୟ, ଅନ୍ୟ ପାଇଁ କ୍ଲାଉଡ୍",
 };
 
@@ -24563,6 +24818,9 @@ const LocalizedStrings kStringsAmharic = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ራስ-ሰር: ለሚደገፉ ቋንቋዎች በአካባቢ, ለቀሪዎቹ በደመና",
 };
 
@@ -24859,6 +25117,9 @@ const LocalizedStrings kStringsTigrinya = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"ብኡንብኡ: ንዝድገፉ ቋንቋታት ከባቢ, ንተረፍቲ ደመና",
 };
 
@@ -25155,6 +25416,9 @@ const LocalizedStrings kStringsPashto = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"اتومات: د ملاتړ شوو ژبو لپاره ځایي، د نورو لپاره کلاوډ",
 };
 
@@ -25451,6 +25715,9 @@ const LocalizedStrings kStringsSindhi = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"خودڪار: حمايتي ٻولين لاءِ مقامي، باقي لاءِ ڪلائوڊ",
 };
 
@@ -25747,6 +26014,9 @@ const LocalizedStrings kStringsNepali = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"स्वतः: समर्थित भाषाका लागि स्थानीय, बाँकीका लागि क्लाउड",
 };
 
@@ -26043,6 +26313,9 @@ const LocalizedStrings kStringsAssamese = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"চালিত: সমৰ্থিত ভাষাৰ বাবে স্থানীয়, বাকীৰ বাবে ক্লাউড",
 };
 
@@ -26339,6 +26612,9 @@ const LocalizedStrings kStringsDzongkha = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"རང་བཞིན: རྒྱབ་སྐྱོར་ཡོད་པའི་སྐད་ཡིག་ལ་ས་གནས། ལྷག་མ་ལ་སྤྲིན",
 };
 
@@ -26635,6 +26911,9 @@ const LocalizedStrings kStringsSanskrit = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"स्वयम्: समर्थितासु भाषासु स्थानीयम्, शेषासु मेघः",
 };
 
@@ -26931,6 +27210,9 @@ const LocalizedStrings kStringsMaithili = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"स्वतः: समर्थित भाषाक लेल स्थानीय, बाँकीक लेल क्लाउड",
 };
 
@@ -27227,6 +27509,9 @@ const LocalizedStrings kStringsKonkaniGoan = {
     .user_model_load_failed_hint = L"Could not load the user model. Check the file and compatibility in Model Manager.",
     // 261123_0001 Unit-C: the local-context checkbox label (EN draft).
     .settings_local_context = L"Translate with previous-sentence context",
+    // 261124_0001: the model-load-failed modal (EN draft, the 261119 policy).
+    .model_load_failed_title = L"This model could not be loaded",
+    .model_load_failed_body = L"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.",
     .language_search_auto_chip = L"स्वयंचलित: आदार दिल्ल्या भासांक थळावें, उरिल्ल्यांक क्लाउड",
 };
 
@@ -27922,6 +28207,14 @@ std::wstring I18n::Get(StringId id) {
         // before EnumCount, while this member sits ahead of the AUTO chip;
         // the switch order is irrelevant, only completeness matters).
         case StringId::SettingsLocalContext:        return s.settings_local_context;
+
+        // 261124_0001 (model-load-failed modal): the strict-failure wording
+        // for a present-but-unloadable model file (the enum ids sit at the
+        // enum tail right before EnumCount, while these members sit ahead of
+        // the AUTO chip; the switch order is irrelevant, only completeness
+        // matters).
+        case StringId::ModelLoadFailedTitle:        return s.model_load_failed_title;
+        case StringId::ModelLoadFailedBody:         return s.model_load_failed_body;
 
         case StringId::EnumCount:
         default: return L""; // empty by design - the completeness test skips it

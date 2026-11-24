@@ -950,13 +950,14 @@ void Test261123LocalContextI18nWiring() {
     TEST_CHECK(I18n::Get(StringId::SettingsLocalContext) == L"이전 문장 문맥과 함께 번역",
                "261123 ctx: the Korean table carries the authored KO local-context label");
 
-    // The Unit-C +1 id moved EnumCount 248 -> 249: the runtime record inside
-    // THIS suite's own file (the volatile read keeps the comparison genuine
-    // under /W4, the run_tests.cpp:18330 precedent; the compile-time guards
-    // live at the ten micro-pass pins).
+    // The Unit-C +1 id moved EnumCount 248 -> 249, and the 261124_0001 +2 ids
+    // moved it 249 -> 251: the runtime record inside THIS suite's own file
+    // (the volatile read keeps the comparison genuine under /W4, the
+    // run_tests.cpp:18330 precedent; the compile-time guards live at the ten
+    // micro-pass pins).
     volatile int observed_enum_count = static_cast<int>(StringId::EnumCount);
-    TEST_CHECK(observed_enum_count == 249,
-               "261123 ctx: StringId::EnumCount is 249 after the Unit-C +1 id");
+    TEST_CHECK(observed_enum_count == 251,
+               "261123 ctx: StringId::EnumCount is 251 after the Unit-C +1 id and the 261124_0001 +2 ids");
 
     I18n::SetLocale(before); // restore the shared locale state for later suites
 

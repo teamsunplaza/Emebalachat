@@ -670,22 +670,29 @@ void TestReq048OpenAiTemplateSerialization() {
                                "    // settings-hub local-context checkbox label (positional, same MSVC C7556\n"
                                "    // rule as every other tail block).\n"
                                "    L\"Translate with previous-sentence context\",\n"
+                               "    // 261124_0001 (model-load-failed modal): slots 249-250 - the strict-\n"
+                               "    // failure wording for a present-but-unloadable model file (positional,\n"
+                               "    // same MSVC C7556 rule as every other tail block; the AUTO chip stays\n"
+                               "    // this table's LAST initializer per the P9b-3 U5 tail pin).\n"
+                               "    L\"This model could not be loaded\",\n"
+                               "    L\"Your engine version cannot read this model file. Update Emebala Chat and try again, or choose a different model.\",\n"
                                "    L\"Auto - local for supported languages, cloud for the "
                                "rest\",\n"
                                "};") != std::string::npos,
                        "P9c-1b (ii): the English positional table carries the two literals "
                        "immediately before the 261122_0002 Phase-2 block, the 7 Phase-3 "
                        "literals and the 19 Phase-3 micro-pass literals and the 1 "
-                       "261123_0001 literal and the 1 261123_0001 Unit-C literal between "
+                       "261123_0001 literal and the 1 261123_0001 Unit-C literal and the 2 "
+                       "261124_0001 model-load-failed literals between "
                        "the Phase-2 tail and the AUTO chip "
                        "line, and the AUTO chip line (which "
                        "stays its last initializer per the P9b-3 U5 tail pin)");
         }
         // Enum placement: the two ids close the pre-MenuSearchLangs block
         // (the 261122_0002 Phase-2 + Phase-3 + micro-pass blocks + the
-        // 261123_0001 hint id + the 261123_0001 Unit-C id now own the enum
-        // tail, so the P5 sentinel pin reads
-        // EnumCount - 37), same rule
+        // 261123_0001 hint id + the 261123_0001 Unit-C id + the 2 261124_0001
+        // model-load-failed ids now own the enum tail, so the P5 sentinel pin
+        // reads EnumCount - 39), same rule
         // as P9b-1/U5.
         {
             volatile int auto_chip = static_cast<int>(StringId::LanguageSearchAutoChip);

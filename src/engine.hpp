@@ -101,6 +101,16 @@ enum class TranslationStatus {
     // on specific statuses treat an unrecognized value like Ok-with-text (the
     // conservative reading: the result is used, no failure surface fires).
     Partial,
+    // 261124_0001 (design §2.3 C1): the model file EXISTS on disk but this
+    // engine version refused to load it (unknown architecture / unsupported
+    // quant / corrupt file all converge to one EnsureLoaded false). The host
+    // keeps the frozen v1 model_missing STATUS and refines the cause via the
+    // result frame's OPTIONAL error_code member, so the app can word "your
+    // engine version may not support this model" instead of the file-missing
+    // reinstall guidance. Appended AFTER Partial: existing values keep their
+    // integer order (the same append discipline as the LocalModelMissing and
+    // Partial appends above).
+    LocalModelLoadFailed,
 };
 
 // V10F (261122_0002 P3-C4, E2 Option B): the HONEST strict-local failure status
@@ -124,9 +134,23 @@ enum class TranslationStatus {
 // downstream consumers (main.cpp's strict-failure modal, worker.cpp's audible
 // set) already handle BOTH statuses, so this is a truthfulness change, not a
 // new routing surface.
-constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err) {
-    return host_err == "model_missing" ? TranslationStatus::LocalModelMissing
-                                       : TranslationStatus::CloudConsentBlocked;
+//
+// 261124_0001 (design §2.3 C2): the OPTIONAL defaulted 2nd argument carries
+// the result frame's OPTIONAL error_code refinement. model_missing +
+// "model_load_failed" means the model FILE EXISTS but this engine version
+// refused the load (EnsureLoaded's converged false) — a different user story
+// from "the file is absent" (re-download/reinstall cannot fix a too-new
+// model), so it promotes to its own status. The one-argument form keeps the
+// pre-261124 behavior exactly (the defaulted argument is ""), which is also
+// the right reading of a host that omitted the member (an old engine).
+constexpr TranslationStatus StrictLocalFailureStatus(std::string_view host_err,
+                                                     std::string_view host_error_detail = {}) {
+    if (host_err == "model_missing") {
+        return host_error_detail == "model_load_failed"
+                   ? TranslationStatus::LocalModelLoadFailed
+                   : TranslationStatus::LocalModelMissing;
+    }
+    return TranslationStatus::CloudConsentBlocked;
 }
 
 // ---- 261123_0001 (handoff §1.2, Bug A): user_gguf model-missing routing ----
@@ -401,6 +425,16 @@ inline const EngineHostClientIdentity kChatEngineHostIdentity{"emebala-chat", "0
 // restarted host that no longer advertises it gets the frozen v1 frame and the
 // fragment is dropped (never truncated, never negotiated). Empty is the
 // byte-identical pre-pilot path.
+// 261124_0001: OPTIONAL trailing `out_error_detail`, DEFAULTED so every
+// existing call site compiles unchanged. On failure it receives the result
+// frame's OPTIONAL error_code member ("" when the host omitted it — a
+// pre-261124 engine); nullptr keeps the legacy output contract. The engine
+// definition (engine_host_client.cpp) and this declaration are the SAME
+// RELEASE pair (the signature agreement, the 261123 ctx-pilot precedent).
+// 261124_0001 fix-round-1 R1-F07: this declaration is the ONE owner of the
+// default (same rule as `out_request_id`/`context` above) — the engine
+// definition spells no default, so a translation unit that ever sees both
+// declarations still gets a single default (no C2572).
 bool TryTranslate(const EngineHostClientIdentity& identity,
                   const EngineHostConfig& cfg,
                   const std::string& src,
@@ -411,7 +445,8 @@ bool TryTranslate(const EngineHostClientIdentity& identity,
                   std::string& err_code,
                   std::string& served_model,
                   std::atomic<std::uint64_t>* out_request_id = nullptr,
-                  std::wstring_view context = {});
+                  std::wstring_view context = {},
+                  std::string* out_error_detail = nullptr);
 
 // 261122_0001 A2: the mid-flight local cancel seam — sends the frozen
 // {"op":"cancel","id":N} frame for an in-flight request of THIS process so a
