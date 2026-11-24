@@ -1,3 +1,26 @@
+v0.10.10 - 2026-11-24 (rebuild 6)
+====================
+
+New engine under the hood, plus a clearer message when a model is too
+new for it. Same version, rebuilt: the shared engine moves its llama.cpp
+from b6099 to v1.0.0 (build b12359). The pinned translation model is
+unchanged (Hy-MT2-1.8B Q8_0), so translations, the data directory and any
+user-added GGUF model stay exactly where they were.
+
+The visible change is the failure wording. When a GGUF file exists but
+this engine cannot read it (a model saved in a format newer than the
+engine knows, or one whose architecture or quantisation it does not
+support), the app now says the engine version may not support this model
+and suggests updating Emebala Chat or choosing another model, instead of
+the previous "model file missing" message that offered a re-download. An
+older engine that does not report the cause keeps the previous mapping,
+so nothing regresses for engines built before this one.
+
+The engine revision stamp moves .r18 -> .r19, so a reinstall or an update
+to this build offers to replace the older bundled engine binaries.
+
+Unit tests: 15,417 checks, 0 failures (REQ-055 revision pin tracks .r19).
+
 v0.10.10 - 2026-11-24 (rebuild 5)
 ====================
 
